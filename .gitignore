@@ -208,6 +208,8 @@ tools/libxl/testenum.c
 tools/libxl/tmp.*
 tools/libxl/_libxl.api-for-check
 tools/libxl/*.api-ok
+tools/libxl/libxlu_cfg_l.c
+tools/libxl/libxlu_cfg_l.h
 tools/misc/cpuperf/cpuperf-perfcntr
 tools/misc/cpuperf/cpuperf-xen
 tools/misc/xc_shadow
