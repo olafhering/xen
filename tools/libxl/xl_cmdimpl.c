@@ -757,18 +757,24 @@ static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
 #ifdef __linux__
         // stat pdev to get device's sysfs entry
         struct stat pdev_stat;
+        const char *type;
         if (stat (pdev, &pdev_stat) == -1) {
             fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', device not found or cannot be read\n", "pdev", pdev, buf);
             exit(1);
         }
-        if (!S_ISBLK (pdev_stat.st_mode)) {
-            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', not a valid block device\n", "pdev", pdev, buf);
+        if (S_ISBLK (pdev_stat.st_mode)) {
+            type = "block";
+        } else if (S_ISCHR (pdev_stat.st_mode)) {
+            type = "char";
+        } else {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', not a valid block or char device\n", "pdev", pdev, buf);
             exit(1);
         }
 
-	// get pdev scsi address - subdir of scsi_device sysfs entry
+        // get pdev scsi address - subdir of scsi_device sysfs entry
         char pdev_sysfs_path[PATH_MAX];
-        snprintf(pdev_sysfs_path, PATH_MAX, "/sys/dev/block/%u:%u/device/scsi_device",
+        snprintf(pdev_sysfs_path, PATH_MAX, "/sys/dev/%s/%u:%u/device/scsi_device",
+                type,
                 major(pdev_stat.st_rdev),
                 minor(pdev_stat.st_rdev));
         int result = 0;
