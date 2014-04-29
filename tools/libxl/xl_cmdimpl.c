@@ -17,6 +17,7 @@
 #include "libxl_osdeps.h"
 
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -35,6 +36,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <xen/hvm/e820.h>
+#include <dirent.h>
 
 #include "libxl.h"
 #include "libxl_utils.h"
@@ -904,6 +906,122 @@ static void replace_string(char **str, const char *val)
     *str = xstrdup(val);
 }
 
+static char *vscsi_trim_string(char *s)
+{
+    unsigned int len;
+
+    while (isspace(*s))
+        s++;
+    len = strlen(s);
+    while (len-- > 1 && isspace(s[len]))
+        s[len] = '\0';
+    return s;
+}
+
+static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
+                              libxl_vscsi_dev *vscsi_dev,
+                              char *buf)
+{
+    char *pdev, *vdev, *fhost;
+    unsigned int hst, chn, tgt, lun;
+
+    libxl_device_vscsi_init(vscsi_host);
+    pdev = strtok(buf, ",");
+    vdev = strtok(NULL, ",");
+    fhost = strtok(NULL, ",");
+    if (!(pdev && vdev)) {
+        fprintf(stderr, "invalid vscsi= devspec: '%s'\n", buf);
+        exit(1);
+    }
+
+    pdev = vscsi_trim_string(pdev);
+    vdev = vscsi_trim_string(vdev);
+
+    if (strncmp(pdev, "/dev/", 5) == 0) {
+#ifdef __linux__
+        struct stat pdev_stat;
+        char pdev_sysfs_path[PATH_MAX];
+        const char *type;
+        int result = 0;
+        DIR *dirp;
+        struct dirent *de;
+
+        /* stat pdev to get device's sysfs entry */
+        if (stat (pdev, &pdev_stat) == -1) {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', device not found or cannot be read\n", "pdev", pdev, buf);
+            exit(1);
+        }
+        if (S_ISBLK (pdev_stat.st_mode)) {
+            type = "block";
+        } else if (S_ISCHR (pdev_stat.st_mode)) {
+            type = "char";
+        } else {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', not a valid block or char device\n", "pdev", pdev, buf);
+            exit(1);
+        }
+
+        /* get pdev scsi address - subdir of scsi_device sysfs entry */
+        snprintf(pdev_sysfs_path, sizeof(pdev_sysfs_path), "/sys/dev/%s/%u:%u/device/scsi_device",
+                type,
+                major(pdev_stat.st_rdev),
+                minor(pdev_stat.st_rdev));
+
+        dirp = opendir(pdev_sysfs_path);
+        if (!dirp) {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device\n", "pdev", pdev, buf);
+            exit(1);
+        }
+
+        while ((de = readdir(dirp))) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+                continue;
+
+            if (sscanf(de->d_name, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
+                fprintf(stderr, "vscsi: ignoring unknown devspec '%s' for device '%s'\n",
+                        de->d_name, pdev);
+                continue;
+            }
+            result = 1;
+            break;
+        }
+        closedir(dirp);
+
+        if (!result) {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device in sysfs\n", "pdev", pdev, buf);
+            exit(1);
+        }
+#else
+        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "pdev", pdev, buf);
+        exit(1);
+#endif
+    } else if (sscanf(pdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
+        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "pdev", pdev, buf);
+        exit(1);
+    }
+    vscsi_dev->p_hst = hst;
+    vscsi_dev->p_chn = chn;
+    vscsi_dev->p_tgt = tgt;
+    vscsi_dev->p_lun = lun;
+
+    if (sscanf(vdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
+        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "vdev", vdev, buf);
+        exit(1);
+    }
+    vscsi_host->v_hst = hst;
+    vscsi_dev->v_chn = chn;
+    vscsi_dev->v_tgt = tgt;
+    vscsi_dev->v_lun = lun;
+
+    if (fhost) {
+        fhost = vscsi_trim_string(fhost);
+        vscsi_host->feature_host = strcmp(fhost, "feature-host") == 0;
+        if (!vscsi_host->feature_host) {
+            fprintf(stderr, "vscsi: invalid option '%s' in vscsi= devspec: '%s', expecting %s\n", fhost, buf, "feature-host");
+            exit(1);
+        }
+    }
+}
+
 static void parse_config_data(const char *config_source,
                               const char *config_data,
                               int config_len,
@@ -912,7 +1030,7 @@ static void parse_config_data(const char *config_source,
     const char *buf;
     long l;
     XLU_Config *config;
-    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms;
+    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsis;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
@@ -1409,6 +1527,56 @@ static void parse_config_data(const char *config_source,
 
             free(buf2);
             d_config->num_disks++;
+        }
+    }
+
+    if (!xlu_cfg_get_list(config, "vscsi", &vscsis, 0, 0)) {
+        int cnt_vscsi_devs = 0;
+        d_config->num_vscsis = 0;
+        d_config->vscsis = NULL;
+        while ((buf = xlu_cfg_get_listitem (vscsis, cnt_vscsi_devs)) != NULL) {
+            libxl_vscsi_dev vscsi_dev = { };
+            libxl_device_vscsi vscsi_host = { };
+            libxl_device_vscsi *host;
+            char *tmp_buf;
+            int num_vscsis, host_found = 0;
+
+            /*
+             * #1: parse the devspec and place it in temporary host+dev part
+             * #2: find existing vscsi_host with number v_hst
+             *     if found, append the vscsi_dev to this vscsi_host
+             * #3: otherwise, create new vscsi_host and append vscsi_dev
+             * Note: v_hst does not represent the index named "num_vscsis",
+             *       it is a private index used just in the config file
+             */
+            tmp_buf = strdup(buf);
+            parse_vscsi_config(&vscsi_host, &vscsi_dev, tmp_buf);
+            free(tmp_buf);
+
+            if (d_config->vscsis) {
+                for (num_vscsis = 0; num_vscsis < d_config->num_vscsis; num_vscsis++) {
+                    if (d_config->vscsis[num_vscsis].v_hst == vscsi_host.v_hst) {
+                        host = d_config->vscsis + num_vscsis;
+                        host->vscsi_devs = realloc(host->vscsi_devs, sizeof(libxl_vscsi_dev) * (host->num_vscsi_devs + 1));
+                        vscsi_dev.vscsi_dev_id = host->num_vscsi_devs;
+                        memcpy(host->vscsi_devs + host->num_vscsi_devs, &vscsi_dev, sizeof(vscsi_dev));
+                        host->num_vscsi_devs++;
+                        host_found = 1;
+                    break;
+                    }
+                }
+            }
+            if (!host_found || !d_config->vscsis) {
+                d_config->vscsis = realloc(d_config->vscsis, sizeof(libxl_device_vscsi) * (d_config->num_vscsis + 1));
+                vscsi_host.vscsi_devs = malloc(sizeof(libxl_vscsi_dev));
+                vscsi_dev.vscsi_dev_id = 0;
+                memcpy(vscsi_host.vscsi_devs, &vscsi_dev, sizeof(vscsi_dev));
+                vscsi_host.num_vscsi_devs++;
+                vscsi_host.devid = d_config->num_vscsis;
+                memcpy(d_config->vscsis + d_config->num_vscsis, &vscsi_host, sizeof(vscsi_host));
+                d_config->num_vscsis++;
+            }
+            cnt_vscsi_devs++;
         }
     }
 
@@ -6447,6 +6615,196 @@ int main_blockdetach(int argc, char **argv)
     }
     libxl_device_disk_dispose(&disk);
     return rc;
+}
+
+int main_vscsiattach(int argc, char **argv)
+{
+    int opt;
+    libxl_vscsi_dev *vscsi_dev;
+    libxl_device_vscsi *vscsi_host;
+    uint32_t domid;
+    char *tmp_buf, *feat_buf = NULL;
+
+    if (argv) {
+        fprintf(stderr, "scsi-attach is not yet implemented.\n");
+        return 1;
+    }
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
+        /* No options */
+    }
+
+    if (argc < 4) {
+        help("scsi-attach");
+        return 1;
+    }
+    if (libxl_domain_qualifier_to_domid(ctx, argv[optind], &domid) < 0) {
+        fprintf(stderr, "%s is an invalid domain identifier\n", argv[optind]);
+        return 1;
+    }
+    ++optind;
+
+    fprintf(stderr, "%s(%u) optind %x argc %d\n", __func__, __LINE__, optind, argc);
+    if (argc < 4) {
+        fprintf(stderr, "scsi-attach: 3 options required.\n");
+        return 1;
+    }
+    if (argc == 5) {
+        if (asprintf(&feat_buf, ",%s", argv[4]) < 0) {
+        perror("asprintf");
+        return 1;
+        }
+    }
+    if (asprintf(&tmp_buf, "%s,%s%s", argv[2], argv[3], feat_buf ?: "") < 0) {
+        perror("asprintf");
+        return 1;
+    }
+    fprintf(stderr, "%s(%u) tmp_buf '%s'\n", __func__, __LINE__, tmp_buf);
+    vscsi_dev = calloc(1, sizeof(*vscsi_dev));
+    vscsi_host = calloc(1, sizeof(*vscsi_host));
+    if (!(vscsi_dev && vscsi_host)) {
+        fprintf(stderr, "%s ENOMEM\n", __func__);
+        free(tmp_buf);
+        free(feat_buf);
+	return 1;
+    }
+    parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
+
+    free(tmp_buf);
+    free(feat_buf);
+
+    if (dryrun_only) {
+       char* json = libxl_device_vscsi_to_json(ctx, vscsi_host);
+       printf("vscsi: %s\n", json);
+       free(json);
+       libxl_device_vscsi_dispose(vscsi_host);
+       if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
+       return 0;
+    }
+
+    if (libxl_device_vscsi_add(ctx, domid, vscsi_host, 0)) {
+        fprintf(stderr, "libxl_device_vscsi_add failed.\n");
+        return 1;
+    }
+    libxl_device_vscsi_dispose(vscsi_host);
+    return 0;
+}
+
+int main_vscsilist(int argc, char **argv)
+{
+    int opt;
+    libxl_device_vscsi *vscsi_hosts;
+    libxl_vscsiinfo vscsiinfo;
+    int num_hosts, h, d;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-list", 1) {
+        /* No options */
+    }
+    if (argc < 2) {
+        help("scsi-list");
+        return 1;
+    }
+    /*      Idx  BE  state host p_hst v_hst state */
+    printf("%-3s %-3s %-5s %-5s %-10s %-10s %-5s\n",
+           "Idx", "BE", "state", "host", "phy-hctl", "vir-hctl", "devstate");
+    for (argv += optind, argc -= optind; argc > 0; --argc, ++argv) {
+        uint32_t domid;
+        if (libxl_domain_qualifier_to_domid(ctx, *argv, &domid) < 0) {
+            fprintf(stderr, "%s is an invalid domain identifier\n", *argv);
+            continue;
+        }
+        if (!(vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts))) {
+            continue;
+        }
+        for (h = 0; h < num_hosts; ++h) {
+           for (d = 0; d < vscsi_hosts[h].num_vscsi_devs; d++) {
+               if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
+                   char pdev[64], vdev[64];
+                   snprintf(pdev, sizeof(pdev), "%u:%u:%u:%u",
+                         vscsiinfo.p_hst, vscsiinfo.p_chn, vscsiinfo.p_tgt, vscsiinfo.p_lun);
+                   snprintf(vdev, sizeof(vdev), "%u:%u:%u:%u",
+                         vscsiinfo.v_hst, vscsiinfo.v_chn, vscsiinfo.v_tgt, vscsiinfo.v_lun);
+                   /*      Idx  BE  state Sta */
+                   printf("%-3d %-3d %-5d %-5d %-10s %-10s %d\n",
+                         vscsiinfo.devid,
+			 vscsiinfo.backend_id,
+                         vscsiinfo.vscsi_host_state,
+			 vscsiinfo.backend_id,
+                         pdev, vdev,
+                         vscsiinfo.vscsi_dev_state);
+
+                   libxl_vscsiinfo_dispose(&vscsiinfo);
+               }
+           }
+           libxl_device_vscsi_dispose(&vscsi_hosts[h]);
+        }
+        free(vscsi_hosts);
+    }
+    return 0;
+}
+    
+int main_vscsidetach(int argc, char **argv)
+{
+    int opt;
+    libxl_vscsi_dev *vscsi_dev;
+    libxl_device_vscsi *vscsi_host;
+    libxl_device_vscsi *vscsi_hosts;
+    libxl_vscsiinfo vscsiinfo;
+    char *tmp_buf, *dom = argv[1], *vdev = argv[2];
+    uint32_t domid;
+    int num_hosts, h, d, found = 0;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-detach", 1) {
+        /* No options */
+    }
+    if (argc < 3) {
+        help("scsi-detach");
+        return 1;
+    }
+    if (libxl_domain_qualifier_to_domid(ctx, dom, &domid) < 0) {
+        fprintf(stderr, "%s is an invalid domain identifier\n", dom);
+        return 1;
+    }
+    vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
+    if (!vscsi_hosts)
+        return 0;
+
+    if (asprintf(&tmp_buf, "0:0:0:0,%s", vdev) < 0) {
+        perror("asprintf");
+        return 1;
+    }
+    vscsi_dev = calloc(1, sizeof(*vscsi_dev));
+    vscsi_host = calloc(1, sizeof(*vscsi_host));
+    if (!(vscsi_dev && vscsi_host)) {
+        fprintf(stderr, "%s ENOMEM\n", __func__);
+        goto done;
+    }
+    parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
+
+    for (h = 0; h < num_hosts; ++h) {
+       for (d = 0; !found && d < vscsi_hosts[h].num_vscsi_devs; d++) {
+           if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
+#define CMP(val) (vscsiinfo.val == vscsi_dev->val)
+               if (vscsiinfo.v_hst == vscsi_host->v_hst && CMP(v_chn) && CMP(v_tgt) && CMP(v_lun)) {
+                   if (vscsi_hosts[h].num_vscsi_devs > 1)
+                       fprintf(stderr, "%s(%u) TROUBLE AHEAD: vhost %u has %u devices! All will disappear now.\n", __func__, __LINE__, vscsiinfo.v_hst, vscsi_hosts[h].num_vscsi_devs);
+                   found = 1;
+                   libxl_device_vscsi_remove(ctx, domid, &vscsi_hosts[h], 0);
+               }
+               libxl_vscsiinfo_dispose(&vscsiinfo);
+#undef CMP
+           }
+       }
+       libxl_device_vscsi_dispose(&vscsi_hosts[h]);
+    }
+    if (!found)
+        fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, vdev, dom);
+done:
+    free(vscsi_hosts);
+    free(vscsi_host);
+    free(vscsi_dev);
+    free(tmp_buf);
+    return !found;
 }
 
 int main_vtpmattach(int argc, char **argv)

@@ -448,6 +448,36 @@ value is optional if this is a guest domain.
 
 =back
 
+=item B<vscsi=[ "VSCSI_SPEC_STRING", "VSCSI_SPEC_STRING", ...]>
+
+Specifies the PVSCSI devices to be provided to the guest. PVSCSI passes
+dom0 SCSI devices as-is to the guest.
+
+Each B<VSCSI_SPEC_STRING> is a mapping from dom0 SCSI devices to guest visible
+SCSI devices, like 'pvdev,vdev[,option]'. Example: '/dev/sdm,3:0:4:5,feature-host'
+
+=over 4
+
+=item C<pdev>
+
+Specifies the dom0 visible SCSI device. The string can be either a device path
+like to a block device like /dev/disk/by-id/scsi-XYZ. Or it can be a device path
+to a char device like /dev/sg5. Or it can be specified in the SCSI notation
+HOST:CHANNEL:TARGET:LUN. Note that the latter format is unreliable because
+the HOST value can change across dom0 reboots.
+
+=item C<vdev>
+
+Specifies how the SCSI device is mapped into the guest. The notation is in
+SCSI notation HOST:CHANNEL:TARGET:LUN. HOST in this case means a virthal
+SCSI host within the guest.
+
+=item C<option>
+
+Right now only one option is recognized: feature-host.
+
+=back
+
 =item B<vfb=[ "VFB_SPEC_STRING", "VFB_SPEC_STRING", ...]>
 
 Specifies the paravirtual framebuffer devices which should be supplied

@@ -2218,6 +2218,197 @@ int libxl_devid_to_device_vtpm(libxl_ctx *ctx,
     return rc;
 }
 
+/******************************************************************************/
+static int libxl__device_from_vscsi(libxl__gc *gc, uint32_t domid,
+                                   libxl_device_vscsi *vscsi,
+                                   libxl__device *device)
+{
+   device->backend_domid   = vscsi->backend_domid;
+   device->devid           = vscsi->devid;
+   device->domid           = domid;
+   device->backend_kind    = LIBXL__DEVICE_KIND_VSCSI;
+   device->kind            = LIBXL__DEVICE_KIND_VSCSI;
+
+   return 0;
+}
+
+void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
+                           libxl_device_vscsi *vscsi,
+                           libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    flexarray_t *front;
+    flexarray_t *back;
+    libxl__device *device;
+    unsigned int rc, i;
+
+    i = 2 * (4 + (3 * vscsi->num_vscsi_devs));
+    front = flexarray_make(gc, 4, 1);
+    back = flexarray_make(gc, i, 1);
+
+    if (vscsi->devid == -1) {
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
+    if ( rc != 0 ) goto out;
+
+    flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", domid));
+    flexarray_append_pair(back, "online", "1");
+    flexarray_append_pair(back, "state", "1");
+    flexarray_append_pair(back, "feature-host", GCSPRINTF("%d", !!vscsi->feature_host));
+    for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+        libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
+                              GCSPRINTF("%u:%u:%u:%u", v->p_hst, v->p_chn, v->p_tgt, v->p_lun));
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/v-dev", v->vscsi_dev_id),
+                              GCSPRINTF("%u:%u:%u:%u", vscsi->v_hst, v->v_chn, v->v_tgt, v->v_lun));
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "1");
+    }
+
+    flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
+    flexarray_append_pair(front, "state", "1");
+
+    libxl__device_generic_add(gc, XBT_NULL, device,
+                              libxl__xs_kvs_of_flexarray(gc, back, back->count),
+                              libxl__xs_kvs_of_flexarray(gc, front, front->count),
+                              NULL);
+
+    aodev->dev = device;
+    aodev->action = LIBXL__DEVICE_ACTION_ADD;
+    libxl__wait_device_connection(egc, aodev);
+
+    rc = 0;
+out:
+    aodev->rc = rc;
+    if(rc) aodev->callback(egc, aodev);
+    return;
+}
+
+libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int *num)
+{
+    GC_INIT(ctx);
+
+    libxl_device_vscsi *vscsi_hosts = NULL;
+    char *fe_path;
+    char **dir;
+    unsigned int ndirs = 0;
+
+    fe_path = libxl__sprintf(gc, "%s/device/vscsi", libxl__xs_get_dompath(gc, domid));
+    dir = libxl__xs_directory(gc, XBT_NULL, fe_path, &ndirs);
+    if (dir && ndirs) {
+        libxl_device_vscsi *vscsi, *end;
+        vscsi_hosts = calloc(ndirs, sizeof(*vscsi_hosts));
+        for (vscsi = vscsi_hosts, end = vscsi_hosts + ndirs; vscsi_hosts && vscsi < end; ++vscsi, ++dir) {
+            unsigned int vd_dirs = 0, i;
+            char *tmp;
+            char **vscsi_devs_dir;
+            const char *vscsi_devs_path, *be_path = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/%s/backend", fe_path, *dir));
+
+            libxl_device_vscsi_init(vscsi);
+
+            vscsi->devid = atoi(*dir);
+
+            tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/%s/backend-id", fe_path, *dir));
+            vscsi->backend_domid = atoi(tmp);
+
+            vscsi_devs_path = libxl__sprintf(gc, "%s/vscsi-devs", be_path);
+            vscsi_devs_dir = libxl__xs_directory(gc, XBT_NULL, vscsi_devs_path, &vd_dirs);
+            if (vscsi_devs_dir && vd_dirs) {
+                vscsi->vscsi_devs = calloc(vd_dirs, sizeof(*vscsi->vscsi_devs));
+                vscsi->num_vscsi_devs = vd_dirs;
+                for (i = 0; i < vd_dirs; i++, vscsi_devs_dir++) {
+                    unsigned int vscsi_dev_id;
+                    if (sscanf(*vscsi_devs_dir, "dev-%u", &vscsi_dev_id) != 1) {
+                        LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "%s/scsi-devs/%s failed to parse", be_path, *vscsi_devs_dir);
+                        continue;
+                    }
+                    vscsi->vscsi_devs[i].vscsi_dev_id = vscsi_dev_id;
+                    tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", be_path, vscsi_dev_id));
+                    if (tmp)
+                       sscanf(tmp, "%u:%u:%u:%u", &vscsi->vscsi_devs[i].p_hst, &vscsi->vscsi_devs[i].p_chn, &vscsi->vscsi_devs[i].p_tgt, &vscsi->vscsi_devs[i].p_lun);
+                    tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", be_path, vscsi_dev_id));
+                    if (tmp)
+                        sscanf(tmp, "%u:%u:%u:%u", &vscsi->v_hst, &vscsi->vscsi_devs[i].v_chn, &vscsi->vscsi_devs[i].v_tgt, &vscsi->vscsi_devs[i].v_lun);
+                }
+            }
+        }
+    }
+    *num = ndirs;
+
+    GC_FREE;
+    return vscsi_hosts;
+}
+
+int libxl_device_vscsi_getinfo(libxl_ctx *ctx,
+                              uint32_t domid,
+                              libxl_device_vscsi *vscsi_host,
+                              libxl_vscsi_dev *vscsi_dev,
+                              libxl_vscsiinfo *vscsiinfo)
+{
+    GC_INIT(ctx);
+    char *dompath, *vscsipath;
+    char *val;
+    int rc = 0;
+
+    libxl_vscsiinfo_init(vscsiinfo);
+    dompath = libxl__xs_get_dompath(gc, domid);
+    vscsiinfo->devid = vscsi_host->devid;
+    vscsiinfo->p_hst = vscsi_dev->p_hst;
+    vscsiinfo->p_chn = vscsi_dev->p_chn;
+    vscsiinfo->p_tgt = vscsi_dev->p_tgt;
+    vscsiinfo->p_lun = vscsi_dev->p_lun;
+    vscsiinfo->v_hst = vscsi_host->v_hst;
+    vscsiinfo->v_chn = vscsi_dev->v_chn;
+    vscsiinfo->v_tgt = vscsi_dev->v_tgt;
+    vscsiinfo->v_lun = vscsi_dev->v_lun;
+
+    vscsipath = GCSPRINTF("%s/device/vscsi/%d", dompath, vscsiinfo->devid);
+    vscsiinfo->backend = xs_read(ctx->xsh, XBT_NULL,
+          GCSPRINTF("%s/backend", vscsipath), NULL);
+    if (!vscsiinfo->backend) {
+        goto err;
+    }
+    if(!libxl__xs_read(gc, XBT_NULL, vscsiinfo->backend)) {
+       goto err;
+    }
+
+    val = libxl__xs_read(gc, XBT_NULL,
+          GCSPRINTF("%s/backend-id", vscsipath));
+    vscsiinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL,
+          GCSPRINTF("%s/state", vscsipath));
+    vscsiinfo->vscsi_host_state = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL,
+          GCSPRINTF("%s/event-channel", vscsipath));
+    vscsiinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL,
+          GCSPRINTF("%s/ring-ref", vscsipath));
+    vscsiinfo->rref = val ? strtoul(val, NULL, 10) : -1;
+
+    vscsiinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
+          GCSPRINTF("%s/frontend", vscsiinfo->backend), NULL);
+
+    val = libxl__xs_read(gc, XBT_NULL,
+          GCSPRINTF("%s/frontend-id", vscsiinfo->backend));
+    vscsiinfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL,
+          GCSPRINTF("%s/vscsi-devs/dev-%u/state", vscsiinfo->backend, vscsi_dev->vscsi_dev_id));
+    vscsiinfo->vscsi_dev_state = val ? strtoul(val, NULL, 10) : -1;
+
+    goto exit;
+err:
+    rc = ERROR_FAIL;
+exit:
+    GC_FREE;
+    return rc;
+}
 
 /******************************************************************************/
 
@@ -4088,6 +4279,8 @@ out:
  * libxl_device_vkb_destroy
  * libxl_device_vfb_remove
  * libxl_device_vfb_destroy
+ * libxl_device_vscsi_remove
+ * libxl_device_vscsi_destroy
  */
 #define DEFINE_DEVICE_REMOVE(type, removedestroy, f)                    \
     int libxl_device_##type##_##removedestroy(libxl_ctx *ctx,           \
@@ -4139,6 +4332,10 @@ DEFINE_DEVICE_REMOVE(vfb, destroy, 1)
 DEFINE_DEVICE_REMOVE(vtpm, remove, 0)
 DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
 
+/* vscsi */
+DEFINE_DEVICE_REMOVE(vscsi, remove, 0)
+DEFINE_DEVICE_REMOVE(vscsi, destroy, 0)
+
 /* channel/console hotunplug is not implemented. There are 2 possibilities:
  * 1. add support for secondary consoles to xenconsoled
  * 2. dynamically add/remove qemu chardevs via qmp messages. */
@@ -4152,6 +4349,7 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
  * libxl_device_disk_add
  * libxl_device_nic_add
  * libxl_device_vtpm_add
+ * libxl_device_vscsi_add
  */
 
 #define DEFINE_DEVICE_ADD(type)                                         \
@@ -4181,6 +4379,9 @@ DEFINE_DEVICE_ADD(nic)
 
 /* vtpm */
 DEFINE_DEVICE_ADD(vtpm)
+
+/* vscsi */
+DEFINE_DEVICE_ADD(vscsi)
 
 #undef DEFINE_DEVICE_ADD
 

@@ -560,6 +560,7 @@ void libxl__multidev_prepared(libxl__egc *egc,
 
 DEFINE_DEVICES_ADD(disk)
 DEFINE_DEVICES_ADD(nic)
+DEFINE_DEVICES_ADD(vscsi)
 DEFINE_DEVICES_ADD(vtpm)
 
 #undef DEFINE_DEVICES_ADD
