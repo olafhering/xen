@@ -2033,12 +2033,32 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
     if ( rc != 0 ) goto out;
 
-    flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", domid));
-    flexarray_append_pair(back, "online", "1");
-    flexarray_append_pair(back, "state", "1");
-    flexarray_append_pair(back, "feature-host", GCSPRINTF("%d", !!vscsi->feature_host));
+    /* get backend device path to check if is already present */
+    char *backend_path;
+    unsigned int ndirs = 0;
+    backend_path = libxl__device_backend_path(gc, device);
+    if (!libxl__xs_directory(gc, XBT_NULL, backend_path, &ndirs) || !ndirs) {
+        /* backend does not exist => vscsi host does not exist */
+        flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", domid));
+        flexarray_append_pair(back, "online", "1");
+        flexarray_append_pair(back, "state", "1");
+        flexarray_append_pair(back, "feature-host", GCSPRINTF("%d", !!vscsi->feature_host));
+
+        flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
+        flexarray_append_pair(front, "state", "1");
+    }
+
     for (i = 0; i < vscsi->num_vscsi_devs; i++) {
         libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
+        if (ndirs) {
+            unsigned int nb = 0;
+            /* vhost exist, check if not overwriting records */
+            if (libxl__xs_directory(gc, XBT_NULL,
+                   GCSPRINTF("%s/vscsi-devs/dev-%u", backend_path, v->vscsi_dev_id),
+                            &nb) && nb) {
+                continue;
+            }
+        }
         flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
                               GCSPRINTF("%u:%u:%u:%u", v->p_hst, v->p_chn, v->p_tgt, v->p_lun));
         flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/v-dev", v->vscsi_dev_id),
@@ -2046,17 +2066,37 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "1");
     }
 
-    flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
-    flexarray_append_pair(front, "state", "1");
-
-    libxl__device_generic_add(gc, XBT_NULL, device,
-                              libxl__xs_kvs_of_flexarray(gc, back, back->count),
-                              libxl__xs_kvs_of_flexarray(gc, front, front->count),
-                              NULL);
-
     aodev->dev = device;
-    aodev->action = LIBXL__DEVICE_ACTION_ADD;
-    libxl__wait_device_connection(egc, aodev);
+    if (ndirs == 0) {
+        libxl__device_generic_add(gc, XBT_NULL, device,
+                                libxl__xs_kvs_of_flexarray(gc, back, back->count),
+                                libxl__xs_kvs_of_flexarray(gc, front, front->count),
+                                NULL);
+
+        aodev->action = LIBXL__DEVICE_ACTION_ADD;
+        libxl__wait_device_connection(egc, aodev);
+    }
+    else {
+        /* we added only new vscsi devices, write them and trigger vscsi host reconfiguration */
+        libxl_ctx *ctx = libxl__gc_owner(gc);
+        xs_transaction_t t;
+retry_transaction:
+        t = xs_transaction_start(ctx->xsh);
+        libxl__xs_writev(gc, t, backend_path,
+                         libxl__xs_kvs_of_flexarray(gc, back, back->count));
+        xs_write(ctx->xsh, t, GCSPRINTF("%s/state", backend_path), "7", 2);
+        if(!xs_transaction_end(ctx->xsh, t, 0)) {
+            if (errno == EAGAIN) {
+                goto retry_transaction;
+            }
+            else {
+                LOGE(ERROR, "xs transaction failed");
+                return;
+            }
+        }
+        /* as we are not adding new device, skip waiting for it */
+        libxl__ao_complete(egc, aodev->ao, 0);
+    }
 
     rc = 0;
 out:

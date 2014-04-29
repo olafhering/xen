@@ -6177,11 +6177,6 @@ int main_vscsiattach(int argc, char **argv)
     uint32_t domid;
     char *tmp_buf, *feat_buf = NULL;
 
-    if (argv) {
-        fprintf(stderr, "scsi-attach is not yet implemented.\n");
-        return 1;
-    }
-
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
         /* No options */
     }
@@ -6208,11 +6203,73 @@ int main_vscsiattach(int argc, char **argv)
     }
     vscsi_dev = calloc(1, sizeof(*vscsi_dev));
     vscsi_host = calloc(1, sizeof(*vscsi_host));
+    if (vscsi_dev == NULL || vscsi_host == NULL) {
+        fprintf(stderr, "Unable to allocate memory for vscsi structures");
+        return -ENOMEM;
+    }
     libxl_device_vscsi_init(vscsi_host);
     parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
 
     free(tmp_buf);
     free(feat_buf);
+
+    /* look for existing vscsi_host for given domain */
+    int found_host = -1;
+    int num_hosts;
+    int h = 0;
+    libxl_device_vscsi *vscsi_hosts_existing;
+    if ((vscsi_hosts_existing = libxl_device_vscsi_list(ctx, domid, &num_hosts))) {
+        // if exists and vscsi_host.v_hst == existing_host.v_hst then
+        for (h = 0; h < num_hosts; ++h) {
+            if (vscsi_host->v_hst == vscsi_hosts_existing[h].v_hst) {
+                found_host = h;
+                break;
+            }
+        }
+    }
+    if (found_host == -1) {
+        if (vscsi_hosts_existing)
+            libxl_device_vscsi_dispose(vscsi_hosts_existing);
+        vscsi_host->vscsi_devs = calloc(1, sizeof(libxl_vscsi_dev));
+        if (vscsi_host->vscsi_devs == NULL) {
+            fprintf(stderr, "Unable to allocate memory for vscsi_host->vscsi_devs");
+            libxl_device_vscsi_dispose(vscsi_host);
+            return -ENOMEM;
+        }
+        vscsi_dev->vscsi_dev_id = 0;
+        memcpy(vscsi_host->vscsi_devs, vscsi_dev, sizeof(*vscsi_dev));
+        vscsi_host->num_vscsi_devs = 1;
+        vscsi_host->devid = h;
+    }
+    else {
+        /* look if the vdev address is not taken */
+        libxl_device_vscsi_dispose(vscsi_host);
+        vscsi_host = vscsi_hosts_existing + found_host;
+        int d;
+        for (d = 0; d < vscsi_host->num_vscsi_devs; ++d) {
+            if (vscsi_host->vscsi_devs[d].v_chn == vscsi_dev->v_chn &&
+                vscsi_host->vscsi_devs[d].v_tgt == vscsi_dev->v_tgt &&
+                vscsi_host->vscsi_devs[d].v_lun == vscsi_dev->v_lun) {
+                fprintf(stderr, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
+                        vscsi_host->v_hst, vscsi_dev->v_chn,
+                        vscsi_dev->v_tgt, vscsi_dev->v_lun);
+                libxl_device_vscsi_dispose(vscsi_hosts_existing);
+                return 1;
+            }
+        }
+        vscsi_host->vscsi_devs = realloc(vscsi_host->vscsi_devs,
+                                         sizeof(libxl_vscsi_dev) *
+                                         (vscsi_host->num_vscsi_devs + 1));
+        if (vscsi_host->vscsi_devs == NULL) {
+            fprintf(stderr, "Unable to reallocate memory for vscsi_host->vscsi_devs");
+            libxl_device_vscsi_dispose(vscsi_hosts_existing);
+            return -ENOMEM;
+        }
+        vscsi_dev->vscsi_dev_id = vscsi_host->num_vscsi_devs;
+        memcpy(vscsi_host->vscsi_devs + vscsi_host->num_vscsi_devs,
+               vscsi_dev, sizeof(*vscsi_dev));
+        vscsi_host->num_vscsi_devs++;
+    }
 
     if (dryrun_only) {
         char* json = libxl_device_vscsi_to_json(ctx, vscsi_host);
