@@ -6215,12 +6215,12 @@ int main_vscsiattach(int argc, char **argv)
     free(feat_buf);
 
     if (dryrun_only) {
-       char* json = libxl_device_vscsi_to_json(ctx, vscsi_host);
-       printf("vscsi: %s\n", json);
-       free(json);
-       libxl_device_vscsi_dispose(vscsi_host);
-       if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
-       return 0;
+        char* json = libxl_device_vscsi_to_json(ctx, vscsi_host);
+        printf("vscsi: %s\n", json);
+        free(json);
+        libxl_device_vscsi_dispose(vscsi_host);
+        if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
+            return 0;
     }
 
     if (libxl_device_vscsi_add(ctx, domid, vscsi_host, 0)) {
