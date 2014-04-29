@@ -756,9 +756,14 @@ static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
 
     if (strncmp(pdev, "/dev/", 5) == 0) {
 #ifdef __linux__
-        // stat pdev to get device's sysfs entry
         struct stat pdev_stat;
+        char pdev_sysfs_path[PATH_MAX];
         const char *type;
+        int result = 0;
+        DIR *dirp;
+        struct dirent *de;
+
+        /* stat pdev to get device's sysfs entry */
         if (stat (pdev, &pdev_stat) == -1) {
             fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', device not found or cannot be read\n", "pdev", pdev, buf);
             exit(1);
@@ -772,40 +777,19 @@ static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
             exit(1);
         }
 
-        // get pdev scsi address - subdir of scsi_device sysfs entry
-        char pdev_sysfs_path[PATH_MAX];
-        snprintf(pdev_sysfs_path, PATH_MAX, "/sys/dev/%s/%u:%u/device/scsi_device",
+        /* get pdev scsi address - subdir of scsi_device sysfs entry */
+        snprintf(pdev_sysfs_path, sizeof(pdev_sysfs_path), "/sys/dev/%s/%u:%u/device/scsi_device",
                 type,
                 major(pdev_stat.st_rdev),
                 minor(pdev_stat.st_rdev));
-        int result = 0;
-        DIR *dirp = 0;
-        size_t need = offsetof(struct dirent, d_name) +
-                pathconf(pdev_sysfs_path, _PC_NAME_MAX) + 1;
-        struct dirent *de = 0;
-        struct dirent *de_buf = malloc(need);
-        if (de_buf == NULL) {
-            fprintf(stderr, "vscsi: unable to allocate memory for sysfs path\n");
-            exit(-ENOMEM);
-        }
 
         dirp = opendir(pdev_sysfs_path);
         if (!dirp) {
             fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device\n", "pdev", pdev, buf);
-            free(de_buf);
             exit(1);
         }
 
-        for (;;) {
-            int r = readdir_r(dirp, de_buf, &de);
-            if (r) {
-                fprintf(stderr, "vscsi: unable to read sysfs path '%s'\n",
-                        pdev_sysfs_path);
-                break;
-            }
-            if (!de)
-                break;
-
+        while ((de = readdir(dirp))) {
             if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
                 continue;
 
@@ -814,19 +798,13 @@ static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
                         de->d_name, pdev);
                 continue;
             }
-            else {
-                // take the first parsable one. Is that correct?
-                result = 1;
-                break;
-            }
+            result = 1;
+            break;
         }
-        free(de_buf);
-
-        if (dirp)
-            closedir(dirp);
+        closedir(dirp);
 
         if (!result) {
-            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device\n", "pdev", pdev, buf);
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device in sysfs\n", "pdev", pdev, buf);
             exit(1);
         }
 #else
