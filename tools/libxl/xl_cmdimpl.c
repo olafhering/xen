@@ -6282,11 +6282,66 @@ int main_vscsilist(int argc, char **argv)
     
 int main_vscsidetach(int argc, char **argv)
 {
-    if (argv) {
-        fprintf(stderr, "scsi-detach is not yet implemented.\n");
+    int opt;
+    libxl_vscsi_dev *vscsi_dev;
+    libxl_device_vscsi *vscsi_host;
+    libxl_device_vscsi *vscsi_hosts;
+    libxl_vscsiinfo vscsiinfo;
+    char *tmp_buf, *dom = argv[1], *vdev = argv[2];
+    uint32_t domid;
+    int num_hosts, h, d, found = 0;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-detach", 1) {
+        /* No options */
+    }
+    if (argc < 3) {
+        help("scsi-detach");
         return 1;
     }
-    return 1;
+    if (libxl_domain_qualifier_to_domid(ctx, dom, &domid) < 0) {
+        fprintf(stderr, "%s is an invalid domain identifier\n", dom);
+        return 1;
+    }
+    vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
+    if (!vscsi_hosts)
+        return 0;
+
+    if (asprintf(&tmp_buf, "0:0:0:0,%s", vdev) < 0) {
+        perror("asprintf");
+        return 1;
+    }
+    vscsi_dev = calloc(1, sizeof(*vscsi_dev));
+    vscsi_host = calloc(1, sizeof(*vscsi_host));
+    if (!(vscsi_dev && vscsi_host)) {
+        fprintf(stderr, "%s ENOMEM\n", __func__);
+        goto done;
+    }
+    parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
+
+    for (h = 0; h < num_hosts; ++h) {
+       for (d = 0; !found && d < vscsi_hosts[h].num_vscsi_devs; d++) {
+           if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
+#define CMP(val) (vscsiinfo.val == vscsi_dev->val)
+               if (vscsiinfo.v_hst == vscsi_host->v_hst && CMP(v_chn) && CMP(v_tgt) && CMP(v_lun)) {
+                   if (vscsi_hosts[h].num_vscsi_devs > 1)
+                       fprintf(stderr, "%s(%u) TROUBLE AHEAD: vhost %u has %u devices! All will disappear now.\n", __func__, __LINE__, vscsiinfo.v_hst, vscsi_hosts[h].num_vscsi_devs);
+                   found = 1;
+                   libxl_device_vscsi_remove(ctx, domid, &vscsi_hosts[h], 0);
+               }
+               libxl_vscsiinfo_dispose(&vscsiinfo);
+#undef CMP
+           }
+       }
+       libxl_device_vscsi_dispose(&vscsi_hosts[h]);
+    }
+    if (!found)
+        fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, vdev, dom);
+done:
+    free(vscsi_hosts);
+    free(vscsi_host);
+    free(vscsi_dev);
+    free(tmp_buf);
+    return !found;
 }
 
 int main_vtpmattach(int argc, char **argv)
