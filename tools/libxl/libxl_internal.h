@@ -1053,6 +1053,7 @@ _hidden int libxl__device_disk_setdefault(libxl__gc *gc,
 _hidden int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
                                          uint32_t domid);
 _hidden int libxl__device_vtpm_setdefault(libxl__gc *gc, libxl_device_vtpm *vtpm);
+_hidden int libxl__device_vscsi_setdefault(libxl__gc *gc, libxl_device_vscsi *vscsi);
 _hidden int libxl__device_vfb_setdefault(libxl__gc *gc, libxl_device_vfb *vfb);
 _hidden int libxl__device_vkb_setdefault(libxl__gc *gc, libxl_device_vkb *vkb);
 _hidden int libxl__device_pci_setdefault(libxl__gc *gc, libxl_device_pci *pci);
@@ -2212,6 +2213,10 @@ _hidden void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_vtpm *vtpm,
                                    libxl__ao_device *aodev);
 
+_hidden void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
+                                   libxl_device_vscsi *vscsi,
+                                   libxl__ao_device *aodev);
+
 /* Internal function to connect a vkb device */
 _hidden int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
                                   libxl_device_vkb *vkb);
@@ -2650,6 +2655,10 @@ _hidden void libxl__add_nics(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl__multidev *multidev);
 
 _hidden void libxl__add_vtpms(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+                             libxl_domain_config *d_config,
+                             libxl__multidev *multidev);
+
+_hidden void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
                              libxl__multidev *multidev);
 

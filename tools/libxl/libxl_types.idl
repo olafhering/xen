@@ -455,6 +455,25 @@ libxl_device_vtpm = Struct("device_vtpm", [
     ("uuid",             libxl_uuid),
 ])
 
+libxl_vscsi_dev = Struct("vscsi_dev", [
+    ("vscsi_dev_id",     libxl_devid),
+    ("p_hst",            uint32),
+    ("p_chn",            uint32),
+    ("p_tgt",            uint32),
+    ("p_lun",            uint32),
+    ("v_chn",            uint32),
+    ("v_tgt",            uint32),
+    ("v_lun",            uint32),
+    ])
+
+libxl_device_vscsi = Struct("device_vscsi", [
+    ("backend_domid",    libxl_domid),
+    ("devid",            libxl_devid),
+    ("v_hst",            uint32),
+    ("vscsi_devs",       Array(libxl_vscsi_dev, "num_vscsi_devs")),
+    ("feature_host",     bool),
+    ])
+
 libxl_domain_config = Struct("domain_config", [
     ("c_info", libxl_domain_create_info),
     ("b_info", libxl_domain_build_info),
@@ -465,6 +484,7 @@ libxl_domain_config = Struct("domain_config", [
     ("vfbs", Array(libxl_device_vfb, "num_vfbs")),
     ("vkbs", Array(libxl_device_vkb, "num_vkbs")),
     ("vtpms", Array(libxl_device_vtpm, "num_vtpms")),
+    ("vscsis", Array(libxl_device_vscsi, "num_vscsis")),
 
     ("on_poweroff", libxl_action_on_shutdown),
     ("on_reboot", libxl_action_on_shutdown),
@@ -505,6 +525,28 @@ libxl_vtpminfo = Struct("vtpminfo", [
     ("evtch", integer),
     ("rref", integer),
     ("uuid", libxl_uuid),
+    ], dir=DIR_OUT)
+
+libxl_vscsiinfo = Struct("vscsiinfo", [
+    ("backend", string),
+    ("backend_id", uint32),
+    ("frontend", string),
+    ("frontend_id", uint32),
+    ("devid", libxl_devid),
+    ("p_hst", uint16),
+    ("p_chn", uint16),
+    ("p_tgt", uint16),
+    ("p_lun", uint16),
+    ("vscsi_dev_id", libxl_devid),
+    ("v_hst", uint16),
+    ("v_chn", uint16),
+    ("v_tgt", uint16),
+    ("v_lun", uint16),
+    ("feature_host", bool),
+    ("vscsi_host_state", integer),
+    ("vscsi_dev_state", integer),
+    ("evtch", integer),
+    ("rref", integer),
     ], dir=DIR_OUT)
 
 libxl_vcpuinfo = Struct("vcpuinfo", [

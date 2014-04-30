@@ -1037,6 +1037,7 @@ static void domcreate_rebuild_done(libxl__egc *egc,
     libxl__multidev_begin(ao, &dcs->multidev);
     dcs->multidev.callback = domcreate_launch_dm;
     libxl__add_disks(egc, ao, domid, d_config, &dcs->multidev);
+    libxl__add_vscsis(egc, ao, domid, d_config, &dcs->multidev);
     libxl__multidev_prepared(egc, &dcs->multidev, 0);
 
     return;
