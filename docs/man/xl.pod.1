@@ -1187,6 +1187,26 @@ List virtual trusted platform modules for a domain.
 
 =back
 
+=head2 PVSCSI DEVICES
+
+=over 4
+
+=item B<scsi-attach> I<domain-id> I<pdev> I<vdev> I<[feature-host]>
+
+Creates a new vscsi device in the domain specified by I<domain-id>.
+
+=item B<scsi-detach> I<domain-id> I<vdev>
+
+Removes the vscsi device from domain specified by I<domain-id>.
+Note that the whole virtual SCSI host with all its devices is removed.
+This is a BUG!
+
+=item B<vscsi-list> I<domain-id> I<[domain-id] ...>
+
+List vscsi devices for the domain specified by I<domain-id>.
+
+=back
+
 =head1 PCI PASS-THROUGH
 
 =over 4
