@@ -2056,6 +2056,9 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
             if (libxl__xs_directory(gc, XBT_NULL,
                    GCSPRINTF("%s/vscsi-devs/dev-%u", backend_path, v->vscsi_dev_id),
                             &nb) && nb) {
+                /* trigger device removal by forwarding state to XenbusStateClosing */
+                if (v->remove)
+                    flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "5");
                 continue;
             }
         }
@@ -2088,6 +2091,39 @@ retry_transaction:
         if(!xs_transaction_end(ctx->xsh, t, 0)) {
             if (errno == EAGAIN) {
                 goto retry_transaction;
+            }
+            else {
+                LOGE(ERROR, "xs transaction failed");
+                return;
+            }
+        }
+        libxl__wait_for_backend(gc, backend_path, "4");
+
+retry_transaction2:
+        t = xs_transaction_start(ctx->xsh);
+        for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+            libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
+            if (v->remove) {
+                char *tmppath, *tmpval;
+                tmppath = GCSPRINTF("%s/vscsi-devs/dev-%u/state", backend_path, v->vscsi_dev_id);
+                tmpval = libxl__xs_read(gc, t, tmppath);
+                if (tmpval && strcmp(tmpval, "6") == 0) {
+                    tmppath = GCSPRINTF("%s/vscsi-devs/dev-%u/state", backend_path, v->vscsi_dev_id);
+                    xs_rm(ctx->xsh, t, tmppath);
+                    tmppath = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", backend_path, v->vscsi_dev_id);
+                    xs_rm(ctx->xsh, t, tmppath);
+                    tmppath = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", backend_path, v->vscsi_dev_id);
+                    xs_rm(ctx->xsh, t, tmppath);
+                    tmppath = GCSPRINTF("%s/vscsi-devs/dev-%u", backend_path, v->vscsi_dev_id);
+                    xs_rm(ctx->xsh, t, tmppath);
+                } else {
+                    LOGE(ERROR, "%s: %s has %s, expected 6", __func__, tmppath, tmpval);
+                }
+            }
+        }
+        if(!xs_transaction_end(ctx->xsh, t, 0)) {
+            if (errno == EAGAIN) {
+                goto retry_transaction2;
             }
             else {
                 LOGE(ERROR, "xs transaction failed");

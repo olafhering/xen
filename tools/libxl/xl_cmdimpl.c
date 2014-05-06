@@ -6181,6 +6181,10 @@ int main_vscsiattach(int argc, char **argv)
         /* No options */
     }
 
+    if (argc < 4) {
+        help("scsi-attach");
+        return 1;
+    }
     if (libxl_domain_qualifier_to_domid(ctx, argv[optind], &domid) < 0) {
         fprintf(stderr, "%s is an invalid domain identifier\n", argv[optind]);
         return 1;
@@ -6203,11 +6207,12 @@ int main_vscsiattach(int argc, char **argv)
     }
     vscsi_dev = calloc(1, sizeof(*vscsi_dev));
     vscsi_host = calloc(1, sizeof(*vscsi_host));
-    if (vscsi_dev == NULL || vscsi_host == NULL) {
-        fprintf(stderr, "Unable to allocate memory for vscsi structures");
-        return -ENOMEM;
+    if (!(vscsi_dev && vscsi_host)) {
+        fprintf(stderr, "%s ENOMEM\n", __func__);
+        free(tmp_buf);
+        free(feat_buf);
+	return 1;
     }
-    libxl_device_vscsi_init(vscsi_host);
     parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
 
     free(tmp_buf);
@@ -6298,6 +6303,10 @@ int main_vscsilist(int argc, char **argv)
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-list", 1) {
         /* No options */
     }
+    if (argc < 2) {
+        help("scsi-list");
+        return 1;
+    }
     /*      Idx  BE  state host p_hst v_hst state */
     printf("%-3s %-3s %-5s %-5s %-10s %-10s %-5s\n",
            "Idx", "BE", "state", "host", "phy-hctl", "vir-hctl", "devstate");
@@ -6340,10 +6349,9 @@ int main_vscsilist(int argc, char **argv)
 int main_vscsidetach(int argc, char **argv)
 {
     int opt;
-    libxl_vscsi_dev *vscsi_dev;
-    libxl_device_vscsi *vscsi_host;
+    libxl_vscsi_dev *vscsi_dev, *vd;
+    libxl_device_vscsi *vscsi_host, *vh;
     libxl_device_vscsi *vscsi_hosts;
-    libxl_vscsiinfo vscsiinfo;
     char *tmp_buf, *dom = argv[1], *vdev = argv[2];
     uint32_t domid;
     int num_hosts, h, d, found = 0;
@@ -6376,20 +6384,25 @@ int main_vscsidetach(int argc, char **argv)
     parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
 
     for (h = 0; h < num_hosts; ++h) {
-       for (d = 0; !found && d < vscsi_hosts[h].num_vscsi_devs; d++) {
-           if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
-#define CMP(val) (vscsiinfo.val == vscsi_dev->val)
-               if (vscsiinfo.v_hst == vscsi_host->v_hst && CMP(v_chn) && CMP(v_tgt) && CMP(v_lun)) {
-                   if (vscsi_hosts[h].num_vscsi_devs > 1)
-                       fprintf(stderr, "%s(%u) TROUBLE AHEAD: vhost %u has %u devices! All will disappear now.\n", __func__, __LINE__, vscsiinfo.v_hst, vscsi_hosts[h].num_vscsi_devs);
-                   found = 1;
-                   libxl_device_vscsi_remove(ctx, domid, &vscsi_hosts[h], 0);
+       vh = &vscsi_hosts[h];
+       for (d = 0; !found && d < vh->num_vscsi_devs; d++) {
+#define CMP(member) (vd->member == vscsi_dev->member)
+           vd = &vh->vscsi_devs[d];
+           if (vh->v_hst == vscsi_host->v_hst && CMP(v_chn) && CMP(v_tgt) && CMP(v_lun)) {
+               if (vh->num_vscsi_devs > 1) {
+                   vd->remove = true;
+                   if (libxl_device_vscsi_add(ctx, domid, vh, 0)) {
+                       fprintf(stderr, "libxl_device_vscsi_remove failed.\n");
+                       goto done;
+                   }
+               } else {
+                   libxl_device_vscsi_remove(ctx, domid, vh, 0);
                }
-               libxl_vscsiinfo_dispose(&vscsiinfo);
-#undef CMP
+               found = 1;
            }
+#undef CMP
        }
-       libxl_device_vscsi_dispose(&vscsi_hosts[h]);
+       libxl_device_vscsi_dispose(vh);
     }
     if (!found)
         fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, vdev, dom);
