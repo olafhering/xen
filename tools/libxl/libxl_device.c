@@ -523,6 +523,7 @@ void libxl__multidev_prepared(libxl__egc *egc,
  * The following functions are defined:
  * libxl__add_disks
  * libxl__add_nics
+ * libxl__add_vscsi
  * libxl__add_vtpms
  */
 
