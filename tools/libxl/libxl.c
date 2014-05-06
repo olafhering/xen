@@ -3776,7 +3776,7 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
 
 /* vscsi */
 DEFINE_DEVICE_REMOVE(vscsi, remove, 0)
-DEFINE_DEVICE_REMOVE(vscsi, destroy, 0)
+DEFINE_DEVICE_REMOVE(vscsi, destroy, 1)
 
 #undef DEFINE_DEVICE_REMOVE
 
