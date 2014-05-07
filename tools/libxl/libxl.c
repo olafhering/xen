@@ -5924,6 +5924,20 @@ int libxl_fd_set_cloexec(libxl_ctx *ctx, int fd, int cloexec)
 int libxl_fd_set_nonblock(libxl_ctx *ctx, int fd, int nonblock)
   { return fd_set_flags(ctx,fd, F_GETFL,F_SETFL,"FL", O_NONBLOCK, nonblock); }
 
+/* Xen4.2 ABI compatilibity hack - do not this at home */
+libxl_device_vscsi_suse* libxl__global_vscsi_list_suse = NULL;
+
+libxl_device_vscsi_suse* libxl_get_vscsi_devices_suse(void)
+{
+    return libxl__global_vscsi_list_suse;
+}
+
+void libxl_set_vscsi_devices_suse(libxl_device_vscsi_suse* vscsi_host)
+{
+    libxl__global_vscsi_list_suse = vscsi_host;
+}
+/* EOF Xen4.2 ABI compat hack */
+
 /*
  * Local variables:
  * mode: C

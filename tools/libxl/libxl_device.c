@@ -549,21 +549,21 @@ DEFINE_DEVICES_ADD(vtpm)
 #undef DEFINE_DEVICES_ADD
 
 // to preserve Xen4.2 API custom define libxl__add_vscsi
-void libxl_add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                       libxl_domain_config *d_config,
                       libxl__multidev *multidev)
 {
     AO_GC;
     int i;
 
-    libxl_device_vscsi *vhost;
+    libxl_device_vscsi *vhosts;
     int num_vhosts;
-    /* TODO: get from some shared storage vscsi configuration and call
-     * libxl__device_vscsi_add()
-    */
+    libxl_device_vscsi_suse* vscsi_hosts_suse = libxl_get_vscsi_devices_suse();
+    num_vhosts = vscsi_hosts_suse->num_vscsi_devices;
+    vhosts = vscsi_hosts_suse->vscsi_devices;
     for (i = 0; i < num_vhosts; i++) {
         libxl__ao_device *aodev = libxl__multidev_prepare(multidev);
-        libxl__device_vscsi_add(egc, domid, vhost, aodev);
+        libxl__device_vscsi_add(egc, domid, vhosts+i, aodev);
     }
 }
 

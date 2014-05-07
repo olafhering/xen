@@ -1384,9 +1384,8 @@ static void parse_config_data(const char *config_source,
             parse_vscsi_config(&vscsi_host, &vscsi_dev, tmp_buf);
             free(tmp_buf);
 
-            // add custom vscsi handler
             if (num_vscsi_hosts) {
-                for (num_vscsis = 0; num_vscsis < num_vscsis_hosts; num_vscsis++) {
+                for (num_vscsis = 0; num_vscsis < num_vscsi_hosts; num_vscsis++) {
                     if (vscsi_hosts[num_vscsis].v_hst == vscsi_host.v_hst) {
                         host = vscsi_hosts + num_vscsis;
                         host->vscsi_devs = realloc(host->vscsi_devs, sizeof(libxl_vscsi_dev) * (host->num_vscsi_devs + 1));
@@ -1410,9 +1409,10 @@ static void parse_config_data(const char *config_source,
             }
             cnt_vscsi_devs++;
         }
-        /*
-         * store it to some shared space
-         */
+        libxl_device_vscsi_suse* vscsis_suse = calloc(1, sizeof(libxl_device_vscsi_suse));
+        vscsis_suse->vscsi_devices = vscsi_hosts;
+        vscsis_suse->num_vscsi_devices = num_vscsi_hosts;
+        libxl_set_vscsi_devices_suse(vscsis_suse);
     }
 
     if (!xlu_cfg_get_list(config, "vtpm", &vtpms, 0, 0)) {

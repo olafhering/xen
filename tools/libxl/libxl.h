@@ -1171,6 +1171,16 @@ int libxl_fd_set_nonblock(libxl_ctx *ctx, int fd, int nonblock);
 
 #include <libxl_event.h>
 
+/* Xen4.2 ABI compatilibity hack - do not this at home */
+typedef struct {
+    libxl_device_vscsi* vscsi_devices;
+    int num_vscsi_devices;
+} libxl_device_vscsi_suse;
+
+libxl_device_vscsi_suse* libxl_get_vscsi_devices_suse(void);
+void libxl_set_vscsi_devices_suse(libxl_device_vscsi_suse* vscsi_host);
+/* EOF Xen4.2 ABI compat hack */
+
 #endif /* LIBXL_H */
 
 /*
