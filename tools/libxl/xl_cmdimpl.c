@@ -1357,8 +1357,14 @@ static void parse_config_data(const char *config_source,
 
     if (!xlu_cfg_get_list(config, "vscsi", &vscsis, 0, 0)) {
         int cnt_vscsi_devs = 0;
-        d_config->num_vscsis = 0;
-        d_config->vscsis = NULL;
+
+        /*
+         * to preserve Xen4.2 ABI, do not store vscsis to d_config
+         * we are using extra array for that
+         */
+        libxl_device_vscsi* vscsi_hosts = calloc(1, sizeof(libxl_device_vscsi));
+        int num_vscsi_hosts = 0;
+
         while ((buf = xlu_cfg_get_listitem (vscsis, cnt_vscsi_devs)) != NULL) {
             libxl_vscsi_dev vscsi_dev = { };
             libxl_device_vscsi vscsi_host = { };
@@ -1378,10 +1384,11 @@ static void parse_config_data(const char *config_source,
             parse_vscsi_config(&vscsi_host, &vscsi_dev, tmp_buf);
             free(tmp_buf);
 
-            if (d_config->vscsis) {
-                for (num_vscsis = 0; num_vscsis < d_config->num_vscsis; num_vscsis++) {
-                    if (d_config->vscsis[num_vscsis].v_hst == vscsi_host.v_hst) {
-                        host = d_config->vscsis + num_vscsis;
+            // add custom vscsi handler
+            if (num_vscsi_hosts) {
+                for (num_vscsis = 0; num_vscsis < num_vscsis_hosts; num_vscsis++) {
+                    if (vscsi_hosts[num_vscsis].v_hst == vscsi_host.v_hst) {
+                        host = vscsi_hosts + num_vscsis;
                         host->vscsi_devs = realloc(host->vscsi_devs, sizeof(libxl_vscsi_dev) * (host->num_vscsi_devs + 1));
                         vscsi_dev.vscsi_dev_id = host->num_vscsi_devs;
                         memcpy(host->vscsi_devs + host->num_vscsi_devs, &vscsi_dev, sizeof(vscsi_dev));
@@ -1391,18 +1398,21 @@ static void parse_config_data(const char *config_source,
                     }
                 }
             }
-            if (!host_found || !d_config->vscsis) {
-                d_config->vscsis = realloc(d_config->vscsis, sizeof(libxl_device_vscsi) * (d_config->num_vscsis + 1));
+            if (!host_found || !num_vscsi_hosts) {
+                vscsi_hosts = realloc(vscsi_hosts, sizeof(libxl_device_vscsi) * (num_vscsi_hosts + 1));
                 vscsi_host.vscsi_devs = malloc(sizeof(libxl_vscsi_dev));
                 vscsi_dev.vscsi_dev_id = 0;
                 memcpy(vscsi_host.vscsi_devs, &vscsi_dev, sizeof(vscsi_dev));
                 vscsi_host.num_vscsi_devs++;
-                vscsi_host.devid = d_config->num_vscsis;
-                memcpy(d_config->vscsis + d_config->num_vscsis, &vscsi_host, sizeof(vscsi_host));
-                d_config->num_vscsis++;
+                vscsi_host.devid = num_vscsi_hosts;
+                memcpy(vscsi_hosts + num_vscsi_hosts, &vscsi_host, sizeof(vscsi_host));
+                num_vscsi_hosts++;
             }
             cnt_vscsi_devs++;
         }
+        /*
+         * store it to some shared space
+         */
     }
 
     if (!xlu_cfg_get_list(config, "vtpm", &vtpms, 0, 0)) {
