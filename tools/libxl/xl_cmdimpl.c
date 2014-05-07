@@ -1357,8 +1357,14 @@ static void parse_config_data(const char *config_source,
 
     if (!xlu_cfg_get_list(config, "vscsi", &vscsis, 0, 0)) {
         int cnt_vscsi_devs = 0;
-        d_config->num_vscsis = 0;
-        d_config->vscsis = NULL;
+
+        /*
+         * to preserve Xen4.2 ABI, do not store vscsis to d_config
+         * we are using extra array for that
+         */
+        libxl_device_vscsi* vscsi_hosts = calloc(1, sizeof(libxl_device_vscsi));
+        int num_vscsi_hosts = 0;
+
         while ((buf = xlu_cfg_get_listitem (vscsis, cnt_vscsi_devs)) != NULL) {
             libxl_vscsi_dev vscsi_dev = { };
             libxl_device_vscsi vscsi_host = { };
@@ -1378,10 +1384,10 @@ static void parse_config_data(const char *config_source,
             parse_vscsi_config(&vscsi_host, &vscsi_dev, tmp_buf);
             free(tmp_buf);
 
-            if (d_config->vscsis) {
-                for (num_vscsis = 0; num_vscsis < d_config->num_vscsis; num_vscsis++) {
-                    if (d_config->vscsis[num_vscsis].v_hst == vscsi_host.v_hst) {
-                        host = d_config->vscsis + num_vscsis;
+            if (num_vscsi_hosts) {
+                for (num_vscsis = 0; num_vscsis < num_vscsi_hosts; num_vscsis++) {
+                    if (vscsi_hosts[num_vscsis].v_hst == vscsi_host.v_hst) {
+                        host = vscsi_hosts + num_vscsis;
                         host->vscsi_devs = realloc(host->vscsi_devs, sizeof(libxl_vscsi_dev) * (host->num_vscsi_devs + 1));
                         vscsi_dev.vscsi_dev_id = host->num_vscsi_devs;
                         memcpy(host->vscsi_devs + host->num_vscsi_devs, &vscsi_dev, sizeof(vscsi_dev));
@@ -1391,18 +1397,22 @@ static void parse_config_data(const char *config_source,
                     }
                 }
             }
-            if (!host_found || !d_config->vscsis) {
-                d_config->vscsis = realloc(d_config->vscsis, sizeof(libxl_device_vscsi) * (d_config->num_vscsis + 1));
+            if (!host_found || !num_vscsi_hosts) {
+                vscsi_hosts = realloc(vscsi_hosts, sizeof(libxl_device_vscsi) * (num_vscsi_hosts + 1));
                 vscsi_host.vscsi_devs = malloc(sizeof(libxl_vscsi_dev));
                 vscsi_dev.vscsi_dev_id = 0;
                 memcpy(vscsi_host.vscsi_devs, &vscsi_dev, sizeof(vscsi_dev));
                 vscsi_host.num_vscsi_devs++;
-                vscsi_host.devid = d_config->num_vscsis;
-                memcpy(d_config->vscsis + d_config->num_vscsis, &vscsi_host, sizeof(vscsi_host));
-                d_config->num_vscsis++;
+                vscsi_host.devid = num_vscsi_hosts;
+                memcpy(vscsi_hosts + num_vscsi_hosts, &vscsi_host, sizeof(vscsi_host));
+                num_vscsi_hosts++;
             }
             cnt_vscsi_devs++;
         }
+        libxl_device_vscsi_suse* vscsis_suse = calloc(1, sizeof(libxl_device_vscsi_suse));
+        vscsis_suse->vscsi_devices = vscsi_hosts;
+        vscsis_suse->num_vscsi_devices = num_vscsi_hosts;
+        libxl_set_vscsi_devices_suse(vscsis_suse);
     }
 
     if (!xlu_cfg_get_list(config, "vtpm", &vtpms, 0, 0)) {
@@ -6205,13 +6215,16 @@ int main_vscsiattach(int argc, char **argv)
         perror("asprintf");
         return 1;
     }
+
+    int res = 0;
     vscsi_dev = calloc(1, sizeof(*vscsi_dev));
     vscsi_host = calloc(1, sizeof(*vscsi_host));
     if (!(vscsi_dev && vscsi_host)) {
         fprintf(stderr, "%s ENOMEM\n", __func__);
         free(tmp_buf);
         free(feat_buf);
-	return 1;
+        res = 1;
+        goto vscsi_attach_out;
     }
     parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
 
@@ -6224,22 +6237,23 @@ int main_vscsiattach(int argc, char **argv)
     int h = 0;
     libxl_device_vscsi *vscsi_hosts_existing;
     if ((vscsi_hosts_existing = libxl_device_vscsi_list(ctx, domid, &num_hosts))) {
-        // if exists and vscsi_host.v_hst == existing_host.v_hst then
+        // if exists and vscsi_host->v_hst == existing_host.v_hst then
         for (h = 0; h < num_hosts; ++h) {
             if (vscsi_host->v_hst == vscsi_hosts_existing[h].v_hst) {
                 found_host = h;
                 break;
             }
+            libxl_device_vscsi_dispose(vscsi_hosts_existing+h);
         }
     }
     if (found_host == -1) {
         if (vscsi_hosts_existing)
-            libxl_device_vscsi_dispose(vscsi_hosts_existing);
+            free(vscsi_hosts_existing);
         vscsi_host->vscsi_devs = calloc(1, sizeof(libxl_vscsi_dev));
         if (vscsi_host->vscsi_devs == NULL) {
-            fprintf(stderr, "Unable to allocate memory for vscsi_host->vscsi_devs");
-            libxl_device_vscsi_dispose(vscsi_host);
-            return -ENOMEM;
+            fprintf(stderr, "%s ENOMEM\n", __func__);
+            res = 1;
+            goto vscsi_attach_out;
         }
         vscsi_dev->vscsi_dev_id = 0;
         memcpy(vscsi_host->vscsi_devs, vscsi_dev, sizeof(*vscsi_dev));
@@ -6249,6 +6263,7 @@ int main_vscsiattach(int argc, char **argv)
     else {
         /* look if the vdev address is not taken */
         libxl_device_vscsi_dispose(vscsi_host);
+        free(vscsi_host);
         vscsi_host = vscsi_hosts_existing + found_host;
         int d;
         for (d = 0; d < vscsi_host->num_vscsi_devs; ++d) {
@@ -6258,17 +6273,17 @@ int main_vscsiattach(int argc, char **argv)
                 fprintf(stderr, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
                         vscsi_host->v_hst, vscsi_dev->v_chn,
                         vscsi_dev->v_tgt, vscsi_dev->v_lun);
-                libxl_device_vscsi_dispose(vscsi_hosts_existing);
-                return 1;
+                res = 1;
+                goto vscsi_attach_out;
             }
         }
         vscsi_host->vscsi_devs = realloc(vscsi_host->vscsi_devs,
                                          sizeof(libxl_vscsi_dev) *
                                          (vscsi_host->num_vscsi_devs + 1));
         if (vscsi_host->vscsi_devs == NULL) {
-            fprintf(stderr, "Unable to reallocate memory for vscsi_host->vscsi_devs");
-            libxl_device_vscsi_dispose(vscsi_hosts_existing);
-            return -ENOMEM;
+            fprintf(stderr, "%s ENOMEM\n", __func__);
+            res = 1;
+            goto vscsi_attach_out;
         }
         vscsi_dev->vscsi_dev_id = vscsi_host->num_vscsi_devs;
         memcpy(vscsi_host->vscsi_devs + vscsi_host->num_vscsi_devs,
@@ -6280,17 +6295,18 @@ int main_vscsiattach(int argc, char **argv)
         char* json = libxl_device_vscsi_to_json(ctx, vscsi_host);
         printf("vscsi: %s\n", json);
         free(json);
-        libxl_device_vscsi_dispose(vscsi_host);
         if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
-            return 0;
+    }
+    else if (libxl_device_vscsi_add(ctx, domid, vscsi_host, 0)) {
+        fprintf(stderr, "libxl_device_vscsi_add failed.\n");
+        res = 1;
     }
 
-    if (libxl_device_vscsi_add(ctx, domid, vscsi_host, 0)) {
-        fprintf(stderr, "libxl_device_vscsi_add failed.\n");
-        return 1;
-    }
+vscsi_attach_out:
     libxl_device_vscsi_dispose(vscsi_host);
-    return 0;
+    free(vscsi_host);
+    free(vscsi_dev);
+    return res;
 }
 
 int main_vscsilist(int argc, char **argv)
