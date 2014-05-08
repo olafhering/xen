@@ -6182,8 +6182,10 @@ int main_blockdetach(int argc, char **argv)
 int main_vscsiattach(int argc, char **argv)
 {
     int opt;
+    int num_hosts, i = 0, found_host = -1, res = 0;
     libxl_vscsi_dev *vscsi_dev;
-    libxl_device_vscsi *vscsi_host;
+    libxl_device_vscsi *vscsi_host, *vscsi_tmphst;
+    libxl_device_vscsi *vscsi_hosts_existing = NULL;
     uint32_t domid;
     char *tmp_buf, *feat_buf = NULL;
 
@@ -6216,96 +6218,78 @@ int main_vscsiattach(int argc, char **argv)
         return 1;
     }
 
-    int res = 0;
     vscsi_dev = calloc(1, sizeof(*vscsi_dev));
     vscsi_host = calloc(1, sizeof(*vscsi_host));
     if (!(vscsi_dev && vscsi_host)) {
         fprintf(stderr, "%s ENOMEM\n", __func__);
-        free(tmp_buf);
-        free(feat_buf);
         res = 1;
         goto vscsi_attach_out;
     }
     parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
 
-    free(tmp_buf);
-    free(feat_buf);
-
     /* look for existing vscsi_host for given domain */
-    int found_host = -1;
-    int num_hosts;
-    int h = 0;
-    libxl_device_vscsi *vscsi_hosts_existing;
     if ((vscsi_hosts_existing = libxl_device_vscsi_list(ctx, domid, &num_hosts))) {
-        // if exists and vscsi_host->v_hst == existing_host.v_hst then
-        for (h = 0; h < num_hosts; ++h) {
-            if (vscsi_host->v_hst == vscsi_hosts_existing[h].v_hst) {
-                found_host = h;
+        for (i = 0; i < num_hosts; ++i) {
+            if (vscsi_host->v_hst == vscsi_hosts_existing[i].v_hst) {
+                found_host = i;
                 break;
             }
-            libxl_device_vscsi_dispose(vscsi_hosts_existing+h);
         }
     }
     if (found_host == -1) {
-        if (vscsi_hosts_existing)
-            free(vscsi_hosts_existing);
-        vscsi_host->vscsi_devs = calloc(1, sizeof(libxl_vscsi_dev));
-        if (vscsi_host->vscsi_devs == NULL) {
-            fprintf(stderr, "%s ENOMEM\n", __func__);
-            res = 1;
-            goto vscsi_attach_out;
-        }
-        vscsi_dev->vscsi_dev_id = 0;
-        memcpy(vscsi_host->vscsi_devs, vscsi_dev, sizeof(*vscsi_dev));
+        vscsi_host->devid = i;
+        vscsi_host->vscsi_devs = vscsi_dev;
         vscsi_host->num_vscsi_devs = 1;
-        vscsi_host->devid = h;
-    }
-    else {
+        vscsi_tmphst = vscsi_host;
+    } else {
         /* look if the vdev address is not taken */
-        libxl_device_vscsi_dispose(vscsi_host);
-        free(vscsi_host);
-        vscsi_host = vscsi_hosts_existing + found_host;
-        int d;
-        for (d = 0; d < vscsi_host->num_vscsi_devs; ++d) {
-            if (vscsi_host->vscsi_devs[d].v_chn == vscsi_dev->v_chn &&
-                vscsi_host->vscsi_devs[d].v_tgt == vscsi_dev->v_tgt &&
-                vscsi_host->vscsi_devs[d].v_lun == vscsi_dev->v_lun) {
+        vscsi_tmphst = vscsi_hosts_existing + found_host;
+        for (i = 0; i < vscsi_tmphst->num_vscsi_devs; ++i) {
+            if (vscsi_tmphst->vscsi_devs[i].v_chn == vscsi_dev->v_chn &&
+                vscsi_tmphst->vscsi_devs[i].v_tgt == vscsi_dev->v_tgt &&
+                vscsi_tmphst->vscsi_devs[i].v_lun == vscsi_dev->v_lun) {
                 fprintf(stderr, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
-                        vscsi_host->v_hst, vscsi_dev->v_chn,
+                        vscsi_tmphst->v_hst, vscsi_dev->v_chn,
                         vscsi_dev->v_tgt, vscsi_dev->v_lun);
                 res = 1;
                 goto vscsi_attach_out;
             }
         }
-        vscsi_host->vscsi_devs = realloc(vscsi_host->vscsi_devs,
+        vscsi_tmphst->vscsi_devs = realloc(vscsi_tmphst->vscsi_devs,
                                          sizeof(libxl_vscsi_dev) *
-                                         (vscsi_host->num_vscsi_devs + 1));
-        if (vscsi_host->vscsi_devs == NULL) {
+                                         (vscsi_tmphst->num_vscsi_devs + 1));
+        if (vscsi_tmphst->vscsi_devs == NULL) {
             fprintf(stderr, "%s ENOMEM\n", __func__);
             res = 1;
             goto vscsi_attach_out;
         }
-        vscsi_dev->vscsi_dev_id = vscsi_host->num_vscsi_devs;
-        memcpy(vscsi_host->vscsi_devs + vscsi_host->num_vscsi_devs,
+        vscsi_dev->vscsi_dev_id = vscsi_tmphst->num_vscsi_devs;
+        memcpy(vscsi_tmphst->vscsi_devs + vscsi_tmphst->num_vscsi_devs,
                vscsi_dev, sizeof(*vscsi_dev));
-        vscsi_host->num_vscsi_devs++;
+        vscsi_tmphst->num_vscsi_devs++;
     }
 
     if (dryrun_only) {
-        char* json = libxl_device_vscsi_to_json(ctx, vscsi_host);
+        char* json = libxl_device_vscsi_to_json(ctx, vscsi_tmphst);
         printf("vscsi: %s\n", json);
         free(json);
         if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
     }
-    else if (libxl_device_vscsi_add(ctx, domid, vscsi_host, 0)) {
+    else if (libxl_device_vscsi_add(ctx, domid, vscsi_tmphst, 0)) {
         fprintf(stderr, "libxl_device_vscsi_add failed.\n");
         res = 1;
     }
 
 vscsi_attach_out:
-    libxl_device_vscsi_dispose(vscsi_host);
+    if (vscsi_hosts_existing) {
+        for (i = 0; i < num_hosts; ++i)
+            libxl_device_vscsi_dispose(vscsi_hosts_existing+i);
+        free(vscsi_hosts_existing);
+    }
     free(vscsi_host);
     free(vscsi_dev);
+    free(tmp_buf);
+    free(feat_buf);
     return res;
 }
 
