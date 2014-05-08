@@ -6228,8 +6228,23 @@ int main_vscsiattach(int argc, char **argv)
     parse_vscsi_config(vscsi_host, vscsi_dev, tmp_buf);
 
     /* look for existing vscsi_host for given domain */
-    if ((vscsi_hosts_existing = libxl_device_vscsi_list(ctx, domid, &num_hosts))) {
+    vscsi_hosts_existing = libxl_device_vscsi_list(ctx, domid, &num_hosts);
+    if (vscsi_hosts_existing) {
         for (i = 0; i < num_hosts; ++i) {
+            int j;
+            for (j = 0; j < vscsi_hosts_existing[i].num_vscsi_devs; j++) {
+                if (vscsi_hosts_existing[i].vscsi_devs[j].p_hst == vscsi_dev->p_hst &&
+                    vscsi_hosts_existing[i].vscsi_devs[j].p_chn == vscsi_dev->p_chn &&
+                    vscsi_hosts_existing[i].vscsi_devs[j].p_tgt == vscsi_dev->p_tgt &&
+                    vscsi_hosts_existing[i].vscsi_devs[j].p_lun == vscsi_dev->p_lun) {
+                    fprintf(stderr, "Host device '%u:%u:%u:%u' is already in use"
+                            " by guest vscsi specification '%u:%u:%u:%u'.\n",
+                            vscsi_dev->p_hst, vscsi_dev->p_chn, vscsi_dev->p_tgt, vscsi_dev->p_lun,
+                            vscsi_hosts_existing[i].v_hst, vscsi_dev->v_chn, vscsi_dev->v_tgt, vscsi_dev->v_lun);
+                    res = 1;
+                    goto vscsi_attach_out;
+                }
+            }
             if (vscsi_host->v_hst == vscsi_hosts_existing[i].v_hst) {
                 found_host = i;
                 break;
