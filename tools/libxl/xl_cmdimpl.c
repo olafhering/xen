@@ -1359,7 +1359,7 @@ static void parse_config_data(const char *config_source,
         int cnt_vscsi_devs = 0;
 
         /*
-         * to preserve Xen4.2 ABI, do not store vscsis to d_config
+         * to preserve libxl.so.4.4 ABI, do not store vscsis to d_config
          * we are using extra array for that
          */
         libxl_device_vscsi* vscsi_hosts = calloc(1, sizeof(libxl_device_vscsi));

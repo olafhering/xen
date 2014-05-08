@@ -548,7 +548,7 @@ DEFINE_DEVICES_ADD(vtpm)
 
 #undef DEFINE_DEVICES_ADD
 
-// to preserve Xen4.2 API custom define libxl__add_vscsi
+// to preserve libxl.so.4.4 ABI custom define libxl__add_vscsi
 void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                       libxl_domain_config *d_config,
                       libxl__multidev *multidev)
