@@ -1172,6 +1172,17 @@ int libxl_fd_set_nonblock(libxl_ctx *ctx, int fd, int nonblock);
 #include <libxl_event.h>
 
 /* libxl.so.4.4 ABI compatilibity hack - do not do this at home */
+
+/*
+ * LIBXL_HAVE_DEVICE_PVSCSI_SUSE
+ *
+ * If this is defined, set pvscsi devices through helpers
+ * libxl_get_vscsi_devices_suse and libxl_set_vscsi_devices_suse.
+ *
+ * If this is not defined, pvscsi is either unavailable or available through
+ * libxl_domain_config structure
+ */
+#define LIBXL_HAVE_DEVICE_PVSCSI_SUSE 1
 typedef struct {
     libxl_device_vscsi* vscsi_devices;
     int num_vscsi_devices;
