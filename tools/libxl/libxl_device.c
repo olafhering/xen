@@ -559,6 +559,8 @@ void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
     libxl_device_vscsi *vhosts;
     int num_vhosts;
     libxl_device_vscsi_suse* vscsi_hosts_suse = libxl_get_vscsi_devices_suse();
+    if (!vscsi_hosts_suse)
+        return;
     num_vhosts = vscsi_hosts_suse->num_vscsi_devices;
     vhosts = vscsi_hosts_suse->vscsi_devices;
     for (i = 0; i < num_vhosts; i++) {
