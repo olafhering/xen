@@ -546,6 +546,122 @@ static void parse_vif_rate(XLU_Config **config, const char *rate,
     }
 }
 
+static char *vscsi_trim_string(char *s)
+{
+    unsigned int len;
+
+    while (isspace(*s))
+        s++;
+    len = strlen(s);
+    while (len-- > 1 && isspace(s[len]))
+        s[len] = '\0';
+    return s;
+}
+
+static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
+                              libxl_vscsi_dev *vscsi_dev,
+                              char *buf)
+{
+    char *pdev, *vdev, *fhost;
+    unsigned int hst, chn, tgt, lun;
+
+    libxl_device_vscsi_init(vscsi_host);
+    pdev = strtok(buf, ",");
+    vdev = strtok(NULL, ",");
+    fhost = strtok(NULL, ",");
+    if (!(pdev && vdev)) {
+        fprintf(stderr, "invalid vscsi= devspec: '%s'\n", buf);
+        exit(1);
+    }
+
+    pdev = vscsi_trim_string(pdev);
+    vdev = vscsi_trim_string(vdev);
+
+    if (strncmp(pdev, "/dev/", 5) == 0) {
+#ifdef __linux__
+        struct stat pdev_stat;
+        char pdev_sysfs_path[PATH_MAX];
+        const char *type;
+        int result = 0;
+        DIR *dirp;
+        struct dirent *de;
+
+        /* stat pdev to get device's sysfs entry */
+        if (stat (pdev, &pdev_stat) == -1) {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', device not found or cannot be read\n", "pdev", pdev, buf);
+            exit(1);
+        }
+        if (S_ISBLK (pdev_stat.st_mode)) {
+            type = "block";
+        } else if (S_ISCHR (pdev_stat.st_mode)) {
+            type = "char";
+        } else {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', not a valid block or char device\n", "pdev", pdev, buf);
+            exit(1);
+        }
+
+        /* get pdev scsi address - subdir of scsi_device sysfs entry */
+        snprintf(pdev_sysfs_path, sizeof(pdev_sysfs_path), "/sys/dev/%s/%u:%u/device/scsi_device",
+                type,
+                major(pdev_stat.st_rdev),
+                minor(pdev_stat.st_rdev));
+
+        dirp = opendir(pdev_sysfs_path);
+        if (!dirp) {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device\n", "pdev", pdev, buf);
+            exit(1);
+        }
+
+        while ((de = readdir(dirp))) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+                continue;
+
+            if (sscanf(de->d_name, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
+                fprintf(stderr, "vscsi: ignoring unknown devspec '%s' for device '%s'\n",
+                        de->d_name, pdev);
+                continue;
+            }
+            result = 1;
+            break;
+        }
+        closedir(dirp);
+
+        if (!result) {
+            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device in sysfs\n", "pdev", pdev, buf);
+            exit(1);
+        }
+#else
+        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "pdev", pdev, buf);
+        exit(1);
+#endif
+    } else if (sscanf(pdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
+        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "pdev", pdev, buf);
+        exit(1);
+    }
+    vscsi_dev->p_hst = hst;
+    vscsi_dev->p_chn = chn;
+    vscsi_dev->p_tgt = tgt;
+    vscsi_dev->p_lun = lun;
+
+    if (sscanf(vdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
+        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "vdev", vdev, buf);
+        exit(1);
+    }
+    vscsi_host->v_hst = hst;
+    vscsi_dev->v_chn = chn;
+    vscsi_dev->v_tgt = tgt;
+    vscsi_dev->v_lun = lun;
+
+    if (fhost) {
+        fhost = vscsi_trim_string(fhost);
+        vscsi_host->feature_host = strcmp(fhost, "feature-host") == 0;
+        if (!vscsi_host->feature_host) {
+            fprintf(stderr, "vscsi: invalid option '%s' in vscsi= devspec: '%s', expecting %s\n", fhost, buf, "feature-host");
+            exit(1);
+        }
+    }
+}
+
 static void split_string_into_string_list(const char *str,
                                           const char *delim,
                                           libxl_string_list *psl)
@@ -721,122 +837,6 @@ static void parse_top_level_vnc_options(XLU_Config *config,
     if (!xlu_cfg_get_long (config, "vncdisplay", &l, 0))
         vnc->display = l;
     xlu_cfg_get_defbool(config, "vncunused", &vnc->findunused, 0);
-}
-
-static char *vscsi_trim_string(char *s)
-{
-    unsigned int len;
-
-    while (isspace(*s))
-        s++;
-    len = strlen(s);
-    while (len-- > 1 && isspace(s[len]))
-        s[len] = '\0';
-    return s;
-}
-
-static void parse_vscsi_config(libxl_device_vscsi *vscsi_host,
-                              libxl_vscsi_dev *vscsi_dev,
-                              char *buf)
-{
-    char *pdev, *vdev, *fhost;
-    unsigned int hst, chn, tgt, lun;
-
-    libxl_device_vscsi_init(vscsi_host);
-    pdev = strtok(buf, ",");
-    vdev = strtok(NULL, ",");
-    fhost = strtok(NULL, ",");
-    if (!(pdev && vdev)) {
-        fprintf(stderr, "invalid vscsi= devspec: '%s'\n", buf);
-        exit(1);
-    }
-
-    pdev = vscsi_trim_string(pdev);
-    vdev = vscsi_trim_string(vdev);
-
-    if (strncmp(pdev, "/dev/", 5) == 0) {
-#ifdef __linux__
-        struct stat pdev_stat;
-        char pdev_sysfs_path[PATH_MAX];
-        const char *type;
-        int result = 0;
-        DIR *dirp;
-        struct dirent *de;
-
-        /* stat pdev to get device's sysfs entry */
-        if (stat (pdev, &pdev_stat) == -1) {
-            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', device not found or cannot be read\n", "pdev", pdev, buf);
-            exit(1);
-        }
-        if (S_ISBLK (pdev_stat.st_mode)) {
-            type = "block";
-        } else if (S_ISCHR (pdev_stat.st_mode)) {
-            type = "char";
-        } else {
-            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', not a valid block or char device\n", "pdev", pdev, buf);
-            exit(1);
-        }
-
-        /* get pdev scsi address - subdir of scsi_device sysfs entry */
-        snprintf(pdev_sysfs_path, sizeof(pdev_sysfs_path), "/sys/dev/%s/%u:%u/device/scsi_device",
-                type,
-                major(pdev_stat.st_rdev),
-                minor(pdev_stat.st_rdev));
-
-        dirp = opendir(pdev_sysfs_path);
-        if (!dirp) {
-            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device\n", "pdev", pdev, buf);
-            exit(1);
-        }
-
-        while ((de = readdir(dirp))) {
-            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
-                continue;
-
-            if (sscanf(de->d_name, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
-                fprintf(stderr, "vscsi: ignoring unknown devspec '%s' for device '%s'\n",
-                        de->d_name, pdev);
-                continue;
-            }
-            result = 1;
-            break;
-        }
-        closedir(dirp);
-
-        if (!result) {
-            fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', cannot find scsi device in sysfs\n", "pdev", pdev, buf);
-            exit(1);
-        }
-#else
-        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "pdev", pdev, buf);
-        exit(1);
-#endif
-    } else if (sscanf(pdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
-        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "pdev", pdev, buf);
-        exit(1);
-    }
-    vscsi_dev->p_hst = hst;
-    vscsi_dev->p_chn = chn;
-    vscsi_dev->p_tgt = tgt;
-    vscsi_dev->p_lun = lun;
-
-    if (sscanf(vdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
-        fprintf(stderr, "vscsi: invalid %s '%s' in vscsi= devspec: '%s', expecting hst:chn:tgt:lun\n", "vdev", vdev, buf);
-        exit(1);
-    }
-    vscsi_host->v_hst = hst;
-    vscsi_dev->v_chn = chn;
-    vscsi_dev->v_tgt = tgt;
-    vscsi_dev->v_lun = lun;
-
-    if (fhost) {
-        fhost = vscsi_trim_string(fhost);
-        vscsi_host->feature_host = strcmp(fhost, "feature-host") == 0;
-        if (!vscsi_host->feature_host) {
-            fprintf(stderr, "vscsi: invalid option '%s' in vscsi= devspec: '%s', expecting %s\n", fhost, buf, "feature-host");
-            exit(1);
-        }
-    }
 }
 
 static void parse_config_data(const char *config_source,
