@@ -13,13 +13,11 @@ fi
 
 xenroot="$1"
 
-# rpmbuild doesn't like dashes in the version; break it down into
-# version and release.  Default to "0" if there isn't a release.
-v=(${2/-/ })
-version=${v[0]}
-release=${v[1]}
-
-[[ -n "$release" ]] || release="0"
+# rpmbuild doesn't support dashes in the version;
+version=${2//-/_}
+# Use an ever increasing release number for this devel pkg.
+# This makes sure rpm -Fvh xen$PKG_SUFFIX.rpm can be updated wihtout --force.
+release="`date +%Y%m%d%H%M%S`"
 
 cd $xenroot
 
