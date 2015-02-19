@@ -1,21 +1,21 @@
 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 PVSCSI
 
-Overview
+== Overview ==
 
 PVSCSI allows to assing a "physical" SCSI device from dom0 to a domU. The device
 is not limited to be a native SCSI device. Everything visible as SCSI device in
 dom0 can be used. Currently PVSCSI is only available in Linux dom0 and domU.
 
 
-History
+== History ==
 
 Support for PVSCSI was added to the classic xenlinux kernel and to xend in
 xen-3.3 in 2008. Support for PVSCSI was added to the upstream pvops kernel 3.18
 in 2014.
 
 
-Config Format
+== Config Format ==
 
 The domU.cfg syntax is "vscsi=[ 'pdev,vdev[,option]' ]". pdev is the dom0 device
 in either /dev/$device or pHOST:CHANNEL:TARGET:LUN notation.  vdev is the domU
@@ -24,7 +24,7 @@ Currently only the value "feature-host" is recognized. SCSI command emulation on
 backend driver is bypassed when "feature-host" is specified.
 
 
-Xenstore Format
+== Xenstore Format ==
 
 The backend driver uses a single_host:many_devices notation to manage domU
 devices. Everything is stored in /local/domain/0/backend/vscsi/. The xenstore
@@ -52,18 +52,57 @@ The frontend driver maintains its state in /local/domain/<domid>/device/vscsi/.
     <vhost>/vscsi-devs/dev-0/state = "4"
     <vhost>/vscsi-devs/dev-1/state = "4"
 
+In addition to the entries for backend and frontend these flags are stored for
+the toolstack:
 
-Backend - Frontend Protocol
-
-
-Interface in xl
-
-
-Interface in libxl
+    # FIXME: is this required? Would help scsi-list.
+    <vhost>/vscsi-devs/dev-1/c-dev = "/dev/$device" 
 
 
-Interface in libvirt
+== Backend - Frontend Protocol ==
 
+To create a vhost along with a device:
+    <domid>/<vhost>/feature-host = "0"
+    <domid>/<vhost>/frontend = "/local/domain/<domid>/device/vscsi/0"
+    <domid>/<vhost>/frontend-id = "<domid>"
+    <domid>/<vhost>/online = "1"
+    <domid>/<vhost>/state = "1"
+    <domid>/<vhost>/vscsi-devs/dev-0/p-dev = "8:0:2:1"
+    <domid>/<vhost>/vscsi-devs/dev-0/state = "1"
+    <domid>/<vhost>/vscsi-devs/dev-0/v-dev = "0:0:0:0"
+Wait for <domid>/<vhost>/state + <domid>/<vhost>/vscsi-devs/dev-0/state become 4
+
+To add another device to a vhost:
+    <domid>/<vhost>/state = "7"
+    <domid>/<vhost>/vscsi-devs/dev-1/p-dev = "8:0:2:2"
+    <domid>/<vhost>/vscsi-devs/dev-1/state = "1"
+    <domid>/<vhost>/vscsi-devs/dev-1/v-dev = "0:0:1:0"
+Wait for <domid>/<vhost>/state + <domid>/<vhost>/vscsi-devs/dev-1/state become 4
+
+To remove a device from a vhost:
+    <domid>/<vhost>/state = "7"
+    <domid>/<vhost>/vscsi-devs/dev-1/state = "5"
+Wait for <domid>/<vhost>/state to become 4
+Wait for <domid>/<vhost>/vscsi-devs/dev-1/state become 6
+Remove <domid>/<vhost>/vscsi-devs/dev-1/{state,p-dev,v-dev,c-dev}
+Remove <domid>/<vhost>/vscsi-devs/dev-1/
+
+
+== Interface in xl ==
+
+xl scsi-attach domid <PhysDevice> <VirtDevice>
+xl scsi-detach domid <VirtDevice>
+xl scsi-list domid [domid, ...]
+
+
+== Interface in libxl ==
+
+To be defined so that both xl and libvirt pass in the same data.
+
+
+== Interface in libvirt ==
+
+Has yet to be found.
 
 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 # vim: tw=80 et ts=4
