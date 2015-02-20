@@ -55,7 +55,7 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
         if ( dabt.size != DABT_WORD ) goto bad_width;
         /* No secure world support for guests. */
         vgic_lock(v);
-        *r = ( (v->domain->max_vcpus << 5) & GICD_TYPE_CPUS )
+        *r = ( ((v->domain->max_vcpus - 1) << GICD_TYPE_CPUS_SHIFT) )
             |( ((v->domain->arch.vgic.nr_spis / 32)) & GICD_TYPE_LINES );
         vgic_unlock(v);
         return 1;
@@ -74,7 +74,7 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
 
     case GICD_IGROUPR ... GICD_IGROUPRN:
         /* We do not implement security extensions for guests, read zero */
-        goto read_as_zero;
+        goto read_as_zero_32;
 
     case GICD_ISENABLER ... GICD_ISENABLERN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
@@ -94,41 +94,15 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
+    /* Read the pending status of an IRQ via GICD is not supported */
     case GICD_ISPENDR ... GICD_ISPENDRN:
-        if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ISPENDR, DABT_WORD);
-        if ( rank == NULL) goto read_as_zero;
-        vgic_lock_rank(v, rank, flags);
-        *r = vgic_byte_read(rank->ipend, dabt.sign, gicd_reg);
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
-
     case GICD_ICPENDR ... GICD_ICPENDRN:
-        if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ICPENDR, DABT_WORD);
-        if ( rank == NULL) goto read_as_zero;
-        vgic_lock_rank(v, rank, flags);
-        *r = vgic_byte_read(rank->ipend, dabt.sign, gicd_reg);
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
+        goto read_as_zero;
 
+    /* Read the active status of an IRQ via GICD is not supported */
     case GICD_ISACTIVER ... GICD_ISACTIVERN:
-        if ( dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ISACTIVER, DABT_WORD);
-        if ( rank == NULL) goto read_as_zero;
-        vgic_lock_rank(v, rank, flags);
-        *r = rank->iactive;
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
-
     case GICD_ICACTIVER ... GICD_ICACTIVERN:
-        if ( dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ICACTIVER, DABT_WORD);
-        if ( rank == NULL) goto read_as_zero;
-        vgic_lock_rank(v, rank, flags);
-        *r = rank->iactive;
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
+        goto read_as_zero;
 
     case GICD_ITARGETSR ... GICD_ITARGETSRN:
         if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
@@ -166,7 +140,7 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
 
     case GICD_NSACR ... GICD_NSACRN:
         /* We do not implement security extensions for guests, read zero */
-        goto read_as_zero;
+        goto read_as_zero_32;
 
     case GICD_SGIR:
         if ( dabt.size != DABT_WORD ) goto bad_width;
@@ -174,23 +148,10 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
         *r = 0xdeadbeef;
         return 1;
 
+    /* Setting/Clearing the SGI pending bit via GICD is not supported */
     case GICD_CPENDSGIR ... GICD_CPENDSGIRN:
-        if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_CPENDSGIR, DABT_WORD);
-        if ( rank == NULL) goto read_as_zero;
-        vgic_lock_rank(v, rank, flags);
-        *r = vgic_byte_read(rank->pendsgi, dabt.sign, gicd_reg);
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
-
     case GICD_SPENDSGIR ... GICD_SPENDSGIRN:
-        if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_SPENDSGIR, DABT_WORD);
-        if ( rank == NULL) goto read_as_zero;
-        vgic_lock_rank(v, rank, flags);
-        *r = vgic_byte_read(rank->pendsgi, dabt.sign, gicd_reg);
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
+        goto read_as_zero;
 
     /* Implementation defined -- read as zero */
     case 0xfd0 ... 0xfe4:
@@ -226,8 +187,9 @@ bad_width:
     domain_crash_synchronous();
     return 0;
 
-read_as_zero:
+read_as_zero_32:
     if ( dabt.size != DABT_WORD ) goto bad_width;
+read_as_zero:
     *r = 0;
     return 1;
 }
@@ -283,13 +245,16 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
     case GICD_CTLR:
         if ( dabt.size != DABT_WORD ) goto bad_width;
         /* Ignore all but the enable bit */
+        vgic_lock(v);
         v->domain->arch.vgic.ctlr = (*r) & GICD_CTL_ENABLE;
+        vgic_unlock(v);
+
         return 1;
 
     /* R/O -- write ignored */
     case GICD_TYPER:
     case GICD_IIDR:
-        goto write_ignore;
+        goto write_ignore_32;
 
     /* Implementation defined -- write ignored */
     case 0x020 ... 0x03c:
@@ -297,7 +262,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
 
     case GICD_IGROUPR ... GICD_IGROUPRN:
         /* We do not implement security extensions for guests, write ignore */
-        goto write_ignore;
+        goto write_ignore_32;
 
     case GICD_ISENABLER ... GICD_ISENABLERN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
@@ -330,40 +295,36 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         return 1;
 
     case GICD_ISPENDR ... GICD_ISPENDRN:
-        if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
+        if ( dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
-               "%pv: vGICD: unhandled %s write %#"PRIregister" to ISPENDR%d\n",
-               v, dabt.size ? "word" : "byte", *r, gicd_reg - GICD_ISPENDR);
+               "%pv: vGICD: unhandled word write %#"PRIregister" to ISPENDR%d\n",
+               v, *r, gicd_reg - GICD_ISPENDR);
         return 0;
 
     case GICD_ICPENDR ... GICD_ICPENDRN:
-        if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
+        if ( dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
-               "%pv: vGICD: unhandled %s write %#"PRIregister" to ICPENDR%d\n",
-               v, dabt.size ? "word" : "byte", *r, gicd_reg - GICD_ICPENDR);
+               "%pv: vGICD: unhandled word write %#"PRIregister" to ICPENDR%d\n",
+               v, *r, gicd_reg - GICD_ICPENDR);
         return 0;
 
     case GICD_ISACTIVER ... GICD_ISACTIVERN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ISACTIVER, DABT_WORD);
-        if ( rank == NULL) goto write_ignore;
-        vgic_lock_rank(v, rank, flags);
-        rank->iactive &= ~*r;
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
+        printk(XENLOG_G_ERR
+               "%pv: vGICD: unhandled word write %#"PRIregister" to ISACTIVER%d\n",
+               v, *r, gicd_reg - GICD_ISACTIVER);
+        return 0;
 
     case GICD_ICACTIVER ... GICD_ICACTIVERN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
-        rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ICACTIVER, DABT_WORD);
-        if ( rank == NULL) goto write_ignore;
-        vgic_lock_rank(v, rank, flags);
-        rank->iactive &= ~*r;
-        vgic_unlock_rank(v, rank, flags);
-        return 1;
+        printk(XENLOG_G_ERR
+               "%pv: vGICD: unhandled word write %#"PRIregister" to ICACTIVER%d\n",
+               v, *r, gicd_reg - GICD_ICACTIVER);
+        return 0;
 
     case GICD_ITARGETSR ... GICD_ITARGETSR + 7:
         /* SGI/PPI target is read only */
-        goto write_ignore;
+        goto write_ignore_32;
 
     case GICD_ITARGETSR + 8 ... GICD_ITARGETSRN:
     {
@@ -436,10 +397,10 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         return 1;
 
     case GICD_ICFGR: /* SGIs */
-        goto write_ignore;
+        goto write_ignore_32;
     case GICD_ICFGR + 1: /* PPIs */
         /* It is implementation defined if these are writeable. We chose not */
-        goto write_ignore;
+        goto write_ignore_32;
     case GICD_ICFGR + 2 ... GICD_ICFGRN: /* SPIs */
         if ( dabt.size != DABT_WORD ) goto bad_width;
         rank = vgic_rank_offset(v, 2, gicd_reg - GICD_ICFGR, DABT_WORD);
@@ -451,7 +412,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
 
     case GICD_NSACR ... GICD_NSACRN:
         /* We do not implement security extensions for guests, write ignore */
-        goto write_ignore;
+        goto write_ignore_32;
 
     case GICD_SGIR:
         if ( dabt.size != DABT_WORD ) goto bad_width;
@@ -477,7 +438,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
 
     /* R/O -- write ignore */
     case GICD_ICPIDR2:
-        goto write_ignore;
+        goto write_ignore_32;
 
     /* Implementation defined -- write ignored */
     case 0xfec ... 0xffc:
@@ -506,8 +467,9 @@ bad_width:
     domain_crash_synchronous();
     return 0;
 
-write_ignore:
+write_ignore_32:
     if ( dabt.size != DABT_WORD ) goto bad_width;
+write_ignore:
     return 1;
 }
 
