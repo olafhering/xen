@@ -1489,10 +1489,10 @@ static void parse_config_data(const char *config_source,
     }
 
     if (!xlu_cfg_get_list(config, "vscsi", &vscsis, 0, 0)) {
-        int num_vscsi_hosts = 0;
+        int num_vscsi_items = 0;
         d_config->num_vscsis = 0;
         d_config->vscsis = NULL;
-        while ((buf = xlu_cfg_get_listitem (vscsis, num_vscsi_hosts)) != NULL) {
+        while ((buf = xlu_cfg_get_listitem (vscsis, num_vscsi_items)) != NULL) {
             libxl_vscsi_dev v_dev = { };
             libxl_device_vscsi *tmp, v_hst = { };
             char *buf2 = strdup(buf);
@@ -1549,7 +1549,7 @@ next_vscsi:
             libxl_vscsi_dev_dispose(&v_dev);
             libxl_device_vscsi_dispose(&v_hst);
             free(buf2);
-            num_vscsi_hosts++;
+            num_vscsi_items++;
         }
     }
 
