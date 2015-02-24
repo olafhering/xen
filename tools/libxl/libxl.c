@@ -1988,8 +1988,8 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         goto out;
     }
 
-    /* prealloc key+value: 4 toplevel + 3 per device */
-    i = 2 * (4 + (3 * vscsi->num_vscsi_devs));
+    /* prealloc key+value: 4 toplevel + 4 per device */
+    i = 2 * (4 + (4 * vscsi->num_vscsi_devs));
     back = flexarray_make(gc, i, 1);
     front = flexarray_make(gc, 2 * 2, 1);
 
@@ -2025,6 +2025,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
                 continue;
             }
         }
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-devname", v->vscsi_dev_id), v->p_devname);
         flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
                               GCSPRINTF("%u:%u:%u:%u", v->p_hst, v->p_chn, v->p_tgt, v->p_lun));
         flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/v-dev", v->vscsi_dev_id),
@@ -2070,6 +2071,8 @@ retry_transaction2:
                 val = libxl__xs_read(gc, t, path);
                 if (val && strcmp(val, "6") == 0) {
                     path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", backend_path, v->vscsi_dev_id);
+                    xs_rm(ctx->xsh, t, path);
+                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", backend_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);
                     path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", backend_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);

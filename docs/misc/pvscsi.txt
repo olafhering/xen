@@ -55,8 +55,7 @@ The frontend driver maintains its state in /local/domain/<domid>/device/vscsi/.
 In addition to the entries for backend and frontend these flags are stored for
 the toolstack:
 
-    # FIXME: is this required? Would help scsi-list.
-    <vhost>/vscsi-devs/dev-1/c-dev = "/dev/$device" 
+    <vhost>/vscsi-devs/dev-1/p-devname = "/dev/$device" 
 
 
 == Backend - Frontend Protocol ==
