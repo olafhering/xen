@@ -90,6 +90,7 @@ int libxl_device_vscsi_parse(char *buf, libxl_device_vscsi *new_host,
         return -1;
     }
 
+    /* Lack of *gc */
     new_dev->p_devname = strdup(pdev);
     new_dev->p_hst = hst;
     new_dev->p_chn = chn;
@@ -297,7 +298,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                                           GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev",
                                           be_path, vscsi_dev_id));
                     if (d && p && v) {
-                        v_dev->p_devname = strdup(d);
+                        v_dev->p_devname = libxl__strdup(NOGC, d);
                         r = sscanf(p, "%u:%u:%u:%u", &v_dev->p_hst,
                                    &v_dev->p_chn, &v_dev->p_tgt, &v_dev->p_lun);
                         if (r == 4)
