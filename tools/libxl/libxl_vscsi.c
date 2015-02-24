@@ -177,12 +177,8 @@ int libxl_device_vscsi_get(libxl_ctx *ctx, uint32_t domid, const char *cfg, libx
         *tmp->vscsi_devs = *new_dev;
         tmp->num_vscsi_devs = 1;
     } else {
-        /* FIXME proper alloc/free ? */
-        tmp = malloc(sizeof(*new_host));
-        if (!tmp)
-            goto out;
-        tmp = memcpy(tmp, vscsi_hosts + found_host, sizeof(*new_host));
         /* Check if the vdev address is already taken */
+        tmp = vscsi_hosts + found_host;
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
             if (tmp->vscsi_devs[i].v_chn == new_dev->v_chn &&
                 tmp->vscsi_devs[i].v_tgt == new_dev->v_tgt &&
@@ -192,12 +188,17 @@ int libxl_device_vscsi_get(libxl_ctx *ctx, uint32_t domid, const char *cfg, libx
                 goto out;
             }
         }
-        /* FIXME proper realloc ? */
-        tmp->vscsi_devs = realloc(tmp->vscsi_devs,
-                                  sizeof(libxl_vscsi_dev) * (tmp->num_vscsi_devs + 1));
-        if (tmp->vscsi_devs == NULL) {
+        /* FIXME proper alloc/free ? */
+        tmp = malloc(sizeof(*new_host));
+        if (!tmp)
+            goto out;
+        memcpy(tmp, vscsi_hosts + found_host, sizeof(*new_host));
+        tmp->vscsi_devs = calloc(sizeof(libxl_vscsi_dev), tmp->num_vscsi_devs + 1);
+        if (!tmp->vscsi_devs) {
+            free(tmp);
             goto out;
         }
+        memcpy(tmp->vscsi_devs, (vscsi_hosts + found_host)->vscsi_devs, sizeof(libxl_vscsi_dev) * tmp->num_vscsi_devs);
         new_dev->vscsi_dev_id = tmp->num_vscsi_devs;
         memcpy(tmp->vscsi_devs + tmp->num_vscsi_devs, new_dev, sizeof(*new_dev));
         tmp->num_vscsi_devs++;
