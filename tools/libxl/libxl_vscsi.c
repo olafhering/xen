@@ -165,22 +165,20 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         }
     }
 
-    /* Not found, create new host */
+    /* The caller gets a copy along with appended new_dev */
+    /* Rely on the _copy helper to do all the allocation work */
     if (found_host == -1) {
-        /* FIXME proper alloc/free ? */
+        /* Not found, create new host */
+        new_host->devid = 0;
+        new_host->num_vscsi_devs = 1;
+        new_host->vscsi_devs = new_dev;
+        new_dev->vscsi_dev_id = 0;
+
         tmp = malloc(sizeof(*new_host));
         if (!tmp)
             goto out;
-        *tmp = *new_host;
-        tmp->vscsi_devs = malloc(sizeof(*new_dev));
-        if (!tmp->vscsi_devs) {
-            free(tmp);
-            goto out;
-        }
-        tmp->devid = 0;
-        new_dev->vscsi_dev_id = 0;
-        *tmp->vscsi_devs = *new_dev;
-        tmp->num_vscsi_devs = 1;
+        libxl_device_vscsi_init(tmp);
+        libxl_device_vscsi_copy(ctx, tmp, new_host);
     } else {
         /* Check if the vdev address is already taken */
         tmp = vscsi_hosts + found_host;
@@ -193,20 +191,18 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
                 goto out;
             }
         }
-        /* FIXME proper alloc/free ? */
-        /* The caller gets a copy along with appended new_dev */
         tmp = malloc(sizeof(*new_host));
         if (!tmp)
             goto out;
-        memcpy(tmp, vscsi_hosts + found_host, sizeof(*new_host));
-        tmp->vscsi_devs = calloc(sizeof(libxl_vscsi_dev), tmp->num_vscsi_devs + 1);
-        if (!tmp->vscsi_devs) {
-            free(tmp);
-            goto out;
-        }
-        memcpy(tmp->vscsi_devs, (vscsi_hosts + found_host)->vscsi_devs, sizeof(libxl_vscsi_dev) * tmp->num_vscsi_devs);
+        libxl_device_vscsi_init(tmp);
+        libxl_device_vscsi_copy(ctx, tmp, vscsi_hosts + found_host);
+
+        /* Now append the new device to the existing host */
+        tmp->vscsi_devs = libxl__realloc(NOGC, tmp->vscsi_devs, sizeof(libxl_vscsi_dev) * (tmp->num_vscsi_devs + 1));
+
         new_dev->vscsi_dev_id = tmp->num_vscsi_devs;
-        memcpy(tmp->vscsi_devs + tmp->num_vscsi_devs, new_dev, sizeof(*new_dev));
+        libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, new_dev);
+
         tmp->num_vscsi_devs++;
     }
 
