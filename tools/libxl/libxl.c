@@ -1966,6 +1966,7 @@ static int libxl__device_from_vscsi(libxl__gc *gc, uint32_t domid,
 {
     device->backend_domid = vscsi->backend_domid;
     device->devid         = vscsi->devid;
+    device->domid         = domid;
     device->backend_kind  = LIBXL__DEVICE_KIND_VSCSI;
     device->kind          = LIBXL__DEVICE_KIND_VSCSI;
 
