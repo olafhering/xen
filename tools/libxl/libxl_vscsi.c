@@ -173,6 +173,7 @@ int libxl_device_vscsi_get(libxl_ctx *ctx, uint32_t domid, const char *cfg, libx
             goto out;
         }
         tmp->devid = 0;
+        new_dev->vscsi_dev_id = 0;
         *tmp->vscsi_devs = *new_dev;
         tmp->num_vscsi_devs = 1;
     } else {
