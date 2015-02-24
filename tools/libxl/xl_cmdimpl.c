@@ -1496,7 +1496,7 @@ static void parse_config_data(const char *config_source,
             libxl_vscsi_dev v_dev = { };
             libxl_device_vscsi *tmp, v_hst = { };
             char *buf2 = strdup(buf);
-            bool found = false;
+            bool hst_found = false;
 
             /*
              * #1: parse the devspec and place it in temporary host+dev part
@@ -1521,13 +1521,13 @@ static void parse_config_data(const char *config_source,
                         v_dev.vscsi_dev_id = tmp->num_vscsi_devs;
                         libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, &v_dev);
                         tmp->vscsi_devs++;
-                        found = true;
+                        hst_found = true;
                         break;
                     }
                 }
             }
 
-            if (!found || !d_config->num_vscsis) {
+            if (!hst_found || !d_config->num_vscsis) {
                 d_config->vscsis = realloc(d_config->vscsis, sizeof(v_hst) * (d_config->num_vscsis + 1));
                 tmp = &d_config->vscsis[d_config->num_vscsis];
                 libxl_device_vscsi_init(tmp);
@@ -1535,13 +1535,13 @@ static void parse_config_data(const char *config_source,
                 v_hst.devid = d_config->num_vscsis;
                 libxl_device_vscsi_copy(ctx, tmp, &v_hst);
 
-                tmp->vscsi_devs = malloc(sizeof(v_dev));
-                libxl_vscsi_dev_init(tmp->vscsi_devs);
-                tmp->num_vscsi_devs = 1;
+                tmp->vscsi_devs = realloc(tmp->vscsi_devs, sizeof(v_dev) * (tmp->num_vscsi_devs + 1));
+                libxl_vscsi_dev_init(tmp->vscsi_devs + tmp->num_vscsi_devs);
 
-                v_dev.vscsi_dev_id = 0;
-                libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs, &v_dev);
+                v_dev.vscsi_dev_id = tmp->num_vscsi_devs;
+                libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, &v_dev);
 
+                tmp->num_vscsi_devs++;
                 d_config->num_vscsis++;
             }
 
