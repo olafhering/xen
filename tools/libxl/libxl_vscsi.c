@@ -117,7 +117,7 @@ int libxl_device_vscsi_parse(char *buf, libxl_device_vscsi *new_host,
     return 0;
 }
 
-int libxl_device_vscsi_get(libxl_ctx *ctx, uint32_t domid, const char *cfg, libxl_device_vscsi **vscsi_host)
+int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg, libxl_device_vscsi **vscsi_host)
 {
     GC_INIT(ctx);
     libxl_vscsi_dev *new_dev = NULL;

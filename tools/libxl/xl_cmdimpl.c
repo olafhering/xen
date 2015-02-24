@@ -6529,7 +6529,7 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Parse config string and store result */
-    rc = libxl_device_vscsi_get(ctx, domid, cfg, &vscsi_host);
+    rc = libxl_device_vscsi_get_host(ctx, domid, cfg, &vscsi_host);
     if (rc < 0)
         goto out;
 
