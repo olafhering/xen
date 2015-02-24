@@ -1520,7 +1520,7 @@ static void parse_config_data(const char *config_source,
                         libxl_vscsi_dev_init(tmp->vscsi_devs + tmp->num_vscsi_devs);
                         v_dev.vscsi_dev_id = tmp->num_vscsi_devs;
                         libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, &v_dev);
-                        tmp->vscsi_devs++;
+                        tmp->num_vscsi_devs++;
                         hst_found = true;
                         break;
                     }
