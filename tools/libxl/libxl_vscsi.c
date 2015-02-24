@@ -179,6 +179,10 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
             goto out;
         libxl_device_vscsi_init(tmp);
         libxl_device_vscsi_copy(ctx, tmp, new_host);
+
+        /* Clear for _dispose */
+        new_host->num_vscsi_devs = 0;
+        new_host->vscsi_devs = NULL;
     } else {
         /* Check if the vdev address is already taken */
         tmp = vscsi_hosts + found_host;
@@ -216,6 +220,8 @@ out:
         }
         free(vscsi_hosts);
     }
+    libxl_device_vscsi_dispose(new_host);
+    libxl_vscsi_dev_dispose(new_dev);
     GC_FREE;
     return rc;
 }
