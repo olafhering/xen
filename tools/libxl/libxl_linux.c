@@ -314,7 +314,7 @@ int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, unsigned int *hst,
 
     dirp = opendir(sysfs);
     if (!dirp) {
-        LOG(ERROR, "vscsi: %s, can not find major:minor link in sysfs", pdev);
+        LOG(ERROR, "vscsi: %s, no major:minor link in sysfs", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -332,7 +332,7 @@ int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, unsigned int *hst,
     closedir(dirp);
 
     if (!found) {
-        LOG(ERROR, "vscsi: %s, can not find h:c:t:l link in sysfs", pdev);
+        LOG(ERROR, "vscsi: %s, no h:c:t:l link in sysfs", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
