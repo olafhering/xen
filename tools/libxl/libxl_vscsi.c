@@ -163,6 +163,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         /* Now append the new device to the existing host */
         tmp->vscsi_devs = libxl__realloc(NOGC, tmp->vscsi_devs, sizeof(libxl_vscsi_dev) * (tmp->num_vscsi_devs + 1));
 
+        libxl_vscsi_dev_init(tmp->vscsi_devs + tmp->num_vscsi_devs);
         new_dev->vscsi_dev_id = tmp->num_vscsi_devs;
         libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, new_dev);
 
