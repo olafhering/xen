@@ -14,7 +14,7 @@ static char *vscsi_trim_string(char *s)
 }
 
 /* FIXME proper log target */
-int libxl_device_vscsi_parse(char *buf, libxl_device_vscsi *new_host,
+int libxl_device_vscsi_parse(libxl_ctx *ctx, char *buf, libxl_device_vscsi *new_host,
                               libxl_vscsi_dev *new_dev)
 {
     char *pdev, *vdev, *fhost;
@@ -135,7 +135,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
 
     buf = libxl__strdup(gc, cfg);
 
-    if (libxl_device_vscsi_parse(buf, new_host, new_dev))
+    if (libxl_device_vscsi_parse(ctx, buf, new_host, new_dev))
         goto out;
 
     /* FIXME: foreach domain, because pdev is not multiplexed by backend */

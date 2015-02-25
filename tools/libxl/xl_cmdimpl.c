@@ -1509,7 +1509,7 @@ static void parse_config_data(const char *config_source,
             libxl_device_vscsi_init(&v_hst);
             libxl_vscsi_dev_init(&v_dev);
 
-            if (libxl_device_vscsi_parse(buf2, &v_hst, &v_dev))
+            if (libxl_device_vscsi_parse(ctx, buf2, &v_hst, &v_dev))
                 goto next_vscsi;
 
             if (d_config->num_vscsis) {
@@ -6660,7 +6660,7 @@ int main_vscsidetach(int argc, char **argv)
 
     libxl_vscsi_dev_init(&v_dev);
     libxl_device_vscsi_init(&v_hst);
-    if (libxl_device_vscsi_parse(tmp, &v_hst, &v_dev))
+    if (libxl_device_vscsi_parse(ctx, tmp, &v_hst, &v_dev))
         goto done;
 
     for (h = 0; h < num_hosts; ++h) {
