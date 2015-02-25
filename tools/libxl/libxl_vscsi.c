@@ -114,11 +114,10 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
                     vscsi_hosts[i].vscsi_devs[j].pdev.chn == new_dev->pdev.chn &&
                     vscsi_hosts[i].vscsi_devs[j].pdev.tgt == new_dev->pdev.tgt &&
                     vscsi_hosts[i].vscsi_devs[j].pdev.lun == new_dev->pdev.lun) {
-                    /* FIXME proper log target */
-                    fprintf(stderr, "Host device '%u:%u:%u:%u' is already in use"
-                            " by guest vscsi specification '%u:%u:%u:%u'.\n",
-                            new_dev->pdev.hst, new_dev->pdev.chn, new_dev->pdev.tgt, new_dev->pdev.lun,
-                            new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
+                    LOG(ERROR, "Host device '%u:%u:%u:%u' is already in use"
+                        " by guest vscsi specification '%u:%u:%u:%u'.\n",
+                        new_dev->pdev.hst, new_dev->pdev.chn, new_dev->pdev.tgt, new_dev->pdev.lun,
+                        new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
                     goto out;
                 }
             }
