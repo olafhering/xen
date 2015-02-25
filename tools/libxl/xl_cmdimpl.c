@@ -1509,7 +1509,7 @@ static void parse_config_data(const char *config_source,
             libxl_vscsi_dev_init(&v_dev);
 
             if (libxl_device_vscsi_parse(ctx, buf, &v_hst, &v_dev))
-                goto next_vscsi;
+                exit (-1);
 
             if (d_config->num_vscsis) {
                 for (i = 0; i < d_config->num_vscsis; i++) {
@@ -1535,7 +1535,6 @@ static void parse_config_data(const char *config_source,
                 d_config->num_vscsis++;
             }
 
-next_vscsi:
             libxl_vscsi_dev_dispose(&v_dev);
             libxl_device_vscsi_dispose(&v_hst);
             num_vscsi_items++;
