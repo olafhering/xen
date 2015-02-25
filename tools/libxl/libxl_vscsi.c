@@ -135,9 +135,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         new_host->vscsi_devs = new_dev;
         new_dev->vscsi_dev_id = 0;
 
-        tmp = malloc(sizeof(*new_host));
-        if (!tmp)
-            goto out;
+        tmp = libxl__malloc(NOGC, sizeof(*new_host));
         libxl_device_vscsi_init(tmp);
         libxl_device_vscsi_copy(ctx, tmp, new_host);
 
@@ -156,9 +154,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
                 goto out;
             }
         }
-        tmp = malloc(sizeof(*new_host));
-        if (!tmp)
-            goto out;
+        tmp = libxl__malloc(NOGC, sizeof(*new_host));
         libxl_device_vscsi_init(tmp);
         libxl_device_vscsi_copy(ctx, tmp, vscsi_hosts + found_host);
 
