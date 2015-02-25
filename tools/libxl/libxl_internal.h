@@ -1794,6 +1794,10 @@ _hidden libxl__json_object *libxl__json_parse(libxl__gc *gc_opt, const char *s);
 _hidden int libxl__device_model_version_running(libxl__gc *gc, uint32_t domid);
   /* Return the system-wide default device model */
 _hidden libxl_device_model_version libxl__default_device_model(libxl__gc *gc);
+  /* Convert /dev/scsi to h:c:t:l */
+_hidden int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev,
+                                          unsigned int *hst, unsigned int *chn,
+                                          unsigned int *tgt, unsigned int *lun);
 
 /* Check how executes hotplug script currently */
 int libxl__hotplug_settings(libxl__gc *gc, xs_transaction_t t);
