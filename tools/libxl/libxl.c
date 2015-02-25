@@ -1988,7 +1988,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         goto out;
     }
 
-    /* prealloc key+value: 4 toplevel + 4 per device */
+    /* Prealloc key+value: 4 toplevel + 4 per device */
     i = 2 * (4 + (4 * vscsi->num_vscsi_devs));
     back = flexarray_make(gc, i, 1);
     front = flexarray_make(gc, 2 * 2, 1);
@@ -1997,7 +1997,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
     if ( rc != 0 ) goto out;
 
-    /* get backend device path to check if is already present */
+    /* Get backend device path to check if is already present */
     char *backend_path;
     unsigned int ndirs = 0;
     backend_path = libxl__device_backend_path(gc, device);
@@ -2019,7 +2019,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
             unsigned int nb = 0;
             /* vhost exist, check if not overwriting records */
             if (libxl__xs_directory(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u", backend_path, v->vscsi_dev_id), &nb) && nb) {
-                /* trigger device removal by forwarding state to XenbusStateClosing */
+                /* Trigger device removal by forwarding state to XenbusStateClosing */
                 if (v->remove)
                     flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "5");
                 continue;
@@ -2094,7 +2094,7 @@ retry_transaction2:
                 return;
             }
         }
-        /* as we are not adding new device, skip waiting for it */
+        /* As we are not adding new device, skip waiting for it */
         libxl__ao_complete(egc, aodev->ao, 0);
     }
 
