@@ -545,7 +545,7 @@ libxl_device_channel = Struct("device_channel", [
 libxl_vscsi_dev = Struct("vscsi_dev", [
     ("vscsi_dev_id",     libxl_devid),
     ("remove",           bool),
-    ("p_devname",	 string),
+    ("p_devname",        string),
     ("p_hst",            uint32),
     ("p_chn",            uint32),
     ("p_tgt",            uint32),
