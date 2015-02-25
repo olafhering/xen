@@ -202,10 +202,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
         goto out;
 
     /* List of hosts to be returned to the caller */
-    vscsi_hosts = calloc(ndirs, sizeof(*vscsi_hosts));
-    /* FIXME how to handle OOM? */
-    if (!vscsi_hosts)
-        goto out;
+    vscsi_hosts = libxl__malloc(NOGC, ndirs * sizeof(*vscsi_hosts));
 
     /* Fill each host */
     for (v_hst = vscsi_hosts; v_hst < vscsi_hosts + ndirs; ++v_hst, ++dir) {
@@ -230,11 +227,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
         }
 
         if (devs_dir && ndevs_dirs) {
-            v_hst->vscsi_devs = calloc(ndevs_dirs, sizeof(*v_dev));
-            /* FIXME how to handle OOM? */
-            if (!v_hst->vscsi_devs)
-                continue;
-
+            v_hst->vscsi_devs = libxl__malloc(NOGC, ndevs_dirs * sizeof(*v_dev));
             v_hst->num_vscsi_devs = ndevs_dirs;
             /* Fill each device connected to the host */
             for (i = 0; i < ndevs_dirs; i++, devs_dir++) {
