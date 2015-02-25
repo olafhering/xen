@@ -49,10 +49,10 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
     }
 
     new_dev->p_devname = libxl__strdup(gc, pdev);
-    new_dev->p_hst = hst;
-    new_dev->p_chn = chn;
-    new_dev->p_tgt = tgt;
-    new_dev->p_lun = lun;
+    new_dev->pdev.hst = hst;
+    new_dev->pdev.chn = chn;
+    new_dev->pdev.tgt = tgt;
+    new_dev->pdev.lun = lun;
 
     if (sscanf(vdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
         LOG(ERROR, "vscsi: invalid vdev '%s', expecting hst:chn:tgt:lun", pdev);
@@ -60,10 +60,13 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
         goto out;
     }
 
+    /* Record group index */
     new_host->v_hst = hst;
-    new_dev->v_chn = chn;
-    new_dev->v_tgt = tgt;
-    new_dev->v_lun = lun;
+
+    new_dev->vdev.hst = hst;
+    new_dev->vdev.chn = chn;
+    new_dev->vdev.tgt = tgt;
+    new_dev->vdev.lun = lun;
 
     if (fhost) {
         fhost = vscsi_trim_string(fhost);
@@ -107,15 +110,15 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     if (vscsi_hosts) {
         for (i = 0; i < num_hosts; ++i) {
             for (j = 0; j < vscsi_hosts[i].num_vscsi_devs; j++) {
-                if (vscsi_hosts[i].vscsi_devs[j].p_hst == new_dev->p_hst &&
-                    vscsi_hosts[i].vscsi_devs[j].p_chn == new_dev->p_chn &&
-                    vscsi_hosts[i].vscsi_devs[j].p_tgt == new_dev->p_tgt &&
-                    vscsi_hosts[i].vscsi_devs[j].p_lun == new_dev->p_lun) {
+                if (vscsi_hosts[i].vscsi_devs[j].pdev.hst == new_dev->pdev.hst &&
+                    vscsi_hosts[i].vscsi_devs[j].pdev.chn == new_dev->pdev.chn &&
+                    vscsi_hosts[i].vscsi_devs[j].pdev.tgt == new_dev->pdev.tgt &&
+                    vscsi_hosts[i].vscsi_devs[j].pdev.lun == new_dev->pdev.lun) {
                     /* FIXME proper log target */
                     fprintf(stderr, "Host device '%u:%u:%u:%u' is already in use"
                             " by guest vscsi specification '%u:%u:%u:%u'.\n",
-                            new_dev->p_hst, new_dev->p_chn, new_dev->p_tgt, new_dev->p_lun,
-                            vscsi_hosts[i].v_hst, new_dev->v_chn, new_dev->v_tgt, new_dev->v_lun);
+                            new_dev->pdev.hst, new_dev->pdev.chn, new_dev->pdev.tgt, new_dev->pdev.lun,
+                            new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
                     goto out;
                 }
             }
@@ -146,11 +149,11 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         /* Check if the vdev address is already taken */
         tmp = vscsi_hosts + found_host;
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
-            if (tmp->vscsi_devs[i].v_chn == new_dev->v_chn &&
-                tmp->vscsi_devs[i].v_tgt == new_dev->v_tgt &&
-                tmp->vscsi_devs[i].v_lun == new_dev->v_lun) {
+            if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
+                tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
+                tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
                 fprintf(stderr, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
-                        tmp->v_hst, new_dev->v_chn, new_dev->v_tgt, new_dev->v_lun);
+                        new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
                 goto out;
             }
         }
@@ -248,12 +251,12 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                                           be_path, vscsi_dev_id));
                     if (c && p && v) {
                         v_dev->p_devname = libxl__strdup(NOGC, c);
-                        r = sscanf(p, "%u:%u:%u:%u", &v_dev->p_hst,
-                                   &v_dev->p_chn, &v_dev->p_tgt, &v_dev->p_lun);
+                        r = sscanf(p, "%u:%u:%u:%u", &v_dev->pdev.hst,
+                                   &v_dev->pdev.chn, &v_dev->pdev.tgt, &v_dev->pdev.lun);
                         if (r == 4)
                             parsed_ok += 4;
-                        r = sscanf(v, "%u:%u:%u:%u", &v_hst->v_hst,
-                                   &v_dev->v_chn, &v_dev->v_tgt, &v_dev->v_lun);
+                        r = sscanf(v, "%u:%u:%u:%u", &v_dev->vdev.hst,
+                                   &v_dev->vdev.chn, &v_dev->vdev.tgt, &v_dev->vdev.lun);
                         if (r == 4)
                             parsed_ok += 4;
                         v_dev->vscsi_dev_id = vscsi_dev_id;
@@ -290,14 +293,8 @@ int libxl_device_vscsi_getinfo(libxl_ctx *ctx, uint32_t domid,
     libxl_vscsiinfo_init(vscsiinfo);
     dompath = libxl__xs_get_dompath(gc, domid);
     vscsiinfo->devid = vscsi_host->devid;
-    vscsiinfo->p_hst = vscsi_dev->p_hst;
-    vscsiinfo->p_chn = vscsi_dev->p_chn;
-    vscsiinfo->p_tgt = vscsi_dev->p_tgt;
-    vscsiinfo->p_lun = vscsi_dev->p_lun;
-    vscsiinfo->v_hst = vscsi_host->v_hst;
-    vscsiinfo->v_chn = vscsi_dev->v_chn;
-    vscsiinfo->v_tgt = vscsi_dev->v_tgt;
-    vscsiinfo->v_lun = vscsi_dev->v_lun;
+    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->pdev, &vscsi_dev->pdev);
+    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->vdev, &vscsi_dev->vdev);
 
     vscsipath = GCSPRINTF("%s/device/vscsi/%d", dompath, vscsiinfo->devid);
     vscsiinfo->backend = xs_read(ctx->xsh, XBT_NULL,

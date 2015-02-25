@@ -6598,9 +6598,9 @@ int main_vscsilist(int argc, char **argv)
                 if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
                     char pdev[64], vdev[64];
                     snprintf(pdev, sizeof(pdev), "%u:%u:%u:%u",
-                             vscsiinfo.p_hst, vscsiinfo.p_chn, vscsiinfo.p_tgt, vscsiinfo.p_lun);
+                             vscsiinfo.pdev.hst, vscsiinfo.pdev.chn, vscsiinfo.pdev.tgt, vscsiinfo.pdev.lun);
                     snprintf(vdev, sizeof(vdev), "%u:%u:%u:%u",
-                             vscsiinfo.v_hst, vscsiinfo.v_chn, vscsiinfo.v_tgt, vscsiinfo.v_lun);
+                             vscsiinfo.vdev.hst, vscsiinfo.vdev.chn, vscsiinfo.vdev.tgt, vscsiinfo.vdev.lun);
                     /*      Idx  BE  state Sta */
                     printf("%-3d %-3d %-5d %-5d %-10s %-10s %d\n",
                            vscsiinfo.devid,
@@ -6664,9 +6664,9 @@ int main_vscsidetach(int argc, char **argv)
     for (h = 0; h < num_hosts; ++h) {
         vh = &vscsi_hosts[h];
         for (d = 0; !found && d < vh->num_vscsi_devs; d++) {
-#define CMP(member) (vd->member == v_dev.member)
+#define CMP(member) (vd->vdev.member == v_dev.vdev.member)
             vd = &vh->vscsi_devs[d];
-            if (vh->v_hst == v_hst.v_hst && CMP(v_chn) && CMP(v_tgt) && CMP(v_lun)) {
+            if (CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 if (vh->num_vscsi_devs > 1) {
                     vd->remove = true;
                     if (libxl_device_vscsi_add(ctx, domid, vh, 0)) {

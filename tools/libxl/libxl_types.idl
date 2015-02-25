@@ -542,17 +542,19 @@ libxl_device_channel = Struct("device_channel", [
            ])),
 ])
 
+libxl_vscsi_hctl = Struct("vscsi_hctl", [
+    ("hst", uint32),
+    ("chn", uint32),
+    ("tgt", uint32),
+    ("lun", uint32),
+    ])
+
 libxl_vscsi_dev = Struct("vscsi_dev", [
     ("vscsi_dev_id",     libxl_devid),
     ("remove",           bool),
     ("p_devname",        string),
-    ("p_hst",            uint32),
-    ("p_chn",            uint32),
-    ("p_tgt",            uint32),
-    ("p_lun",            uint32),
-    ("v_chn",            uint32),
-    ("v_tgt",            uint32),
-    ("v_lun",            uint32),
+    ("pdev",             libxl_vscsi_hctl),
+    ("vdev",             libxl_vscsi_hctl),
     ])
 
 libxl_device_vscsi = Struct("device_vscsi", [
@@ -614,15 +616,9 @@ libxl_vscsiinfo = Struct("vscsiinfo", [
     ("frontend_id", uint32),
     ("devid", libxl_devid),
     ("p_devname", string),
-    ("p_hst", uint32),
-    ("p_chn", uint32),
-    ("p_tgt", uint32),
-    ("p_lun", uint32),
+    ("pdev", libxl_vscsi_hctl),
+    ("vdev", libxl_vscsi_hctl),
     ("vscsi_dev_id", libxl_devid),
-    ("v_hst", uint32),
-    ("v_chn", uint32),
-    ("v_tgt", uint32),
-    ("v_lun", uint32),
     ("feature_host", bool),
     ("vscsi_host_state", integer),
     ("vscsi_dev_state", integer),
