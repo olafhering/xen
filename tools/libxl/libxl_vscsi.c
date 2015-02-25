@@ -48,7 +48,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
         goto out;
     }
 
-    new_dev->p_devname = libxl__strdup(gc, pdev);
+    new_dev->p_devname = libxl__strdup(NOGC, pdev);
     new_dev->pdev.hst = hst;
     new_dev->pdev.chn = chn;
     new_dev->pdev.tgt = tgt;
