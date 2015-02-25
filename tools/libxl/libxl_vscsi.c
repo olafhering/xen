@@ -144,19 +144,14 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         }
     }
 
-    /* The caller gets a copy along with appended new_dev */
-    /* Rely on the _copy helper to do all the allocation work */
     if (found_host == -1) {
         /* Not found, create new host */
         new_host->devid = 0;
-
-        tmp = libxl__malloc(NOGC, sizeof(*new_host));
-        libxl_device_vscsi_init(tmp);
-        libxl_device_vscsi_copy(ctx, tmp, new_host);
-        libxl_device_vscsi_append_dev(ctx, tmp, new_dev);
+        tmp = new_host;
     } else {
-        /* Check if the vdev address is already taken */
         tmp = vscsi_hosts + found_host;
+
+        /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
             if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
@@ -167,15 +162,14 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
                 goto out;
             }
         }
-        tmp = libxl__malloc(NOGC, sizeof(*new_host));
-        libxl_device_vscsi_init(tmp);
-        libxl_device_vscsi_copy(ctx, tmp, vscsi_hosts + found_host);
-
-        /* Now append the new device to the existing host */
-        libxl_device_vscsi_append_dev(ctx, tmp, new_dev);
     }
 
-    *vscsi_host = tmp;
+    /* The caller gets a copy along with appended new_dev */
+    *vscsi_host = libxl__malloc(NOGC, sizeof(*new_host));
+    libxl_device_vscsi_init(*vscsi_host);
+    libxl_device_vscsi_copy(ctx, *vscsi_host, tmp);
+    libxl_device_vscsi_append_dev(ctx, *vscsi_host, new_dev);
+
     rc = 0;
 
 out:
