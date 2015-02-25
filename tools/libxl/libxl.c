@@ -1998,7 +1998,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
     if ( rc != 0 ) goto out;
 
-    /* Get backend device path to check if is already present */
+    /* Check if backend device path is already present */
     be_path = libxl__device_backend_path(gc, device);
     if (!libxl__xs_directory(gc, XBT_NULL, be_path, &be_dirs) || !be_dirs) {
         /* backend does not exist, create a new one */
@@ -2016,7 +2016,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         /* Trigger removal, otherwise create new device */
         if (be_dirs) {
             unsigned int nb = 0;
-            /* vhost exist, check if not overwriting records */
+            /* Preserve existing device */
             if (libxl__xs_directory(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id), &nb) && nb) {
                 /* Trigger device removal by forwarding state to XenbusStateClosing */
                 if (v->remove)
