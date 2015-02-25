@@ -1237,6 +1237,8 @@ int libxl_device_vscsi_getinfo(libxl_ctx *ctx,
                                libxl_device_vscsi *vscsi_host,
                                libxl_vscsi_dev *vscsi_dev,
                                libxl_vscsiinfo *vscsiinfo);
+void libxl_device_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
+                                   libxl_vscsi_dev *dev);
 int libxl_device_vscsi_get_host(libxl_ctx *ctx,
                                 uint32_t domid,
                                 const char *cfg,

@@ -1515,11 +1515,7 @@ static void parse_config_data(const char *config_source,
                 for (i = 0; i < d_config->num_vscsis; i++) {
                     if (d_config->vscsis[i].v_hst == v_hst.v_hst) {
                         tmp = &d_config->vscsis[i];
-                        tmp->vscsi_devs = realloc(tmp->vscsi_devs, sizeof(v_dev) * (tmp->num_vscsi_devs + 1));
-                        libxl_vscsi_dev_init(tmp->vscsi_devs + tmp->num_vscsi_devs);
-                        v_dev.vscsi_dev_id = tmp->num_vscsi_devs;
-                        libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, &v_dev);
-                        tmp->num_vscsi_devs++;
+                        libxl_device_vscsi_append_dev(ctx, tmp, &v_dev);
                         hst_found = true;
                         break;
                     }
@@ -1534,13 +1530,8 @@ static void parse_config_data(const char *config_source,
                 v_hst.devid = d_config->num_vscsis;
                 libxl_device_vscsi_copy(ctx, tmp, &v_hst);
 
-                tmp->vscsi_devs = realloc(tmp->vscsi_devs, sizeof(v_dev) * (tmp->num_vscsi_devs + 1));
-                libxl_vscsi_dev_init(tmp->vscsi_devs + tmp->num_vscsi_devs);
+                libxl_device_vscsi_append_dev(ctx, tmp, &v_dev);
 
-                v_dev.vscsi_dev_id = tmp->num_vscsi_devs;
-                libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, &v_dev);
-
-                tmp->num_vscsi_devs++;
                 d_config->num_vscsis++;
             }
 

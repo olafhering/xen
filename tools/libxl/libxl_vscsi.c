@@ -84,6 +84,19 @@ out:
     return rc;
 }
 
+void libxl_device_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
+                                   libxl_vscsi_dev *dev)
+{
+    GC_INIT(ctx);
+    hst->vscsi_devs = libxl__realloc(NOGC, hst->vscsi_devs,
+                                     sizeof(*dev) * (hst->num_vscsi_devs + 1));
+    libxl_vscsi_dev_init(hst->vscsi_devs + hst->num_vscsi_devs);
+    dev->vscsi_dev_id = hst->num_vscsi_devs;
+    libxl_vscsi_dev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
+    hst->num_vscsi_devs++;
+    GC_FREE;
+}
+
 int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg, libxl_device_vscsi **vscsi_host)
 {
     GC_INIT(ctx);
@@ -161,13 +174,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         libxl_device_vscsi_copy(ctx, tmp, vscsi_hosts + found_host);
 
         /* Now append the new device to the existing host */
-        tmp->vscsi_devs = libxl__realloc(NOGC, tmp->vscsi_devs, sizeof(libxl_vscsi_dev) * (tmp->num_vscsi_devs + 1));
-
-        libxl_vscsi_dev_init(tmp->vscsi_devs + tmp->num_vscsi_devs);
-        new_dev->vscsi_dev_id = tmp->num_vscsi_devs;
-        libxl_vscsi_dev_copy(ctx, tmp->vscsi_devs + tmp->num_vscsi_devs, new_dev);
-
-        tmp->num_vscsi_devs++;
+        libxl_device_vscsi_append_dev(ctx, tmp, new_dev);
     }
 
     *vscsi_host = tmp;
