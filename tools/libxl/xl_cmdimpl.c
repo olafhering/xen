@@ -1495,7 +1495,6 @@ static void parse_config_data(const char *config_source,
         while ((buf = xlu_cfg_get_listitem (vscsis, num_vscsi_items)) != NULL) {
             libxl_vscsi_dev v_dev = { };
             libxl_device_vscsi *tmp, v_hst = { };
-            char *buf2 = strdup(buf);
             bool hst_found = false;
 
             /*
@@ -1509,7 +1508,7 @@ static void parse_config_data(const char *config_source,
             libxl_device_vscsi_init(&v_hst);
             libxl_vscsi_dev_init(&v_dev);
 
-            if (libxl_device_vscsi_parse(ctx, buf2, &v_hst, &v_dev))
+            if (libxl_device_vscsi_parse(ctx, buf, &v_hst, &v_dev))
                 goto next_vscsi;
 
             if (d_config->num_vscsis) {
@@ -1548,7 +1547,6 @@ static void parse_config_data(const char *config_source,
 next_vscsi:
             libxl_vscsi_dev_dispose(&v_dev);
             libxl_device_vscsi_dispose(&v_hst);
-            free(buf2);
             num_vscsi_items++;
         }
     }

@@ -13,19 +13,22 @@ static char *vscsi_trim_string(char *s)
     return s;
 }
 
-int libxl_device_vscsi_parse(libxl_ctx *ctx, char *buf, libxl_device_vscsi *new_host,
-                              libxl_vscsi_dev *new_dev)
+int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
+                             libxl_device_vscsi *new_host,
+                             libxl_vscsi_dev *new_dev)
 {
     GC_INIT(ctx);
     int rc;
-    char *pdev, *vdev, *fhost;
+    char *buf, *pdev, *vdev, *fhost;
     unsigned int hst, chn, tgt, lun;
+
+    buf = libxl__strdup(gc, cfg);
 
     pdev = strtok(buf, ",");
     vdev = strtok(NULL, ",");
     fhost = strtok(NULL, ",");
     if (!(pdev && vdev)) {
-        LOG(ERROR, "invalid vscsi= devspec: '%s'\n", buf);
+        LOG(ERROR, "invalid vscsi= devspec: '%s'\n", cfg);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -83,7 +86,6 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     GC_INIT(ctx);
     libxl_vscsi_dev *new_dev = NULL;
     libxl_device_vscsi *new_host, *vscsi_hosts = NULL, *tmp;
-    char *buf;
     int rc = -1, found_host = -1, i, j;
     int num_hosts;
 
@@ -93,9 +95,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     GCNEW(new_dev);
     libxl_vscsi_dev_init(new_dev);
 
-    buf = libxl__strdup(gc, cfg);
-
-    if (libxl_device_vscsi_parse(ctx, buf, new_host, new_dev))
+    if (libxl_device_vscsi_parse(ctx, cfg, new_host, new_dev))
         goto out;
 
     /* FIXME: foreach domain, because pdev is not multiplexed by backend */
