@@ -149,17 +149,11 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     if (found_host == -1) {
         /* Not found, create new host */
         new_host->devid = 0;
-        new_host->num_vscsi_devs = 1;
-        new_host->vscsi_devs = new_dev;
-        new_dev->vscsi_dev_id = 0;
 
         tmp = libxl__malloc(NOGC, sizeof(*new_host));
         libxl_device_vscsi_init(tmp);
         libxl_device_vscsi_copy(ctx, tmp, new_host);
-
-        /* Clear for _dispose */
-        new_host->num_vscsi_devs = 0;
-        new_host->vscsi_devs = NULL;
+        libxl_device_vscsi_append_dev(ctx, tmp, new_dev);
     } else {
         /* Check if the vdev address is already taken */
         tmp = vscsi_hosts + found_host;
