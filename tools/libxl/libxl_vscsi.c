@@ -260,6 +260,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                         if (r == 4)
                             parsed_ok += 4;
                         v_dev->vscsi_dev_id = vscsi_dev_id;
+                        v_hst->v_hst = v_dev->vdev.hst;
                     }
                 }
 
