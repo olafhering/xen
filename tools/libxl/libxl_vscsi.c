@@ -43,7 +43,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
             goto out;
         }
     } else if (sscanf(pdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
-        LOG(ERROR, "vscsi: invalid pdev '%s', expecting hst:chn:tgt:lun", pdev);
+        LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -55,7 +55,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
     new_dev->pdev.lun = lun;
 
     if (sscanf(vdev, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4) {
-        LOG(ERROR, "vscsi: invalid vdev '%s', expecting hst:chn:tgt:lun", pdev);
+        LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
