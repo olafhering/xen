@@ -1981,7 +1981,8 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     flexarray_t *front;
     flexarray_t *back;
     libxl__device *device;
-    unsigned int rc, i;
+    char *be_path;
+    unsigned int be_dirs = 0, rc, i;
 
     if (vscsi->devid == -1) {
         rc = ERROR_FAIL;
@@ -1998,10 +1999,8 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     if ( rc != 0 ) goto out;
 
     /* Get backend device path to check if is already present */
-    char *backend_path;
-    unsigned int ndirs = 0;
-    backend_path = libxl__device_backend_path(gc, device);
-    if (!libxl__xs_directory(gc, XBT_NULL, backend_path, &ndirs) || !ndirs) {
+    be_path = libxl__device_backend_path(gc, device);
+    if (!libxl__xs_directory(gc, XBT_NULL, be_path, &be_dirs) || !be_dirs) {
         /* backend does not exist, create a new one */
         flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", domid));
         flexarray_append_pair(back, "online", "1");
@@ -2015,10 +2014,10 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     for (i = 0; i < vscsi->num_vscsi_devs; i++) {
         libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
         /* Trigger removal, otherwise create new device */
-        if (ndirs) {
+        if (be_dirs) {
             unsigned int nb = 0;
             /* vhost exist, check if not overwriting records */
-            if (libxl__xs_directory(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u", backend_path, v->vscsi_dev_id), &nb) && nb) {
+            if (libxl__xs_directory(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id), &nb) && nb) {
                 /* Trigger device removal by forwarding state to XenbusStateClosing */
                 if (v->remove)
                     flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "5");
@@ -2035,7 +2034,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
 
     aodev->dev = device;
     /* Either create new host or reconfigure existing host */
-    if (ndirs == 0) {
+    if (be_dirs == 0) {
         libxl__device_generic_add(gc, XBT_NULL, device,
                                   libxl__xs_kvs_of_flexarray(gc, back, back->count),
                                   libxl__xs_kvs_of_flexarray(gc, front, front->count),
@@ -2048,9 +2047,9 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         xs_transaction_t t;
 retry_transaction:
         t = xs_transaction_start(ctx->xsh);
-        libxl__xs_writev(gc, t, backend_path,
+        libxl__xs_writev(gc, t, be_path,
                 libxl__xs_kvs_of_flexarray(gc, back, back->count));
-        xs_write(ctx->xsh, t, GCSPRINTF("%s/state", backend_path), "7", 2);
+        xs_write(ctx->xsh, t, GCSPRINTF("%s/state", be_path), "7", 2);
         if(!xs_transaction_end(ctx->xsh, t, 0)) {
             if (errno == EAGAIN) {
                 goto retry_transaction;
@@ -2059,7 +2058,7 @@ retry_transaction:
                 return;
             }
         }
-        libxl__wait_for_backend(gc, backend_path, "4");
+        libxl__wait_for_backend(gc, be_path, "4");
 
 retry_transaction2:
         t = xs_transaction_start(ctx->xsh);
@@ -2067,18 +2066,18 @@ retry_transaction2:
             libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
             if (v->remove) {
                 char *path, *val;
-                path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", backend_path, v->vscsi_dev_id);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
                 val = libxl__xs_read(gc, t, path);
                 if (val && strcmp(val, "6") == 0) {
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", backend_path, v->vscsi_dev_id);
+                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", backend_path, v->vscsi_dev_id);
+                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", be_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", backend_path, v->vscsi_dev_id);
+                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", be_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", backend_path, v->vscsi_dev_id);
+                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", be_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u", backend_path, v->vscsi_dev_id);
+                    path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
                     xs_rm(ctx->xsh, t, path);
                 } else {
                     LOGE(ERROR, "%s: %s has %s, expected 6", __func__, path, val);
