@@ -188,7 +188,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
     GC_INIT(ctx);
     libxl_vscsi_dev *v_dev;
     libxl_device_vscsi *v_hst, *vscsi_hosts = NULL;
-    char *fe_path, *tmp, *d, *p, *v;
+    char *fe_path, *tmp, *c, *p, *v;
     char **dir, **devs_dir;
     const char *devs_path, *be_path;
     int r;
@@ -237,7 +237,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                 r = sscanf(*devs_dir, "dev-%u", &vscsi_dev_id);
                 if (r == 1) {
                     parsed_ok += 1;
-                    d = libxl__xs_read(gc, XBT_NULL,
+                    c = libxl__xs_read(gc, XBT_NULL,
                                          GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname",
                                          be_path, vscsi_dev_id));
                     p = libxl__xs_read(gc, XBT_NULL,
@@ -246,8 +246,8 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                     v = libxl__xs_read(gc, XBT_NULL,
                                           GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev",
                                           be_path, vscsi_dev_id));
-                    if (d && p && v) {
-                        v_dev->p_devname = libxl__strdup(NOGC, d);
+                    if (c && p && v) {
+                        v_dev->p_devname = libxl__strdup(NOGC, c);
                         r = sscanf(p, "%u:%u:%u:%u", &v_dev->p_hst,
                                    &v_dev->p_chn, &v_dev->p_tgt, &v_dev->p_lun);
                         if (r == 4)
