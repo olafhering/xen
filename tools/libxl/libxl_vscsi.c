@@ -102,7 +102,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     GC_INIT(ctx);
     libxl_vscsi_dev *new_dev = NULL;
     libxl_device_vscsi *new_host, *vscsi_hosts = NULL, *tmp;
-    int rc = -1, found_host = -1, i, j;
+    int rc, found_host = -1, i, j;
     int num_hosts;
 
     GCNEW(new_host);
@@ -111,8 +111,10 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     GCNEW(new_dev);
     libxl_vscsi_dev_init(new_dev);
 
-    if (libxl_device_vscsi_parse(ctx, cfg, new_host, new_dev))
+    if (libxl_device_vscsi_parse(ctx, cfg, new_host, new_dev)) {
+        rc = ERROR_INVAL;
         goto out;
+    }
 
     /* FIXME: foreach domain, because pdev is not multiplexed by backend */
     /* FIXME: other device types do not have the multiplexing issue */
@@ -131,6 +133,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
                         " by guest vscsi specification '%u:%u:%u:%u'.\n",
                         new_dev->pdev.hst, new_dev->pdev.chn, new_dev->pdev.tgt, new_dev->pdev.lun,
                         new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
+                    rc = ERROR_INVAL;
                     goto out;
                 }
             }
@@ -166,6 +169,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
                 tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
                 fprintf(stderr, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
                         new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
+                rc = ERROR_INVAL;
                 goto out;
             }
         }
