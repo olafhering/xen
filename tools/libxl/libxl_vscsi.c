@@ -97,8 +97,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, char *buf, libxl_device_vscsi *new_
         goto out;
     }
 
-    /* Lack of *gc */
-    new_dev->p_devname = strdup(pdev);
+    new_dev->p_devname = libxl__strdup(gc, pdev);
     new_dev->p_hst = hst;
     new_dev->p_chn = chn;
     new_dev->p_tgt = tgt;
