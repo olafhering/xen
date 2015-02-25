@@ -1978,6 +1978,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
                              libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
+    libxl_ctx *ctx = libxl__gc_owner(gc);
     flexarray_t *front;
     flexarray_t *back;
     libxl__device *device;
@@ -2041,61 +2042,61 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
                                   NULL);
         aodev->action = LIBXL__DEVICE_ACTION_ADD;
         libxl__wait_device_connection(egc, aodev);
-    } else {
-        /* Only new devices, write them and do vscsi host reconfiguration */
-        libxl_ctx *ctx = libxl__gc_owner(gc);
-        xs_transaction_t t;
+        rc = 0;
+        /* Done with new host */
+        goto out;
+    }
+
+    /* Only new devices, write them and do vscsi host reconfiguration */
+    xs_transaction_t t;
 retry_transaction:
-        t = xs_transaction_start(ctx->xsh);
-        libxl__xs_writev(gc, t, be_path,
-                libxl__xs_kvs_of_flexarray(gc, back, back->count));
-        xs_write(ctx->xsh, t, GCSPRINTF("%s/state", be_path), "7", 2);
-        if(!xs_transaction_end(ctx->xsh, t, 0)) {
-            if (errno == EAGAIN) {
-                goto retry_transaction;
-            } else {
-                LOGE(ERROR, "xs transaction failed");
-                return;
-            }
-        }
-        libxl__wait_for_backend(gc, be_path, "4");
+    t = xs_transaction_start(ctx->xsh);
+    libxl__xs_writev(gc, t, be_path,
+                     libxl__xs_kvs_of_flexarray(gc, back, back->count));
+    xs_write(ctx->xsh, t, GCSPRINTF("%s/state", be_path), "7", 2);
+    if (!xs_transaction_end(ctx->xsh, t, 0)) {
+        if (errno == EAGAIN)
+            goto retry_transaction;
+        LOGE(ERROR, "xs transaction failed");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    libxl__wait_for_backend(gc, be_path, "4");
 
 retry_transaction2:
-        t = xs_transaction_start(ctx->xsh);
-        for (i = 0; i < vscsi->num_vscsi_devs; i++) {
-            libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
-            if (v->remove) {
-                char *path, *val;
+    t = xs_transaction_start(ctx->xsh);
+    for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+        libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
+        if (v->remove) {
+            char *path, *val;
+            path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
+            val = libxl__xs_read(gc, t, path);
+            if (val && strcmp(val, "6") == 0) {
                 path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
-                val = libxl__xs_read(gc, t, path);
-                if (val && strcmp(val, "6") == 0) {
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
-                    xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", be_path, v->vscsi_dev_id);
-                    xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", be_path, v->vscsi_dev_id);
-                    xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", be_path, v->vscsi_dev_id);
-                    xs_rm(ctx->xsh, t, path);
-                    path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
-                    xs_rm(ctx->xsh, t, path);
-                } else {
-                    LOGE(ERROR, "%s: %s has %s, expected 6", __func__, path, val);
-                }
-            }
-        }
-
-        if(!xs_transaction_end(ctx->xsh, t, 0)) {
-            if (errno == EAGAIN) {
-                goto retry_transaction2;
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
             } else {
-                LOGE(ERROR, "xs transaction failed");
-                return;
+                LOGE(ERROR, "%s: %s has %s, expected 6", __func__, path, val);
             }
         }
-        /* As we are not adding new device, skip waiting for it */
-        libxl__ao_complete(egc, aodev->ao, 0);
     }
+
+    if (!xs_transaction_end(ctx->xsh, t, 0)) {
+        if (errno == EAGAIN)
+            goto retry_transaction2;
+        LOGE(ERROR, "xs transaction failed");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    /* As we are not adding new device, skip waiting for it */
+    libxl__ao_complete(egc, aodev->ao, 0);
 
     rc = 0;
 out:
