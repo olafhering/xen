@@ -280,9 +280,7 @@ libxl_device_model_version libxl__default_device_model(libxl__gc *gc)
     return LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN;
 }
 
-int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, unsigned int *hst,
-                                unsigned int *chn, unsigned int *tgt,
-                                unsigned int *lun)
+int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl)
 {
     struct stat dentry;
     char *sysfs;
@@ -323,7 +321,7 @@ int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, unsigned int *hst,
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
             continue;
 
-        if (sscanf(de->d_name, "%u:%u:%u:%u", hst, chn, tgt, lun) != 4)
+        if (libxl_device_vscsi_parse_hctl(gc, de->d_name, hctl))
             continue;
 
         found = 1;
