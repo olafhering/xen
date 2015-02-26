@@ -20,7 +20,7 @@ in 2014.
 The domU.cfg syntax is "vscsi=[ 'pdev,vdev[,option]' ]". pdev is the dom0 device
 in either /dev/$device or pHOST:CHANNEL:TARGET:LUN notation.  vdev is the domU
 device in vHOST:CHANNEL:TARGET:LUN notation. 'option' lists additional flags.
-Currently only the value "feature-host" is recognized. SCSI command emulation on
+Currently only the value "feature-host" is recognized. SCSI command emulation in
 backend driver is bypassed when "feature-host" is specified.
 
 
@@ -55,7 +55,7 @@ The frontend driver maintains its state in /local/domain/<domid>/device/vscsi/.
 In addition to the entries for backend and frontend these flags are stored for
 the toolstack:
 
-    <vhost>/vscsi-devs/dev-1/p-devname = "/dev/$device" 
+    <domid>/<vhost>/vscsi-devs/dev-1/p-devname = "/dev/$device"
 
 
 == Backend - Frontend Protocol ==
@@ -83,13 +83,13 @@ To remove a device from a vhost:
     <domid>/<vhost>/vscsi-devs/dev-1/state = "5"
 Wait for <domid>/<vhost>/state to become 4
 Wait for <domid>/<vhost>/vscsi-devs/dev-1/state become 6
-Remove <domid>/<vhost>/vscsi-devs/dev-1/{state,p-dev,v-dev,c-dev}
+Remove <domid>/<vhost>/vscsi-devs/dev-1/{state,p-dev,v-dev,p-devname}
 Remove <domid>/<vhost>/vscsi-devs/dev-1/
 
 
 == Interface in xl ==
 
-xl scsi-attach domid <PhysDevice> <VirtDevice>
+xl scsi-attach domid <PhysDevice> <VirtDevice>[,<option>]
 xl scsi-detach domid <VirtDevice>
 xl scsi-list domid [domid, ...]
 
