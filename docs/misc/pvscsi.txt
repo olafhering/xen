@@ -7,12 +7,49 @@ PVSCSI allows to assing a "physical" SCSI device from dom0 to a domU. The device
 is not limited to be a native SCSI device. Everything visible as SCSI device in
 dom0 can be used. Currently PVSCSI is only available in Linux dom0 and domU.
 
+== TODO ===
+
+How to do live migration?
+ - pdev will likely be evaluated again on the target host if it came from
+   domU.cfg. But what about pdev from 'xl scsi-attach pdev vdev'? Its required
+   to adjust h:c:t:l on the target host.
+
+Implement checks for duplicate pdev assignments?
+ - Not sure if SCSI devices can be shared. Will the state be consistent during
+   concurrent access? Should the host admin assume cooperative access from
+   multiple domUs?
+ - The easiest way would be to do nothing and assume the host admin knows what
+   to do.
+
+Implement libvirt integration.
+ - Is the API used by xl usable for libvirt?
+ - How does libvirt assign a raw SCSI device?
+   Jim said:
+    > vscsi=[ '/dev/sda,0:1:2:3', '4:3:2:1,1:1:1:1,feature-host' ]
+    In libvirt-speak, this is SCSI host device assignment
+    http://libvirt.org/formatdomain.html#elementsHostDev
+    Here's the SCSI example
+      <devices>
+       <hostdev mode='subsystem' type='scsi' sgio='filtered' rawio='yes'>
+        <source>
+         <adapter name='scsi_host0'/>
+         <address type='scsi' bus='0' target='0' unit='0'/>
+        </source>
+        <readonly/>
+        <address type='drive' controller='0' bus='0' target='0' unit='0'/>
+       </hostdev>
+      ...
+      </devices>
+    I suppose 'feature-host' maps to attributes such as 'sgio' and 'rawio'.
+    The source element describes the SCSI device as seen from the host.
+
 
 == History ==
 
 Support for PVSCSI was added to the classic xenlinux kernel and to xend in
 xen-3.3 in 2008. Support for PVSCSI was added to the upstream pvops kernel 3.18
-in 2014.
+in 2014. Backends exists just for Linux. A frontend exists for Linux, and maybe
+for FreeBSD according to google.
 
 
 == Config Format ==
