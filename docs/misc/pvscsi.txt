@@ -21,6 +21,9 @@ Implement checks for duplicate pdev assignments?
  - The easiest way would be to do nothing and assume the host admin knows what
    to do.
 
+How to handle FIXME in libxl_retrieve_domain_configuration?
+ - "MERGE(vscsi, vscsis, COMPARE_DEVID, {});", when does this code run?
+ 
 Implement libvirt integration.
  - Is the API used by xl usable for libvirt?
  - How does libvirt assign a raw SCSI device?
