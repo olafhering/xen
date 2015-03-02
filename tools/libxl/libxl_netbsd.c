@@ -95,3 +95,11 @@ libxl_device_model_version libxl__default_device_model(libxl__gc *gc)
 {
     return LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL;
 }
+
+int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, unsigned int *hst,
+                                unsigned int *chn, unsigned int *tgt,
+                                unsigned int *lun)
+{
+
+    return ERROR_NOPARAVIRT;
+}

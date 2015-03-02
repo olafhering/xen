@@ -279,3 +279,63 @@ libxl_device_model_version libxl__default_device_model(libxl__gc *gc)
 {
     return LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN;
 }
+
+int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl)
+{
+    struct stat dentry;
+    char *sysfs;
+    const char *type;
+    int rc, found = 0;
+    DIR *dirp;
+    struct dirent *de;
+
+    /* stat pdev to get device's sysfs entry */
+    if (stat (pdev, &dentry) < 0) {
+        LOG(ERROR, "vscsi: %s, device node not found", pdev);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    if (S_ISBLK (dentry.st_mode)) {
+        type = "block";
+    } else if (S_ISCHR (dentry.st_mode)) {
+        type = "char";
+    } else {
+        LOG(ERROR, "vscsi: %s, device node not a block or char device", pdev);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    /* /sys/dev/type/major:minor symlink added in 2.6.27 */
+    sysfs = GCSPRINTF("/sys/dev/%s/%u:%u/device/scsi_device", type,
+                      major(dentry.st_rdev), minor(dentry.st_rdev));
+
+    dirp = opendir(sysfs);
+    if (!dirp) {
+        LOG(ERROR, "vscsi: %s, no major:minor link in sysfs", pdev);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    while ((de = readdir(dirp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        if (libxl_device_vscsi_parse_hctl(gc, de->d_name, hctl))
+            continue;
+
+        found = 1;
+        break;
+    }
+    closedir(dirp);
+
+    if (!found) {
+        LOG(ERROR, "vscsi: %s, no h:c:t:l link in sysfs", pdev);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    rc = 0;
+out:
+    return rc;
+}
