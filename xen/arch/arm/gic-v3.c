@@ -466,7 +466,7 @@ static void gicv3_set_irq_properties(struct irq_desc *desc,
                                      const cpumask_t *cpu_mask,
                                      unsigned int priority)
 {
-    uint32_t cfg, edgebit;
+    uint32_t cfg, actual, edgebit;
     uint64_t affinity;
     void __iomem *base;
     unsigned int cpu = gicv3_get_cpu_from_mask(cpu_mask);
@@ -492,6 +492,20 @@ static void gicv3_set_irq_properties(struct irq_desc *desc,
         cfg |= edgebit;
 
     writel_relaxed(cfg, base);
+
+    actual = readl_relaxed(base);
+    if ( ( cfg & edgebit ) ^ ( actual & edgebit ) )
+    {
+        printk(XENLOG_WARNING "GICv3: WARNING: "
+               "CPU%d: Failed to configure IRQ%u as %s-triggered. "
+               "H/w forces to %s-triggered.\n",
+               smp_processor_id(), desc->irq,
+               cfg & edgebit ? "Edge" : "Level",
+               actual & edgebit ? "Edge" : "Level");
+        desc->arch.type = actual & edgebit ?
+            DT_IRQ_TYPE_EDGE_RISING :
+            DT_IRQ_TYPE_LEVEL_HIGH;
+    }
 
     affinity = gicv3_mpidr_to_affinity(cpu);
     /* Make sure we don't broadcast the interrupt */
@@ -1306,14 +1320,14 @@ static int __init gicv3_init(struct dt_device_node *node, const void *data)
     return res;
 }
 
-static const char * const gicv3_dt_compat[] __initconst =
+static const struct dt_device_match gicv3_dt_match[] __initconst =
 {
-    DT_COMPAT_GIC_V3,
-    NULL
+    DT_MATCH_GIC_V3,
+    { /* sentinel */ },
 };
 
 DT_DEVICE_START(gicv3, "GICv3", DEVICE_GIC)
-        .compatible = gicv3_dt_compat,
+        .dt_match = gicv3_dt_match,
         .init = gicv3_init,
 DT_DEVICE_END
 

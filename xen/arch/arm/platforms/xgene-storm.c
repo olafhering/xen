@@ -71,6 +71,10 @@ static int map_one_spi(struct domain *d, const char *what,
 
     printk("Additional IRQ %u (%s)\n", irq, what);
 
+    if ( !vgic_reserve_virq(d, irq) )
+        printk("Failed to reserve vIRQ %u on dom%d\n",
+               irq, d->domain_id);
+
     ret = route_irq_to_guest(d, irq, what);
     if ( ret )
         printk("Failed to route %s to dom%d\n", what, d->domain_id);
@@ -228,7 +232,6 @@ PLATFORM_START(xgene_storm, "APM X-GENE STORM")
     .quirks = xgene_storm_quirks,
     .specific_mapping = xgene_storm_specific_mapping,
 
-    .dom0_evtchn_ppi = 24,
     .dom0_gnttab_start = 0x1f800000,
     .dom0_gnttab_size = 0x20000,
 PLATFORM_END

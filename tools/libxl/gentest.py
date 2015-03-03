@@ -229,7 +229,7 @@ int main(int argc, char **argv)
                 (ty.typename, ty.typename, ty.typename))
     f.write("""
     int rc;
-    char *s, *new_s;
+    char *s, *new_s, *json_string;
     xentoollog_logger_stdiostream *logger;
     libxl_ctx *ctx;
 
@@ -249,8 +249,11 @@ int main(int argc, char **argv)
         f.write("    %s_rand_init(%s);\n" % (ty.typename, \
             ty.pass_arg(arg, isref=False, passby=idl.PASS_BY_REFERENCE)))
         if not isinstance(ty, idl.Enumeration):
-            f.write("    %s_init(%s_new);\n" % (ty.typename, \
-                ty.pass_arg(arg, isref=False, passby=idl.PASS_BY_REFERENCE)))
+            iters = random.randrange(1,10)
+            while iters > 0:
+                f.write("    %s_init(%s_new);\n" % (ty.typename, \
+                    ty.pass_arg(arg, isref=False, passby=idl.PASS_BY_REFERENCE)))
+                iters -= 1
         f.write("    s = %s_to_json(ctx, %s);\n" % \
                 (ty.typename, ty.pass_arg(arg, isref=False)))
         f.write("    printf(\"%%s: %%s\\n\", \"%s\", s);\n" % ty.typename)
@@ -269,8 +272,11 @@ int main(int argc, char **argv)
         f.write("    free(s);\n")
         f.write("    free(new_s);\n")
         if ty.dispose_fn is not None:
+            iters = random.randrange(1,10)
             f.write("    %s(&%s_val);\n" % (ty.dispose_fn, ty.typename))
-            f.write("    %s(&%s_val_new);\n" % (ty.dispose_fn, ty.typename))
+            while iters > 0:
+                f.write("    %s(&%s_val_new);\n" % (ty.dispose_fn, ty.typename))
+                iters -= 1
         f.write("\n")
 
     f.write("    printf(\"Testing TYPE_copy()\\n\");\n")
@@ -323,9 +329,13 @@ int main(int argc, char **argv)
 
         f.write("    printf(\"%s -- to JSON:\\n\");\n" % (ty.typename))
         for v in ty.values:
+            f.write("    json_string = %s_to_json(ctx, %s);\n" % \
+                    (ty.typename, v.name))
             f.write("    printf(\"\\t%s = %%d = %%s\", " \
-                    "%s, %s_to_json(ctx, %s));\n" %\
-                    (v.valuename, v.name, ty.typename, v.name))
+                    "%s, json_string);\n" %\
+                    (v.valuename, v.name))
+            f.write("    free(json_string);\n");
+            f.write("    json_string = NULL;\n");
         f.write("\n")
 
         f.write("    printf(\"%s -- from string:\\n\");\n" % (ty.typename))

@@ -5,7 +5,14 @@ export XEN_OS=MiniOS
 
 export stubdom=y
 export debug=y
-include $(XEN_ROOT)/Config.mk
+
+ifeq (,$(findstring clean,$(MAKECMDGOALS)))
+  ifeq ($(wildcard $(MINI_OS)/Config.mk),)
+    $(error Please run `make mini-os-dir' in top-level directory)
+  endif
+  include $(XEN_ROOT)/Config.mk
+endif
+
 -include $(XEN_ROOT)/config/Stubdom.mk
 
 GNU_TARGET_ARCH:=$(XEN_TARGET_ARCH)
@@ -333,6 +340,8 @@ $(TARGETS_MINIOS): mini-os-%:
 .PHONY: libxc
 libxc: libxc-$(XEN_TARGET_ARCH)/libxenctrl.a libxc-$(XEN_TARGET_ARCH)/libxenguest.a
 libxc-$(XEN_TARGET_ARCH)/libxenctrl.a: cross-zlib
+	$(MAKE) -C $(XEN_ROOT)/tools/include
+	$(MAKE) DESTDIR= -C $(MINI_OS) links
 	CPPFLAGS="$(TARGET_CPPFLAGS)" CFLAGS="$(TARGET_CFLAGS)" $(MAKE) DESTDIR= CONFIG_LIBXC_MINIOS=y -C libxc-$(XEN_TARGET_ARCH)
 
  libxc-$(XEN_TARGET_ARCH)/libxenguest.a: libxc-$(XEN_TARGET_ARCH)/libxenctrl.a
@@ -502,7 +511,6 @@ clean:
 	rm -fr mini-os-$(XEN_TARGET_ARCH)-xenstore
 	rm -fr mini-os-$(XEN_TARGET_ARCH)-vtpm
 	rm -fr mini-os-$(XEN_TARGET_ARCH)-vtpmmgr
-	$(MAKE) DESTDIR= -C $(MINI_OS) clean
 	$(MAKE) DESTDIR= -C caml clean
 	$(MAKE) DESTDIR= -C c clean
 	$(MAKE) -C vtpm clean

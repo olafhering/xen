@@ -211,7 +211,7 @@ static void gicv2_set_irq_properties(struct irq_desc *desc,
                                    const cpumask_t *cpu_mask,
                                    unsigned int priority)
 {
-    uint32_t cfg, edgebit;
+    uint32_t cfg, actual, edgebit;
     unsigned int mask = gicv2_cpu_mask(cpu_mask);
     unsigned int irq = desc->irq;
     unsigned int type = desc->arch.type;
@@ -228,6 +228,20 @@ static void gicv2_set_irq_properties(struct irq_desc *desc,
     else if ( type & DT_IRQ_TYPE_EDGE_BOTH )
         cfg |= edgebit;
     writel_gicd(cfg, GICD_ICFGR + (irq / 16) * 4);
+
+    actual = readl_gicd(GICD_ICFGR + (irq / 16) * 4);
+    if ( ( cfg & edgebit ) ^ ( actual & edgebit ) )
+    {
+        printk(XENLOG_WARNING "GICv2: WARNING: "
+               "CPU%d: Failed to configure IRQ%u as %s-triggered. "
+               "H/w forces to %s-triggered.\n",
+               smp_processor_id(), desc->irq,
+               cfg & edgebit ? "Edge" : "Level",
+               actual & edgebit ? "Edge" : "Level");
+        desc->arch.type = actual & edgebit ?
+            DT_IRQ_TYPE_EDGE_RISING :
+            DT_IRQ_TYPE_LEVEL_HIGH;
+    }
 
     /* Set target CPU mask (RAZ/WI on uniprocessor) */
     writeb_gicd(mask, GICD_ITARGETSR + irq);
@@ -590,7 +604,7 @@ static int gicv2_make_dt_node(const struct domain *d,
     const struct dt_device_node *gic = dt_interrupt_controller;
     const void *compatible = NULL;
     u32 len;
-    __be32 *new_cells, *tmp;
+    const __be32 *regs;
     int res = 0;
 
     compatible = dt_get_property(gic, "compatible", &len);
@@ -617,18 +631,22 @@ static int gicv2_make_dt_node(const struct domain *d,
     if ( res )
         return res;
 
+    /*
+     * DTB provides up to 4 regions to handle virtualization
+     * (in order GICD, GICC, GICH and GICV interfaces)
+     * however dom0 just needs GICD and GICC provided by Xen.
+     */
+    regs = dt_get_property(gic, "reg", &len);
+    if ( !regs )
+    {
+        dprintk(XENLOG_ERR, "Can't find reg property for the gic node\n");
+        return -FDT_ERR_XEN(ENOENT);
+    }
+
     len = dt_cells_to_size(dt_n_addr_cells(node) + dt_n_size_cells(node));
-    len *= 2; /* GIC has two memory regions: Distributor + CPU interface */
-    new_cells = xzalloc_bytes(len);
-    if ( new_cells == NULL )
-        return -FDT_ERR_XEN(ENOMEM);
+    len *= 2;
 
-    tmp = new_cells;
-    dt_set_range(&tmp, node, d->arch.vgic.dbase, PAGE_SIZE);
-    dt_set_range(&tmp, node, d->arch.vgic.cbase, PAGE_SIZE * 2);
-
-    res = fdt_property(fdt, "reg", new_cells, len);
-    xfree(new_cells);
+    res = fdt_property(fdt, "reg", regs, len);
 
     return res;
 }
@@ -762,16 +780,14 @@ static int __init gicv2_init(struct dt_device_node *node, const void *data)
     return 0;
 }
 
-static const char * const gicv2_dt_compat[] __initconst =
+static const struct dt_device_match gicv2_dt_match[] __initconst =
 {
-    DT_COMPAT_GIC_CORTEX_A15,
-    DT_COMPAT_GIC_CORTEX_A7,
-    DT_COMPAT_GIC_400,
-    NULL
+    DT_MATCH_GIC_V2,
+    { /* sentinel */ },
 };
 
-DT_DEVICE_START(gicv2, "GICv2:", DEVICE_GIC)
-        .compatible = gicv2_dt_compat,
+DT_DEVICE_START(gicv2, "GICv2", DEVICE_GIC)
+        .dt_match = gicv2_dt_match,
         .init = gicv2_init,
 DT_DEVICE_END
 

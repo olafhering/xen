@@ -290,11 +290,12 @@ struct dt_device_node *dt_find_node_by_alias(const char *alias)
     return NULL;
 }
 
-bool_t dt_match_node(const struct dt_device_match *matches,
-                     const struct dt_device_node *node)
+const struct dt_device_match *
+dt_match_node(const struct dt_device_match *matches,
+              const struct dt_device_node *node)
 {
     if ( !matches )
-        return 0;
+        return NULL;
 
     while ( matches->path || matches->type ||
             matches->compatible || matches->not_available )
@@ -314,12 +315,11 @@ bool_t dt_match_node(const struct dt_device_match *matches,
             match &= !dt_device_is_available(node);
 
         if ( match )
-            return match;
-
+            return matches;
         matches++;
     }
 
-    return 0;
+    return NULL;
 }
 
 const struct dt_device_node *dt_get_parent(const struct dt_device_node *node)
@@ -1454,6 +1454,9 @@ static unsigned long __init unflatten_dt_node(const void *fdt,
             ((char *)pp->value)[sz - 1] = 0;
             dt_dprintk("fixed up name for %s -> %s\n", pathp,
                        (char *)pp->value);
+            /* Generic device initialization */
+            np->dev.type = DEV_DT;
+            np->dev.of_node = np;
         }
     }
     if ( allnextpp )

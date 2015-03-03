@@ -580,13 +580,16 @@ static struct page_info *alloc_heap_pages(
     unsigned int order, unsigned int memflags,
     struct domain *d)
 {
-    unsigned int first_node, i, j, zone = 0, nodemask_retry = 0;
-    unsigned int node = (uint8_t)((memflags >> _MEMF_node) - 1);
+    unsigned int i, j, zone = 0, nodemask_retry = 0;
+    nodeid_t first_node, node = MEMF_get_node(memflags);
     unsigned long request = 1UL << order;
     struct page_info *pg;
     nodemask_t nodemask = (d != NULL ) ? d->node_affinity : node_online_map;
     bool_t need_tlbflush = 0;
     uint32_t tlbflush_timestamp = 0;
+
+    /* Make sure there are enough bits in memflags for nodeID. */
+    BUILD_BUG_ON((_MEMF_bits - _MEMF_node) < (8 * sizeof(nodeid_t)));
 
     if ( node == NUMA_NO_NODE )
     {
@@ -617,7 +620,8 @@ static struct page_info *alloc_heap_pages(
      */
     if ( (outstanding_claims + request >
           total_avail_pages + tmem_freeable_pages()) &&
-          (d == NULL || d->outstanding_pages < request) )
+          ((memflags & MEMF_no_refcount) ||
+           !d || d->outstanding_pages < request) )
         goto not_found;
 
     /*
@@ -1278,7 +1282,8 @@ static void __init smp_scrub_heap_pages(void *data)
     unsigned long mfn, start, end;
     struct page_info *pg;
     struct scrub_region *r;
-    unsigned int temp_cpu, node, cpu_idx = 0;
+    unsigned int temp_cpu, cpu_idx = 0;
+    nodeid_t node;
     unsigned int cpu = smp_processor_id();
 
     if ( data )

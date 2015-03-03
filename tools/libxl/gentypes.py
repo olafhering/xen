@@ -636,15 +636,15 @@ if __name__ == '__main__':
 
 #include "libxl_internal.h"
 
-#define LIBXL_DTOR_POISON 0xa5
 
 """ % " ".join(sys.argv))
 
     for ty in [t for t in types if t.dispose_fn is not None and t.autogenerate_dispose_fn]:
         f.write("void %s(%s)\n" % (ty.dispose_fn, ty.make_arg("p")))
         f.write("{\n")
+        f.write("    if (!p) return;\n")
         f.write(libxl_C_type_dispose(ty, "p"))
-        f.write("    memset(p, LIBXL_DTOR_POISON, sizeof(*p));\n")
+        f.write("    memset(p, 0, sizeof(*p));\n")
         f.write("}\n")
         f.write("\n")
 

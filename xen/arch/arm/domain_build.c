@@ -627,16 +627,10 @@ static int make_hypervisor_node(struct domain *d,
         return res;
 
     /*
-     * interrupts is evtchn upcall:
-     *  - Active-low level-sensitive
-     *  - All cpus
-     *
-     * TODO: Handle correctly the cpumask
+     * Placeholder for the event channel interrupt.  The values will be
+     * replaced later.
      */
-    DPRINT("  Event channel interrupt to %u\n", d->arch.evtchn_irq);
-    set_interrupt_ppi(intr, d->arch.evtchn_irq, 0xf,
-                   DT_IRQ_TYPE_LEVEL_LOW);
-
+    set_interrupt_ppi(intr, ~0, 0xf, DT_IRQ_TYPE_INVALID);
     res = fdt_property_interrupts(fdt, &intr, 1);
     if ( res )
         return res;
@@ -970,6 +964,12 @@ static int map_device(struct domain *d, struct dt_device_node *dev)
         irq = res;
 
         DPRINT("irq %u = %u\n", i, irq);
+        /*
+         * Checking the return of vgic_reserve_virq is not
+         * necessary. It should not fail except when we try to map
+         * the IRQ twice. This can legitimately happen if the IRQ is shared
+         */
+        vgic_reserve_virq(d, irq);
         res = route_irq_to_guest(d, irq, dt_node_name(dev));
         if ( res )
         {
@@ -1084,7 +1084,7 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
     /* Even if the IOMMU device is not used by Xen, it should not be
      * passthrough to DOM0
      */
-    if ( device_get_type(node) == DEVICE_IOMMU )
+    if ( device_get_class(node) == DEVICE_IOMMU )
     {
         DPRINT(" IOMMU, skip it\n");
         return 0;
@@ -1271,6 +1271,43 @@ static void initrd_load(struct kernel_info *kinfo)
     }
 }
 
+static void evtchn_fixup(struct domain *d, struct kernel_info *kinfo)
+{
+    int res, node;
+    gic_interrupt_t intr;
+
+    /*
+     * The allocation of the event channel IRQ has been deferred until
+     * now. At this time, all PPIs used by DOM0 have been registered.
+     */
+    res = vgic_allocate_ppi(d);
+    if ( res < 0 )
+        panic("Unable to allocate a PPI for the event channel interrupt\n");
+
+    d->arch.evtchn_irq = res;
+
+    printk("Allocating PPI %u for event channel interrupt\n",
+           d->arch.evtchn_irq);
+
+    /* Fix up "interrupts" in /hypervisor node */
+    node = fdt_path_offset(kinfo->fdt, "/hypervisor");
+    if ( node < 0 )
+        panic("Cannot find the /hypervisor node");
+
+    /* Interrupt event channel upcall:
+     *  - Active-low level-sensitive
+     *  - All CPUs
+     *
+     *  TODO: Handle properly the cpumask
+     */
+    set_interrupt_ppi(intr, d->arch.evtchn_irq, 0xf,
+                      DT_IRQ_TYPE_LEVEL_LOW);
+    res = fdt_setprop_inplace(kinfo->fdt, node, "interrupts",
+                              &intr, sizeof(intr));
+    if ( res )
+        panic("Cannot fix up \"interrupts\" property of the hypervisor node");
+}
+
 int construct_dom0(struct domain *d)
 {
     struct kernel_info kinfo = {};
@@ -1332,6 +1369,8 @@ int construct_dom0(struct domain *d)
     kernel_load(&kinfo);
     /* initrd_load will fix up the fdt, so call it before dtb_load */
     initrd_load(&kinfo);
+    /* Allocate the event channel IRQ and fix up the device tree */
+    evtchn_fixup(d, &kinfo);
     dtb_load(&kinfo);
 
     /* Now that we are done restore the original p2m and current. */

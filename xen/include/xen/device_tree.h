@@ -11,7 +11,9 @@
 #define __XEN_DEVICE_TREE_H__
 
 #include <asm/byteorder.h>
+#include <asm/device.h>
 #include <public/xen.h>
+#include <xen/kernel.h>
 #include <xen/init.h>
 #include <xen/string.h>
 #include <xen/types.h>
@@ -28,6 +30,7 @@ struct dt_device_match {
     const char *type;
     const char *compatible;
     const bool_t not_available;
+    const void *data;
 };
 
 #define DT_MATCH_PATH(p)                { .path = p }
@@ -79,7 +82,18 @@ struct dt_device_node {
     /* IOMMU specific fields */
     bool is_protected;
     struct list_head domain_list;
+
+    struct device dev;
 };
+
+#define dt_to_dev(dt_node)  (&(dt_node)->dev)
+
+static inline struct dt_device_node *dev_to_dt(struct device *dev)
+{
+    ASSERT(dev->type == DEV_DT);
+
+    return container_of(dev, struct dt_device_node, dev);
+}
 
 #define MAX_PHANDLE_ARGS 16
 struct dt_phandle_args {
@@ -547,8 +561,9 @@ bool_t dt_device_is_available(const struct dt_device_node *device);
  *
  * Returns true if the device node match one of dt_device_match.
  */
-bool_t dt_match_node(const struct dt_device_match *matches,
-                     const struct dt_device_node *node);
+const struct dt_device_match *
+dt_match_node(const struct dt_device_match *matches,
+              const struct dt_device_node *node);
 
 /**
  * dt_find_matching_node - Find a node based on an dt_device_match match table
