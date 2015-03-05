@@ -27,13 +27,32 @@ static char *vscsi_trim_string(char *s)
     return s;
 }
 
+static bool vscsi_wwn_valid(const char *p)
+{
+    bool ret = true;
+    int i = 0;
+
+    for (i = 0; i < 16; i++, p++) {
+        if (*p >= '0' && *p <= '9')
+            continue;
+        if (*p >= 'a' && *p <= 'f')
+            continue;
+        if (*p >= 'A' && *p <= 'F')
+            continue;
+        ret = false;
+        break;
+    }
+    return ret;
+}
+
 int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
                              libxl_device_vscsi *new_host,
                              libxl_vscsi_dev *new_dev)
 {
     GC_INIT(ctx);
     int rc;
-    char *buf, *pdev, *vdev, *fhost;
+    unsigned int lun;
+    char wwn[16 + 1], *buf, *pdev, *vdev, *fhost;
 
     buf = libxl__strdup(gc, cfg);
 
@@ -49,19 +68,32 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
     pdev = vscsi_trim_string(pdev);
     vdev = vscsi_trim_string(vdev);
 
+    new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_INVALID;
     if (strncmp(pdev, "/dev/", 5) == 0) {
-        if (libxl_device_vscsi_parse_pdev(gc, pdev, &new_dev->pdev)) {
+        if (libxl_device_vscsi_parse_pdev(gc, pdev, &new_dev->pdev) == 0)
+            new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_DEV;
+    } else if (strncmp(pdev, "naa.", 4) == 0) {
+        memset(wwn, 0, sizeof(wwn));
+        if (sscanf(pdev, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn))
+            new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_WWN;
+    } else if (libxl_device_vscsi_parse_hctl(gc, pdev, &new_dev->pdev) == 0) {
+        new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_HCTL;
+    }
+
+    switch (new_dev->pdev_type) {
+        case LIBXL_VSCSI_PDEV_TYPE_WWN:
+            new_dev->pdev.lun = lun;
+            /* Fall through.  */
+        case LIBXL_VSCSI_PDEV_TYPE_DEV:
+        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+            new_dev->p_devname = libxl__strdup(NOGC, pdev);
+            break;
+        case LIBXL_VSCSI_PDEV_TYPE_INVALID:
             LOG(ERROR, "vscsi: invalid pdev '%s'", pdev);
             rc = ERROR_INVAL;
             goto out;
-        }
-    } else if (libxl_device_vscsi_parse_hctl(gc, pdev, &new_dev->pdev)) {
-        LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", pdev);
-        rc = ERROR_INVAL;
-        goto out;
     }
 
-    new_dev->p_devname = libxl__strdup(NOGC, pdev);
 
     if (libxl_device_vscsi_parse_hctl(gc, vdev, &new_dev->vdev)) {
         LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", pdev);
