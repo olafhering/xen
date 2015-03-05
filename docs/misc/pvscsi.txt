@@ -47,6 +47,17 @@ Implement libvirt integration.
     The source element describes the SCSI device as seen from the host.
 
 
+== Testing pvops ==
+
+Binary packages of targetcli.rpm can be found in home:olh:targetcli in OBS.
+Testsystem is 13.1. Manual steps:
+# modprobe scsi_debug add_host=4 dev_size_mb=1 max_luns=4 num_parts=4 num_tgts=4
+# targetcli backstores/pscsi create name=my_sdy dev=/dev/sdy
+# targetcli backstores/pscsi create name=my_sdx dev=/dev/sdx
+# targetcli backstores/pscsi create name=my_sdz dev=/dev/sdz
+# targetcli saveconfig
+# targetcli ls
+
 == History ==
 
 Support for PVSCSI was added to the classic xenlinux kernel and to xend in
@@ -57,11 +68,46 @@ for FreeBSD according to google.
 
 == Config Format ==
 
-The domU.cfg syntax is "vscsi=[ 'pdev,vdev[,option]' ]". pdev is the dom0 device
-in either /dev/$device or pHOST:CHANNEL:TARGET:LUN notation.  vdev is the domU
-device in vHOST:CHANNEL:TARGET:LUN notation. 'option' lists additional flags.
-Currently only the value "feature-host" is recognized. SCSI command emulation in
-backend driver is bypassed when "feature-host" is specified.
+The domU.cfg syntax is "vscsi=[ 'pdev,vdev[,option]', 'pdev,vdev[,option]' ]".
+'pdev' describes the physical device, preferable in a persistant format.
+'vdev' is the domU device in vHOST:CHANNEL:TARGET:LUN notation, all integers.
+'option' lists additional flags which a backend may recognize.
+
+
+== Configuring xenlinux backend ==
+
+"pdev" is the dom0 device in either /dev/scsidev or pHOST:CHANNEL:TARGET:LUN
+notation.  Currently only the option value "feature-host" is recognized. SCSI
+command emulation in backend driver is bypassed when "feature-host" is
+specified.
+
+Its recommended to use persistant names "/dev/disk/by-*/*" to refer to a "pdev".
+The toolstack will translate this internally to "h:c:t:l" notation, which is how
+the backend driver will access the device. Using the "h:c:t:l" notation for
+"pdev" in domU.cfg is discouraged because this value will change across reboots,
+depending on the detection order in the OS.
+
+
+== Configuring pvops backend ==
+
+The backend driver in the pvops kernel is part of the Linux-IO Target framework
+(LIO).  As such the SCSI devices have to be configured first with the tools
+provided by this framework, such as targetcli. The "pdev" in domU.cfg has to
+refer to a config item in that framework instead of the raw device.
+
+The LIO uses a concept of backstore and frontend drivers. LIO backstore drivers
+provide access to the actual storage, LIO frontend drivers provide an interface
+which is accessed with SCSI commands. Within the LIO the frontend is connected
+to a certain backstore.
+
+For Xen its recommended to use the PSCSI backstore. Other backstores may work as
+well, but they are not tested. The xen-scsiback module is the LIO frontend, and
+at the same time the backend for the domU. In general the config flow is:
+- the LIO backstore refers to physical storage in a persistant way
+- the given storage gets a free, unique name within the LIO backstore
+- the LIO frontend refers to that free, unique name in the LIO backstore
+- the connection to the LIO backstore gets a naa.WWN:LUN in the LIO frontend
+- the "pdev" in domU.cfg refers to that naa.WWN:LUN in the LIO frontend
 
 
 == Xenstore Format ==
@@ -75,7 +121,7 @@ layout looks like this:
     <domid>/<vhost>/frontend-id = "<domid>"
     <domid>/<vhost>/online = "1"
     <domid>/<vhost>/state = "4"
-    <domid>/<vhost>/vscsi-devs/dev-0/p-dev = "8:0:2:1"
+    <domid>/<vhost>/vscsi-devs/dev-0/p-dev = "8:0:2:1" or "naa.wwn:lun"
     <domid>/<vhost>/vscsi-devs/dev-0/state = "4"
     <domid>/<vhost>/vscsi-devs/dev-0/v-dev = "0:0:0:0"
     <domid>/<vhost>/vscsi-devs/dev-1/p-dev = "8:0:2:2"
