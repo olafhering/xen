@@ -1960,6 +1960,166 @@ static int libxl__resolve_domid(libxl__gc *gc, const char *name,
 }
 
 /******************************************************************************/
+static int libxl__device_from_vscsi(libxl__gc *gc, uint32_t domid,
+                                    libxl_device_vscsi *vscsi,
+                                    libxl__device *device)
+{
+    device->backend_domid = vscsi->backend_domid;
+    device->devid         = vscsi->devid;
+    device->domid         = domid;
+    device->backend_kind  = LIBXL__DEVICE_KIND_VSCSI;
+    device->kind          = LIBXL__DEVICE_KIND_VSCSI;
+
+    return 0;
+}
+
+void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
+                             libxl_device_vscsi *vscsi,
+                             libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+    flexarray_t *front;
+    flexarray_t *back;
+    libxl__device *device;
+    char *be_path;
+    unsigned int be_dirs = 0, rc, i;
+
+    if (vscsi->devid == -1) {
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    /* Prealloc key+value: 4 toplevel + 4 per device */
+    i = 2 * (4 + (4 * vscsi->num_vscsi_devs));
+    back = flexarray_make(gc, i, 1);
+    front = flexarray_make(gc, 2 * 2, 1);
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
+    if ( rc != 0 ) goto out;
+
+    /* Check if backend device path is already present */
+    be_path = libxl__device_backend_path(gc, device);
+    if (!libxl__xs_directory(gc, XBT_NULL, be_path, &be_dirs) || !be_dirs) {
+        /* backend does not exist, create a new one */
+        flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", domid));
+        flexarray_append_pair(back, "online", "1");
+        flexarray_append_pair(back, "state", "1");
+        flexarray_append_pair(back, "feature-host", GCSPRINTF("%d", !!vscsi->feature_host));
+
+        flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
+        flexarray_append_pair(front, "state", "1");
+    }
+
+    for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+        libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
+        /* Trigger removal, otherwise create new device */
+        if (be_dirs) {
+            unsigned int nb = 0;
+            /* Preserve existing device */
+            if (libxl__xs_directory(gc, XBT_NULL, GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id), &nb) && nb) {
+                /* Trigger device removal by forwarding state to XenbusStateClosing */
+                if (v->remove)
+                    flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "5");
+                continue;
+            }
+        }
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-devname", v->vscsi_dev_id), v->p_devname);
+        switch (v->pdev_type) {
+            case LIBXL_VSCSI_PDEV_TYPE_WWN:
+                flexarray_append_pair(back,
+                                      GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
+                                      v->p_devname);
+                break;
+            case LIBXL_VSCSI_PDEV_TYPE_DEV:
+            case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+                flexarray_append_pair(back,
+                                      GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
+                                      GCSPRINTF("%u:%u:%u:%u", v->pdev.hst, v->pdev.chn, v->pdev.tgt, v->pdev.lun));
+                break;
+            case LIBXL_VSCSI_PDEV_TYPE_INVALID:
+            default:
+                rc = ERROR_FAIL;
+                goto out;
+        }
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/v-dev", v->vscsi_dev_id),
+                              GCSPRINTF("%u:%u:%u:%u", v->vdev.hst, v->vdev.chn, v->vdev.tgt, v->vdev.lun));
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), "1");
+    }
+
+    aodev->dev = device;
+    /* Either create new host or reconfigure existing host */
+    if (be_dirs == 0) {
+        libxl__device_generic_add(gc, XBT_NULL, device,
+                                  libxl__xs_kvs_of_flexarray(gc, back, back->count),
+                                  libxl__xs_kvs_of_flexarray(gc, front, front->count),
+                                  NULL);
+        aodev->action = LIBXL__DEVICE_ACTION_ADD;
+        libxl__wait_device_connection(egc, aodev);
+        rc = 0;
+        /* Done with new host */
+        goto out;
+    }
+
+    /* Only new devices, write them and do vscsi host reconfiguration */
+    xs_transaction_t t;
+retry_transaction:
+    t = xs_transaction_start(ctx->xsh);
+    libxl__xs_writev(gc, t, be_path,
+                     libxl__xs_kvs_of_flexarray(gc, back, back->count));
+    xs_write(ctx->xsh, t, GCSPRINTF("%s/state", be_path), "7", 2);
+    if (!xs_transaction_end(ctx->xsh, t, 0)) {
+        if (errno == EAGAIN)
+            goto retry_transaction;
+        LOGE(ERROR, "xs transaction failed");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    libxl__wait_for_backend(gc, be_path, "4");
+
+retry_transaction2:
+    t = xs_transaction_start(ctx->xsh);
+    for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+        libxl_vscsi_dev *v = vscsi->vscsi_devs + i;
+        if (v->remove) {
+            char *path, *val;
+            path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
+            val = libxl__xs_read(gc, t, path);
+            if (val && strcmp(val, "6") == 0) {
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+                path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
+                xs_rm(ctx->xsh, t, path);
+            } else {
+                LOGE(ERROR, "%s: %s has %s, expected 6", __func__, path, val);
+            }
+        }
+    }
+
+    if (!xs_transaction_end(ctx->xsh, t, 0)) {
+        if (errno == EAGAIN)
+            goto retry_transaction2;
+        LOGE(ERROR, "xs transaction failed");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    /* As we are not adding new device, skip waiting for it */
+    libxl__ao_complete(egc, aodev->ao, 0);
+
+    rc = 0;
+out:
+    aodev->rc = rc;
+    if(rc) aodev->callback(egc, aodev);
+    return;
+}
+
 int libxl__device_vtpm_setdefault(libxl__gc *gc, libxl_device_vtpm *vtpm)
 {
     int rc;
@@ -4104,6 +4264,8 @@ out:
  * libxl_device_disk_destroy
  * libxl_device_nic_remove
  * libxl_device_nic_destroy
+ * libxl_device_vscsi_remove
+ * libxl_device_vscsi_destroy
  * libxl_device_vtpm_remove
  * libxl_device_vtpm_destroy
  * libxl_device_vkb_remove
@@ -4147,6 +4309,10 @@ DEFINE_DEVICE_REMOVE(disk, destroy, 1)
 /* nic */
 DEFINE_DEVICE_REMOVE(nic, remove, 0)
 DEFINE_DEVICE_REMOVE(nic, destroy, 1)
+
+/* vtpm */
+DEFINE_DEVICE_REMOVE(vscsi, remove, 0)
+DEFINE_DEVICE_REMOVE(vscsi, destroy, 1)
 
 /* vkb */
 DEFINE_DEVICE_REMOVE(vkb, remove, 0)
@@ -4201,6 +4367,9 @@ DEFINE_DEVICE_ADD(disk)
 
 /* nic */
 DEFINE_DEVICE_ADD(nic)
+
+/* vscsi */
+DEFINE_DEVICE_ADD(vscsi)
 
 /* vtpm */
 DEFINE_DEVICE_ADD(vtpm)
@@ -6701,6 +6870,9 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
     } while (0);
 
     MERGE(nic, nics, COMPARE_DEVID, {});
+
+    /* FIXME */
+    MERGE(vscsi, vscsis, COMPARE_DEVID, {});
 
     MERGE(vtpm, vtpms, COMPARE_DEVID, {});
 

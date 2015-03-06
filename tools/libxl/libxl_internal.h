@@ -1794,6 +1794,10 @@ _hidden libxl__json_object *libxl__json_parse(libxl__gc *gc_opt, const char *s);
 _hidden int libxl__device_model_version_running(libxl__gc *gc, uint32_t domid);
   /* Return the system-wide default device model */
 _hidden libxl_device_model_version libxl__default_device_model(libxl__gc *gc);
+  /* Convert h:c:t:l string to int */
+_hidden int libxl_device_vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl);
+  /* Convert /dev/scsi to h:c:t:l */
+_hidden int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl);
 
 /* Check how executes hotplug script currently */
 int libxl__hotplug_settings(libxl__gc *gc, xs_transaction_t t);
@@ -2385,6 +2389,10 @@ _hidden void libxl__device_disk_add(libxl__egc *egc, uint32_t domid,
 _hidden void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_nic *nic,
                                    libxl__ao_device *aodev);
+
+_hidden void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
+                                     libxl_device_vscsi *vscsi,
+                                     libxl__ao_device *aodev);
 
 _hidden void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_vtpm *vtpm,
@@ -3004,6 +3012,10 @@ _hidden void libxl__add_disks(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
 _hidden void libxl__add_nics(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
                              libxl__multidev *multidev);
+
+_hidden void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+                               libxl_domain_config *d_config,
+                               libxl__multidev *multidev);
 
 _hidden void libxl__add_vtpms(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,

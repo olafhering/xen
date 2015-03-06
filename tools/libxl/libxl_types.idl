@@ -542,6 +542,37 @@ libxl_device_channel = Struct("device_channel", [
            ])),
 ])
 
+libxl_vscsi_pdev_type = Enumeration("vscsi_pdev_type", [
+    (0, "INVALID"),
+    (1, "DEV"),
+    (2, "WWN"),
+    (3, "HCTL"),
+    ], init_val = "LIBXL_VSCSI_PDEV_TYPE_INVALID")
+
+libxl_vscsi_hctl = Struct("vscsi_hctl", [
+    ("hst", uint32),
+    ("chn", uint32),
+    ("tgt", uint32),
+    ("lun", uint32),
+    ])
+
+libxl_vscsi_dev = Struct("vscsi_dev", [
+    ("vscsi_dev_id",     libxl_devid),
+    ("remove",           bool),
+    ("p_devname",        string),
+    ("pdev_type",        libxl_vscsi_pdev_type),
+    ("pdev",             libxl_vscsi_hctl),
+    ("vdev",             libxl_vscsi_hctl),
+    ])
+
+libxl_device_vscsi = Struct("device_vscsi", [
+    ("backend_domid",    libxl_domid),
+    ("devid",            libxl_devid),
+    ("v_hst",            uint32),
+    ("vscsi_devs",       Array(libxl_vscsi_dev, "num_vscsi_devs")),
+    ("feature_host",     bool),
+    ])
+
 libxl_domain_config = Struct("domain_config", [
     ("c_info", libxl_domain_create_info),
     ("b_info", libxl_domain_build_info),
@@ -551,6 +582,7 @@ libxl_domain_config = Struct("domain_config", [
     ("pcidevs", Array(libxl_device_pci, "num_pcidevs")),
     ("vfbs", Array(libxl_device_vfb, "num_vfbs")),
     ("vkbs", Array(libxl_device_vkb, "num_vkbs")),
+    ("vscsis", Array(libxl_device_vscsi, "num_vscsis")),
     ("vtpms", Array(libxl_device_vtpm, "num_vtpms")),
     # a channel manifests as a console with a name,
     # see docs/misc/channels.txt
@@ -583,6 +615,23 @@ libxl_nicinfo = Struct("nicinfo", [
     ("evtch", integer),
     ("rref_tx", integer),
     ("rref_rx", integer),
+    ], dir=DIR_OUT)
+
+libxl_vscsiinfo = Struct("vscsiinfo", [
+    ("backend", string),
+    ("backend_id", uint32),
+    ("frontend", string),
+    ("frontend_id", uint32),
+    ("devid", libxl_devid),
+    ("p_devname", string),
+    ("pdev", libxl_vscsi_hctl),
+    ("vdev", libxl_vscsi_hctl),
+    ("vscsi_dev_id", libxl_devid),
+    ("feature_host", bool),
+    ("vscsi_host_state", integer),
+    ("vscsi_dev_state", integer),
+    ("evtch", integer),
+    ("rref", integer),
     ], dir=DIR_OUT)
 
 libxl_vtpminfo = Struct("vtpminfo", [
