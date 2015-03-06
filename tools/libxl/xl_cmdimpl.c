@@ -6615,15 +6615,57 @@ int main_vscsilist(int argc, char **argv)
     return 0;
 }
 
+static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
+                       char *vdev)
+{
+    libxl_vscsi_dev v_dev = { }, *vd;
+    libxl_device_vscsi v_hst = { }, *vh;
+    int h, d, found = 0;
+    char *tmp = NULL;
+
+    /* Create a dummy cfg */
+    if (asprintf(&tmp, "0:0:0:0,%s", vdev) < 0) {
+        perror("asprintf");
+        goto out;
+    }
+
+    libxl_vscsi_dev_init(&v_dev);
+    libxl_device_vscsi_init(&v_hst);
+    if (libxl_device_vscsi_parse(ctx, tmp, &v_hst, &v_dev))
+        goto out;
+
+    for (h = 0; h < num; ++h) {
+        vh = &hosts[h];
+        for (d = 0; !found && d < vh->num_vscsi_devs; d++) {
+#define CMP(member) (vd->vdev.member == v_dev.vdev.member)
+            vd = &vh->vscsi_devs[d];
+            if (CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
+                if (vh->num_vscsi_devs > 1) {
+                    vd->remove = true;
+                    if (libxl_device_vscsi_add(ctx, domid, vh, 0)) {
+                        fprintf(stderr, "libxl_device_vscsi_remove failed.\n");
+                        goto out;
+                    }
+                } else {
+                    libxl_device_vscsi_remove(ctx, domid, vh, 0);
+                }
+                found = 1;
+            }
+#undef CMP
+        }
+    }
+out:
+    free(tmp);
+    return found;
+}
+
 int main_vscsidetach(int argc, char **argv)
 {
     int opt;
-    libxl_vscsi_dev v_dev = { }, *vd;
-    libxl_device_vscsi v_hst = { }, *vh;
     libxl_device_vscsi *vscsi_hosts;
-    char *tmp = NULL, *dom = argv[1], *vdev = argv[2];
+    char *dom = argv[1], *vdev = argv[2];
     uint32_t domid;
-    int num_hosts, h, d, found = 0;
+    int num_hosts, h, found = 0;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-detach", 1) {
         /* No options */
@@ -6640,49 +6682,17 @@ int main_vscsidetach(int argc, char **argv)
     }
 
     vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
-    if (!vscsi_hosts)
-        return 0;
+    if (vscsi_hosts)
+        found = vscsidetach(vscsi_hosts, num_hosts, domid, vdev);
 
-    /* Create a dummy cfg */
-    if (asprintf(&tmp, "0:0:0:0,%s", vdev) < 0) {
-        perror("asprintf");
-        goto done;
-    }
-
-    libxl_vscsi_dev_init(&v_dev);
-    libxl_device_vscsi_init(&v_hst);
-    if (libxl_device_vscsi_parse(ctx, tmp, &v_hst, &v_dev))
-        goto done;
-
-    for (h = 0; h < num_hosts; ++h) {
-        vh = &vscsi_hosts[h];
-        for (d = 0; !found && d < vh->num_vscsi_devs; d++) {
-#define CMP(member) (vd->vdev.member == v_dev.vdev.member)
-            vd = &vh->vscsi_devs[d];
-            if (CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
-                if (vh->num_vscsi_devs > 1) {
-                    vd->remove = true;
-                    if (libxl_device_vscsi_add(ctx, domid, vh, 0)) {
-                        fprintf(stderr, "libxl_device_vscsi_remove failed.\n");
-                        goto done;
-                    }
-                } else {
-                    libxl_device_vscsi_remove(ctx, domid, vh, 0);
-                }
-                found = 1;
-            }
-#undef CMP
-        }
-    }
     if (!found)
         fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, vdev, dom);
-done:
+
     if (vscsi_hosts) {
         for (h = 0; h < num_hosts; ++h)
             libxl_device_vscsi_dispose(&vscsi_hosts[h]);
         free(vscsi_hosts);
     }
-    free(tmp);
     return !found;
 }
 
