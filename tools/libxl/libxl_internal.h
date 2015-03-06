@@ -1797,7 +1797,7 @@ _hidden libxl_device_model_version libxl__default_device_model(libxl__gc *gc);
   /* Convert h:c:t:l string to int */
 _hidden int libxl__device_vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl);
   /* Convert /dev/scsi to h:c:t:l */
-_hidden int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl);
+_hidden int libxl__device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl);
 
 /* Check how executes hotplug script currently */
 int libxl__hotplug_settings(libxl__gc *gc, xs_transaction_t t);

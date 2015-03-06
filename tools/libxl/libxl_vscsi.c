@@ -70,7 +70,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
 
     new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_INVALID;
     if (strncmp(pdev, "/dev/", 5) == 0) {
-        if (libxl_device_vscsi_parse_pdev(gc, pdev, &new_dev->pdev) == 0)
+        if (libxl__device_vscsi_parse_pdev(gc, pdev, &new_dev->pdev) == 0)
             new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_DEV;
     } else if (strncmp(pdev, "naa.", 4) == 0) {
         memset(wwn, 0, sizeof(wwn));
