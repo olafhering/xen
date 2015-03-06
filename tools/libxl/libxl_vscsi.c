@@ -96,7 +96,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
 
 
     if (libxl_device_vscsi_parse_hctl(gc, vdev, &new_dev->vdev)) {
-        LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", pdev);
+        LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", vdev);
         rc = ERROR_INVAL;
         goto out;
     }
