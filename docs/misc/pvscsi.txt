@@ -109,6 +109,19 @@ at the same time the backend for the domU. In general the config flow is:
 - the connection to the LIO backstore gets a naa.WWN:LUN in the LIO frontend
 - the "pdev" in domU.cfg refers to that naa.WWN:LUN in the LIO frontend
 
+Example for targetcli and a xen-scsiback aware python-rtslib:
+
+ # modprobe -v xen-scsiback
+ # DEV=/dev/disk/by-id/ata-TSSTcorp_DVD+_-RW_TS-H653G_R4576GFZ638411
+ # NAME="my_dvd"
+ # NAA=$(printf "naa.%s\n" `od -N 8 -t x8 -A n < /dev/urandom`)
+ # targetcli "/backstores/pscsi create name=$NAME dev=${DEV}"
+ # targetcli "/xen-pvscsi create wwn=$NAA"
+ # targetcli "/xen-pvscsi/$NAA/tpg1/luns create /backstores/pscsi/$NAME"
+ # echo "vscsi=[ '${NAA}:0,0:0:0:0' ]"
+
+The last line is the domU.cfg snippet.
+
 
 == Xenstore Format ==
 
