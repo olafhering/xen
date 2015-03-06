@@ -321,7 +321,7 @@ int libxl_device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *h
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
             continue;
 
-        if (libxl_device_vscsi_parse_hctl(gc, de->d_name, hctl))
+        if (libxl__device_vscsi_parse_hctl(gc, de->d_name, hctl))
             continue;
 
         found = 1;

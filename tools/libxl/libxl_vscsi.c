@@ -1,7 +1,7 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 #include "libxl_internal.h"
 
-int libxl_device_vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl)
+int libxl__device_vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl)
 {
     unsigned int hst, chn, tgt, lun;
 
@@ -76,7 +76,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
         memset(wwn, 0, sizeof(wwn));
         if (sscanf(pdev, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn))
             new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_WWN;
-    } else if (libxl_device_vscsi_parse_hctl(gc, pdev, &new_dev->pdev) == 0) {
+    } else if (libxl__device_vscsi_parse_hctl(gc, pdev, &new_dev->pdev) == 0) {
         new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_HCTL;
     }
 
@@ -95,7 +95,7 @@ int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
     }
 
 
-    if (libxl_device_vscsi_parse_hctl(gc, vdev, &new_dev->vdev)) {
+    if (libxl__device_vscsi_parse_hctl(gc, vdev, &new_dev->vdev)) {
         LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", vdev);
         rc = ERROR_INVAL;
         goto out;
@@ -286,8 +286,8 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                                           be_path, vscsi_dev_id));
                     if (c && p && v) {
                         v_dev->p_devname = libxl__strdup(NOGC, c);
-                        if (libxl_device_vscsi_parse_hctl(gc, p, &v_dev->pdev) == 0 &&
-                            libxl_device_vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
+                        if (libxl__device_vscsi_parse_hctl(gc, p, &v_dev->pdev) == 0 &&
+                            libxl__device_vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
                             parsed_ok = true;
                         v_dev->vscsi_dev_id = vscsi_dev_id;
                         v_hst->v_hst = v_dev->vdev.hst;
