@@ -47,17 +47,6 @@ Implement libvirt integration.
     The source element describes the SCSI device as seen from the host.
 
 
-== Testing pvops ==
-
-Binary packages of targetcli.rpm can be found in home:olh:targetcli in OBS.
-Testsystem is 13.1. Manual steps:
-# modprobe scsi_debug add_host=4 dev_size_mb=1 max_luns=4 num_parts=4 num_tgts=4
-# targetcli backstores/pscsi create name=my_sdy dev=/dev/sdy
-# targetcli backstores/pscsi create name=my_sdx dev=/dev/sdx
-# targetcli backstores/pscsi create name=my_sdz dev=/dev/sdz
-# targetcli saveconfig
-# targetcli ls
-
 == History ==
 
 Support for PVSCSI was added to the classic xenlinux kernel and to xend in
