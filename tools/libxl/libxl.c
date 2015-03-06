@@ -2004,7 +2004,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
 
     GCNEW(device);
     rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
-    if ( rc != 0 ) goto out;
+    if (rc) goto out;
 
     /* Check if backend device path is already present */
     be_path = libxl__device_backend_path(gc, device);
