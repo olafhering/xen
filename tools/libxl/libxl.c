@@ -4346,6 +4346,7 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
 /* The following functions are defined:
  * libxl_device_disk_add
  * libxl_device_nic_add
+ * libxl_device_vscsi_add
  * libxl_device_vtpm_add
  */
 
