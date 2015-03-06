@@ -280,7 +280,8 @@ libxl_device_model_version libxl__default_device_model(libxl__gc *gc)
     return LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN;
 }
 
-int libxl__device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl)
+int libxl__device_vscsi_parse_pdev(libxl__gc *gc, char *pdev,
+                                   libxl_vscsi_hctl *hctl)
 {
     struct stat dentry;
     char *sysfs;
