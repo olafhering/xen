@@ -14,13 +14,6 @@ How to do live migration?
    domU.cfg. But what about pdev from 'xl scsi-attach pdev vdev'? Its required
    to adjust h:c:t:l on the target host.
 
-Implement checks for duplicate pdev assignments?
- - Not sure if SCSI devices can be shared. Will the state be consistent during
-   concurrent access? Should the host admin assume cooperative access from
-   multiple domUs?
- - The easiest way would be to do nothing and assume the host admin knows what
-   to do.
-
 How to handle FIXME in libxl_retrieve_domain_configuration?
  - "MERGE(vscsi, vscsis, COMPARE_DEVID, {});", when does this code run?
  
