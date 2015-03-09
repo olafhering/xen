@@ -1992,15 +1992,17 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     char *be_path;
     unsigned int be_dirs = 0, rc, i;
 
-    if (vscsi->devid == -1) {
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
     /* Prealloc key+value: 4 toplevel + 4 per device */
     i = 2 * (4 + (4 * vscsi->num_vscsi_devs));
     back = flexarray_make(gc, i, 1);
     front = flexarray_make(gc, 2 * 2, 1);
+
+    if (vscsi->devid == -1) {
+        if ((vscsi->devid = libxl__device_nextid(gc, domid, "vscsi")) < 0) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+    }
 
     GCNEW(device);
     rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
