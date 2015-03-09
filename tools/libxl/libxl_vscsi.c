@@ -160,7 +160,6 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
 
     if (found_host == -1) {
         /* Not found, create new host */
-        new_host->devid = 0;
         tmp = new_host;
     } else {
         tmp = vscsi_hosts + found_host;
