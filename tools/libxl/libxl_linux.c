@@ -280,8 +280,7 @@ libxl_device_model_version libxl__default_device_model(libxl__gc *gc)
     return LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN;
 }
 
-int libxl__device_vscsi_parse_pdev(libxl__gc *gc, char *pdev,
-                                   libxl_vscsi_hctl *hctl)
+static int libxl__vscsi_parse_dev(libxl__gc *gc, char *pdev, libxl_vscsi_hctl *hctl)
 {
     struct stat dentry;
     char *sysfs;
@@ -338,5 +337,49 @@ int libxl__device_vscsi_parse_pdev(libxl__gc *gc, char *pdev,
 
     rc = 0;
 out:
+    return rc;
+}
+
+static bool vscsi_wwn_valid(const char *p)
+{
+    bool ret = true;
+    int i = 0;
+
+    for (i = 0; i < 16; i++, p++) {
+        if (*p >= '0' && *p <= '9')
+            continue;
+        if (*p >= 'a' && *p <= 'f')
+            continue;
+        if (*p >= 'A' && *p <= 'F')
+            continue;
+        ret = false;
+        break;
+    }
+    return ret;
+}
+
+int libxl__device_vscsi_parse_pdev(libxl__gc *gc, char *pdev, libxl_vscsi_dev *new_dev)
+{
+    int rc = 0;
+    unsigned int lun;
+    char wwn[16 + 1];
+
+    if (strncmp(pdev, "/dev/", 5) == 0) {
+        /* Either xenlinux or pvops with properly configured alias in sysfs */
+        if (libxl__vscsi_parse_dev(gc, pdev, &new_dev->pdev) == 0)
+            new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_DEV;
+    } else if (strncmp(pdev, "naa.", 4) == 0) {
+        /* WWN as understood by pvops */
+        memset(wwn, 0, sizeof(wwn));
+        if (sscanf(pdev, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
+            new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_WWN;
+            new_dev->pdev.lun = lun;
+        }
+    } else if (libxl__device_vscsi_parse_hctl(gc, pdev, &new_dev->pdev) == 0) {
+        /* Either xenlinux or pvops with properly configured alias in sysfs */
+        new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_HCTL;
+    } else
+        rc = ERROR_INVAL;
+
     return rc;
 }
