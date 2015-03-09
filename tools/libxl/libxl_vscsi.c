@@ -187,9 +187,8 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
 
 out:
     if (vscsi_hosts) {
-        for (i = 0; i < num_hosts; ++i){
+        for (i = 0; i < num_hosts; ++i)
             libxl_device_vscsi_dispose(&vscsi_hosts[i]);
-        }
         free(vscsi_hosts);
     }
     libxl_device_vscsi_dispose(new_host);
