@@ -116,7 +116,7 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
     GC_INIT(ctx);
     libxl_vscsi_dev *new_dev = NULL;
     libxl_device_vscsi *new_host, *vscsi_hosts = NULL, *tmp;
-    int rc, found_host = -1, i, j;
+    int rc, found_host = -1, i;
     int num_hosts;
 
     GCNEW(new_host);
@@ -130,27 +130,10 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         goto out;
     }
 
-    /* FIXME: foreach domain, because pdev is not multiplexed by backend */
-    /* FIXME: other device types do not have the multiplexing issue */
-    /* FIXME: pci can solve it by unbinding the native driver */
-
     /* Look for existing vscsi_host for given domain */
     vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
     if (vscsi_hosts) {
         for (i = 0; i < num_hosts; ++i) {
-            for (j = 0; j < vscsi_hosts[i].num_vscsi_devs; j++) {
-                if (vscsi_hosts[i].vscsi_devs[j].pdev.hst == new_dev->pdev.hst &&
-                    vscsi_hosts[i].vscsi_devs[j].pdev.chn == new_dev->pdev.chn &&
-                    vscsi_hosts[i].vscsi_devs[j].pdev.tgt == new_dev->pdev.tgt &&
-                    vscsi_hosts[i].vscsi_devs[j].pdev.lun == new_dev->pdev.lun) {
-                    LOG(ERROR, "Host device '%u:%u:%u:%u' is already in use"
-                        " by guest vscsi specification '%u:%u:%u:%u'.\n",
-                        new_dev->pdev.hst, new_dev->pdev.chn, new_dev->pdev.tgt, new_dev->pdev.lun,
-                        new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
-                    rc = ERROR_INVAL;
-                    goto out;
-                }
-            }
             if (vscsi_hosts[i].v_hst == new_host->v_hst) {
                 found_host = i;
                 break;
