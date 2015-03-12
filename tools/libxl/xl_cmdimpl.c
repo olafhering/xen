@@ -1508,14 +1508,17 @@ static void parse_config_data(const char *config_source,
             libxl_device_vscsi_init(&v_hst);
             libxl_vscsi_dev_init(&v_dev);
 
-            if (libxl_device_vscsi_parse(ctx, buf, &v_hst, &v_dev))
+            if (xlu_vscsi_parse(config, buf, &v_hst, &v_dev))
                 exit (-1);
 
             if (d_config->num_vscsis) {
                 for (i = 0; i < d_config->num_vscsis; i++) {
                     if (d_config->vscsis[i].v_hst == v_hst.v_hst) {
                         tmp = &d_config->vscsis[i];
-                        libxl_device_vscsi_append_dev(ctx, tmp, &v_dev);
+                        if (xlu_vscsi_append_dev(ctx, tmp, &v_dev)) {
+                            fprintf(stderr, "xlu_vscsi_append_dev failed\n");
+                            exit(-1);
+                        }
                         hst_found = true;
                         break;
                     }
@@ -1530,7 +1533,10 @@ static void parse_config_data(const char *config_source,
                 v_hst.devid = d_config->num_vscsis;
                 libxl_device_vscsi_copy(ctx, tmp, &v_hst);
 
-                libxl_device_vscsi_append_dev(ctx, tmp, &v_dev);
+                if (xlu_vscsi_append_dev(ctx, tmp, &v_dev)) {
+                    fprintf(stderr, "xlu_vscsi_append_dev failed\n");
+                    exit(-1);
+                }
 
                 d_config->num_vscsis++;
             }
@@ -6496,6 +6502,7 @@ int main_vscsiattach(int argc, char **argv)
 {
     uint32_t domid;
     int opt, rc;
+    XLU_Config *config = NULL;
     libxl_device_vscsi *vscsi_host = NULL;
     char *cfg = NULL, *feat_buf = NULL;
 
@@ -6531,8 +6538,15 @@ int main_vscsiattach(int argc, char **argv)
     vscsi_host = xmalloc(sizeof(*vscsi_host));
     libxl_device_vscsi_init(vscsi_host);
 
+    config = xlu_cfg_init(stderr, "command line");
+    if (!config) {
+        fprintf(stderr, "Failed to allocate for configuration\n");
+        rc = 1;
+        goto out;
+    }
+
     /* Parse config string and store result */
-    rc = libxl_device_vscsi_get_host(ctx, domid, cfg, vscsi_host);
+    rc = xlu_vscsi_get_host(config, ctx, domid, cfg, vscsi_host);
     if (rc < 0)
         goto out;
 
@@ -6554,6 +6568,8 @@ int main_vscsiattach(int argc, char **argv)
 
     rc = 0;
 out:
+    if (config)
+        xlu_cfg_destroy(config);
     if (vscsi_host)
         libxl_device_vscsi_dispose(vscsi_host);
     free(vscsi_host);
@@ -6621,10 +6637,17 @@ int main_vscsilist(int argc, char **argv)
 static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
                        char *vdev)
 {
+    XLU_Config *config = NULL;
     libxl_vscsi_dev v_dev = { }, *vd;
     libxl_device_vscsi v_hst = { }, *vh;
     int h, d, found = 0;
     char *tmp = NULL;
+
+    config = xlu_cfg_init(stderr, "command line");
+    if (!config) {
+        fprintf(stderr, "Failed to allocate for configuration\n");
+        goto out;
+    }
 
     /* Create a dummy cfg */
     if (asprintf(&tmp, "0:0:0:0,%s", vdev) < 0) {
@@ -6634,7 +6657,7 @@ static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
 
     libxl_vscsi_dev_init(&v_dev);
     libxl_device_vscsi_init(&v_hst);
-    if (libxl_device_vscsi_parse(ctx, tmp, &v_hst, &v_dev))
+    if (xlu_vscsi_parse(config, tmp, &v_hst, &v_dev))
         goto out;
 
     for (h = 0; h < num; ++h) {
@@ -6658,6 +6681,8 @@ static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
         }
     }
 out:
+    if (config)
+        xlu_cfg_destroy(config);
     free(tmp);
     return found;
 }

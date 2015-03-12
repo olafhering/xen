@@ -1,7 +1,7 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 #include "libxl_internal.h"
 
-int libxl__device_vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl)
+static int vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl)
 {
     unsigned int hst, chn, tgt, lun;
 
@@ -13,168 +13,6 @@ int libxl__device_vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *h
     hctl->tgt = tgt;
     hctl->lun = lun;
     return 0;
-}
-
-static char *vscsi_trim_string(char *s)
-{
-    unsigned int len;
-
-    while (isspace(*s))
-        s++;
-    len = strlen(s);
-    while (len-- > 1 && isspace(s[len]))
-        s[len] = '\0';
-    return s;
-}
-
-int libxl_device_vscsi_parse(libxl_ctx *ctx, const char *cfg,
-                             libxl_device_vscsi *new_host,
-                             libxl_vscsi_dev *new_dev)
-{
-    GC_INIT(ctx);
-    int rc;
-    char *buf, *pdev, *vdev, *fhost;
-
-    buf = libxl__strdup(gc, cfg);
-
-    pdev = strtok(buf, ",");
-    vdev = strtok(NULL, ",");
-    fhost = strtok(NULL, ",");
-    if (!(pdev && vdev)) {
-        LOG(ERROR, "invalid vscsi= devspec: '%s'\n", cfg);
-        rc = ERROR_INVAL;
-        goto out;
-    }
-
-    pdev = vscsi_trim_string(pdev);
-    vdev = vscsi_trim_string(vdev);
-
-    new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_INVALID;
-    rc = libxl__device_vscsi_parse_pdev(gc, pdev, new_dev);
-    switch (rc) {
-        case ERROR_NOPARAVIRT:
-            LOG(ERROR, "vscsi: not supported");
-            goto out;
-        default:
-            LOG(ERROR, "vscsi: failed to parse %s", pdev);
-            goto out;
-    }
-
-    switch (new_dev->pdev_type) {
-        case LIBXL_VSCSI_PDEV_TYPE_WWN:
-        case LIBXL_VSCSI_PDEV_TYPE_DEV:
-        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-            new_dev->p_devname = libxl__strdup(NOGC, pdev);
-            break;
-        case LIBXL_VSCSI_PDEV_TYPE_INVALID:
-            LOG(ERROR, "vscsi: invalid pdev '%s'", pdev);
-            rc = ERROR_INVAL;
-            goto out;
-    }
-
-
-    if (libxl__device_vscsi_parse_hctl(gc, vdev, &new_dev->vdev)) {
-        LOG(ERROR, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", vdev);
-        rc = ERROR_INVAL;
-        goto out;
-    }
-
-    /* Record group index */
-    new_host->v_hst = new_dev->vdev.hst;
-
-    if (fhost) {
-        fhost = vscsi_trim_string(fhost);
-        new_host->feature_host = strcmp(fhost, "feature-host") == 0;
-        if (!new_host->feature_host) {
-            LOG(ERROR, "vscsi: invalid option '%s', expecting %s", fhost, "feature-host");
-            rc = ERROR_INVAL;
-            goto out;
-        }
-    }
-    rc = 0;
-
-out:
-    GC_FREE;
-    return rc;
-}
-
-void libxl_device_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
-                                   libxl_vscsi_dev *dev)
-{
-    GC_INIT(ctx);
-    hst->vscsi_devs = libxl__realloc(NOGC, hst->vscsi_devs,
-                                     sizeof(*dev) * (hst->num_vscsi_devs + 1));
-    libxl_vscsi_dev_init(hst->vscsi_devs + hst->num_vscsi_devs);
-    dev->vscsi_dev_id = hst->num_vscsi_devs;
-    libxl_vscsi_dev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
-    hst->num_vscsi_devs++;
-    GC_FREE;
-}
-
-int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg, libxl_device_vscsi *vscsi_host)
-{
-    GC_INIT(ctx);
-    libxl_vscsi_dev *new_dev = NULL;
-    libxl_device_vscsi *new_host, *vscsi_hosts = NULL, *tmp;
-    int rc, found_host = -1, i;
-    int num_hosts;
-
-    GCNEW(new_host);
-    libxl_device_vscsi_init(new_host);
-
-    GCNEW(new_dev);
-    libxl_vscsi_dev_init(new_dev);
-
-    if (libxl_device_vscsi_parse(ctx, cfg, new_host, new_dev)) {
-        rc = ERROR_INVAL;
-        goto out;
-    }
-
-    /* Look for existing vscsi_host for given domain */
-    vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
-    if (vscsi_hosts) {
-        for (i = 0; i < num_hosts; ++i) {
-            if (vscsi_hosts[i].v_hst == new_host->v_hst) {
-                found_host = i;
-                break;
-            }
-        }
-    }
-
-    if (found_host == -1) {
-        /* Not found, create new host */
-        tmp = new_host;
-    } else {
-        tmp = vscsi_hosts + found_host;
-
-        /* Check if the vdev address is already taken */
-        for (i = 0; i < tmp->num_vscsi_devs; ++i) {
-            if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
-                tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
-                tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
-                LOG(ERROR, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
-                        new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
-                rc = ERROR_INVAL;
-                goto out;
-            }
-        }
-    }
-
-    libxl_device_vscsi_copy(ctx, vscsi_host, tmp);
-    libxl_device_vscsi_append_dev(ctx, vscsi_host, new_dev);
-
-    rc = 0;
-
-out:
-    if (vscsi_hosts) {
-        for (i = 0; i < num_hosts; ++i)
-            libxl_device_vscsi_dispose(&vscsi_hosts[i]);
-        free(vscsi_hosts);
-    }
-    libxl_device_vscsi_dispose(new_host);
-    libxl_vscsi_dev_dispose(new_dev);
-    GC_FREE;
-    return rc;
 }
 
 libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int *num)
@@ -242,8 +80,8 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                                           be_path, vscsi_dev_id));
                     if (c && p && v) {
                         v_dev->p_devname = libxl__strdup(NOGC, c);
-                        if (libxl__device_vscsi_parse_hctl(gc, p, &v_dev->pdev) == 0 &&
-                            libxl__device_vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
+                        if (vscsi_parse_hctl(gc, p, &v_dev->pdev) == 0 &&
+                            vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
                             parsed_ok = true;
                         v_dev->vscsi_dev_id = vscsi_dev_id;
                         v_hst->v_hst = v_dev->vdev.hst;
