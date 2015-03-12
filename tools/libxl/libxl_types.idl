@@ -547,7 +547,7 @@ libxl_vscsi_pdev_type = Enumeration("vscsi_pdev_type", [
     (1, "DEV"),
     (2, "WWN"),
     (3, "HCTL"),
-    ], init_val = "LIBXL_VSCSI_PDEV_TYPE_INVALID")
+    ])
 
 libxl_vscsi_hctl = Struct("vscsi_hctl", [
     ("hst", uint32),
