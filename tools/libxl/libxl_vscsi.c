@@ -111,7 +111,7 @@ void libxl_device_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
     GC_FREE;
 }
 
-int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg, libxl_device_vscsi **vscsi_host)
+int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg, libxl_device_vscsi *vscsi_host)
 {
     GC_INIT(ctx);
     libxl_vscsi_dev *new_dev = NULL;
@@ -160,11 +160,8 @@ int libxl_device_vscsi_get_host(libxl_ctx *ctx, uint32_t domid, const char *cfg,
         }
     }
 
-    /* The caller gets a copy along with appended new_dev */
-    *vscsi_host = libxl__malloc(NOGC, sizeof(*new_host));
-    libxl_device_vscsi_init(*vscsi_host);
-    libxl_device_vscsi_copy(ctx, *vscsi_host, tmp);
-    libxl_device_vscsi_append_dev(ctx, *vscsi_host, new_dev);
+    libxl_device_vscsi_copy(ctx, vscsi_host, tmp);
+    libxl_device_vscsi_append_dev(ctx, vscsi_host, new_dev);
 
     rc = 0;
 

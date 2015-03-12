@@ -6528,8 +6528,11 @@ int main_vscsiattach(int argc, char **argv)
         goto out;;
     }
 
+    vscsi_host = xmalloc(sizeof(*vscsi_host));
+    libxl_device_vscsi_init(vscsi_host);
+
     /* Parse config string and store result */
-    rc = libxl_device_vscsi_get_host(ctx, domid, cfg, &vscsi_host);
+    rc = libxl_device_vscsi_get_host(ctx, domid, cfg, vscsi_host);
     if (rc < 0)
         goto out;
 
