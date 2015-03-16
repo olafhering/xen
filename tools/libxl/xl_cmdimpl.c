@@ -6571,8 +6571,7 @@ int main_vscsiattach(int argc, char **argv)
 out:
     if (config)
         xlu_cfg_destroy(config);
-    if (vscsi_host)
-        libxl_device_vscsi_dispose(vscsi_host);
+    libxl_device_vscsi_dispose(vscsi_host);
     free(vscsi_host);
     free(str);
     free(feat_buf);
