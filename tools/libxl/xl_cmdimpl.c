@@ -6504,7 +6504,7 @@ int main_vscsiattach(int argc, char **argv)
     int opt, rc;
     XLU_Config *config = NULL;
     libxl_device_vscsi *vscsi_host = NULL;
-    char *cfg = NULL, *feat_buf = NULL;
+    char *str = NULL, *feat_buf = NULL;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
         /* No options */
@@ -6529,7 +6529,7 @@ int main_vscsiattach(int argc, char **argv)
         }
     }
 
-    if (asprintf(&cfg, "%s,%s%s", argv[2], argv[3], feat_buf ?: "") < 0) {
+    if (asprintf(&str, "%s,%s%s", argv[2], argv[3], feat_buf ?: "") < 0) {
         perror("asprintf");
         rc = 1;
         goto out;;
@@ -6546,7 +6546,7 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Parse config string and store result */
-    rc = xlu_vscsi_get_host(config, ctx, domid, cfg, vscsi_host);
+    rc = xlu_vscsi_get_host(config, ctx, domid, str, vscsi_host);
     if (rc < 0)
         goto out;
 
@@ -6573,7 +6573,7 @@ out:
     if (vscsi_host)
         libxl_device_vscsi_dispose(vscsi_host);
     free(vscsi_host);
-    free(cfg);
+    free(str);
     free(feat_buf);
     return rc;
 }
