@@ -1531,6 +1531,7 @@ static void parse_config_data(const char *config_source,
                 libxl_device_vscsi_init(tmp);
 
                 v_hst.devid = d_config->num_vscsis;
+                v_hst.next_vscsi_dev_id = 0;
                 libxl_device_vscsi_copy(ctx, tmp, &v_hst);
 
                 if (xlu_vscsi_append_dev(ctx, tmp, &v_dev)) {

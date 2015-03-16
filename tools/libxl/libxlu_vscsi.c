@@ -235,9 +235,10 @@ int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
 
     hst->vscsi_devs = devs;
     libxl_vscsi_dev_init(hst->vscsi_devs + hst->num_vscsi_devs);
-    dev->vscsi_dev_id = hst->num_vscsi_devs;
+    dev->vscsi_dev_id = hst->next_vscsi_dev_id;
     libxl_vscsi_dev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
     hst->num_vscsi_devs++;
+    hst->next_vscsi_dev_id++;
     rc = 0;
 out:
     return rc;

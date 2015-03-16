@@ -85,6 +85,8 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                             vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
                             parsed_ok = true;
                         v_dev->vscsi_dev_id = vscsi_dev_id;
+                        if (vscsi_dev_id > v_hst->next_vscsi_dev_id)
+                            v_hst->next_vscsi_dev_id = vscsi_dev_id + 1;
                         v_hst->v_hst = v_dev->vdev.hst;
                     }
                 }
