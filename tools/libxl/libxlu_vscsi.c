@@ -287,7 +287,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
             if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
-                LOG(cfg, "Target vscsi specification '%u:%u:%u:%u' is already taken\n",
+                LOG(cfg, "vscsi: vdev '%u:%u:%u:%u' is already used.\n",
                     new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
                 rc = ERROR_INVAL;
                 goto out;
