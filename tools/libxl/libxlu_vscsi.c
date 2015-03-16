@@ -148,15 +148,15 @@ int xlu_vscsi_parse(XLU_Config *cfg, const char *str,
                              libxl_vscsi_dev *new_dev)
 {
     int rc;
-    char *buf, *pdev, *vdev, *fhost;
+    char *tmp, *pdev, *vdev, *fhost;
 
-    buf = strdup(str);
-    if (!buf) {
+    tmp = strdup(str);
+    if (!tmp) {
         rc = ERROR_NOMEM;
         goto out;
     }
 
-    pdev = strtok(buf, ",");
+    pdev = strtok(tmp, ",");
     vdev = strtok(NULL, ",");
     fhost = strtok(NULL, ",");
     if (!(pdev && vdev)) {
