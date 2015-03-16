@@ -90,7 +90,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
 
                 if (!parsed_ok) {
                     /* FIXME what if xenstore is broken? */
-                    LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "%s/scsi-devs/%s failed to parse", be_path, *devs_dir);
+                    LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "%s/vscsi-devs/%s failed to parse", be_path, *devs_dir);
                     continue;
                 }
             }
