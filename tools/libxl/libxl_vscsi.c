@@ -80,6 +80,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                                           be_path, vscsi_dev_id));
                     if (c && p && v) {
                         v_dev->p_devname = libxl__strdup(NOGC, c);
+                        /* FIXME pdev not always in hctl format with pvops */
                         if (vscsi_parse_hctl(gc, p, &v_dev->pdev) == 0 &&
                             vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
                             parsed_ok = true;
