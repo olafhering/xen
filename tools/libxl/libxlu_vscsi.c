@@ -160,7 +160,7 @@ int xlu_vscsi_parse(XLU_Config *cfg, const char *str,
     vdev = strtok(NULL, ",");
     fhost = strtok(NULL, ",");
     if (!(pdev && vdev)) {
-        LOG(cfg, "invalid vscsi= devspec: '%s'\n", str);
+        LOG(cfg, "vscsi: invalid devspec: '%s'\n", str);
         rc = ERROR_INVAL;
         goto out;
     }
