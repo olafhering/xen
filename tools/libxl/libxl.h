@@ -723,7 +723,7 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
 /*
  * LIBXL_HAVE_VSCSI
  *
- * If this is defined, the Memory Bandwidth Monitoring feature is supported.
+ * If this is defined, the PV SCSI feature is supported.
  */
 #define LIBXL_HAVE_VSCSI 1
 
