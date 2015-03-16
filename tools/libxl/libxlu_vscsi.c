@@ -124,7 +124,7 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, char *pdev, libxl_vscsi_dev *n
     char wwn[16 + 1];
 
     if (strncmp(pdev, "/dev/", 5) == 0) {
-        /* Either xenlinux or pvops with properly configured alias in sysfs */
+        /* Either xenlinux, or pvops with properly configured alias in sysfs */
         if (xlu__vscsi_parse_dev(cfg, pdev, &new_dev->pdev) == 0)
             new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_DEV;
     } else if (strncmp(pdev, "naa.", 4) == 0) {
@@ -135,7 +135,7 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, char *pdev, libxl_vscsi_dev *n
             new_dev->pdev.lun = lun;
         }
     } else if (xlu__vscsi_parse_hctl(pdev, &new_dev->pdev) == 0) {
-        /* Either xenlinux or pvops with properly configured alias in sysfs */
+        /* Either xenlinux, or pvops with properly configured alias in sysfs */
         new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_HCTL;
     } else
         rc = ERROR_INVAL;
