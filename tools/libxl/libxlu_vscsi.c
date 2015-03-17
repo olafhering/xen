@@ -279,6 +279,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
 
     if (found_host == -1) {
         /* Not found, create new host */
+        new_host->next_vscsi_dev_id = 0;
         tmp = new_host;
     } else {
         tmp = vscsi_hosts + found_host;
