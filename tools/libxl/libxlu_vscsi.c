@@ -313,8 +313,10 @@ out:
             libxl_device_vscsi_dispose(&vscsi_hosts[i]);
         free(vscsi_hosts);
     }
-    libxl_device_vscsi_dispose(new_host);
     libxl_vscsi_dev_dispose(new_dev);
+    libxl_device_vscsi_dispose(new_host);
+    free(new_dev);
+    free(new_host);
     return rc;
 }
 
