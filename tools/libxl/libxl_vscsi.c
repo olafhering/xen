@@ -78,7 +78,8 @@ static bool vscsi_parse_pdev(libxl_ctx *ctx, libxl_vscsi_dev *v_dev,
     return parsed_ok;
 }
 
-libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int *num)
+libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
+                                            int *num)
 {
     GC_INIT(ctx);
     libxl_vscsi_dev *v_dev;
@@ -91,7 +92,8 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
     unsigned int ndirs = 0, ndevs_dirs = 0, i;
     unsigned int vscsi_dev_id;
 
-    fe_path = libxl__sprintf(gc, "%s/device/vscsi", libxl__xs_get_dompath(gc, domid));
+    fe_path = libxl__sprintf(gc, "%s/device/vscsi",
+                             libxl__xs_get_dompath(gc, domid));
     dir = libxl__xs_directory(gc, XBT_NULL, fe_path, &ndirs);
     /* Nothing to do */
     if (!(dir && ndirs))
@@ -133,14 +135,14 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                 r = sscanf(*devs_dir, "dev-%u", &vscsi_dev_id);
                 if (r == 1) {
                     c = libxl__xs_read(gc, XBT_NULL,
-                                         GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname",
-                                         be_path, vscsi_dev_id));
+                                       GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname",
+                                       be_path, vscsi_dev_id));
                     p = libxl__xs_read(gc, XBT_NULL,
-                                         GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev",
-                                         be_path, vscsi_dev_id));
+                                       GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev",
+                                       be_path, vscsi_dev_id));
                     v = libxl__xs_read(gc, XBT_NULL,
-                                          GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev",
-                                          be_path, vscsi_dev_id));
+                                       GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev",
+                                       be_path, vscsi_dev_id));
                     if (c && p && v)
                         parsed_ok = vscsi_parse_pdev(ctx, v_dev, c, p, v);
 
@@ -155,7 +157,9 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
 
                 if (!parsed_ok) {
                     /* FIXME what if xenstore is broken? */
-                    LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "%s/vscsi-devs/%s failed to parse", be_path, *devs_dir);
+                    LIBXL__LOG(ctx, LIBXL__LOG_ERROR,
+                               "%s/vscsi-devs/%s failed to parse",
+                               be_path, *devs_dir);
                     continue;
                 }
             }
