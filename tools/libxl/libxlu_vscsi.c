@@ -7,6 +7,7 @@
 #define LOG(_c, _x, _a...) \
         if((_c) && (_c)->report) fprintf((_c)->report, _x, ##_a)
 
+#ifdef __linux__
 static int xlu__vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
     unsigned int hst, chn, tgt, lun;
@@ -157,6 +158,13 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
     libxl_vscsi_hctl_dispose(&hctl);
     return rc;
 }
+#else /* ! __linux__ */
+static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
+                                 libxl_vscsi_pdev *pdev)
+{
+    return ERROR_FAIL;
+}
+#endif
 
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                              libxl_device_vscsi *new_host,
