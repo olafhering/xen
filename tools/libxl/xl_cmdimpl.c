@@ -1508,7 +1508,7 @@ static void parse_config_data(const char *config_source,
             libxl_device_vscsi_init(&v_hst);
             libxl_vscsi_dev_init(&v_dev);
 
-            if (xlu_vscsi_parse(config, buf, &v_hst, &v_dev))
+            if (xlu_vscsi_parse(config, ctx, buf, &v_hst, &v_dev))
                 exit (-1);
 
             if (d_config->num_vscsis) {
@@ -6608,9 +6608,7 @@ int main_vscsilist(int argc, char **argv)
         for (h = 0; h < num_hosts; ++h) {
             for (d = 0; d < vscsi_hosts[h].num_vscsi_devs; d++) {
                 if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
-                    char pdev[64], vdev[64];
-                    snprintf(pdev, sizeof(pdev), "%u:%u:%u:%u",
-                             vscsiinfo.pdev.hst, vscsiinfo.pdev.chn, vscsiinfo.pdev.tgt, vscsiinfo.pdev.lun);
+                    char vdev[64];
                     snprintf(vdev, sizeof(vdev), "%u:%u:%u:%u",
                              vscsiinfo.vdev.hst, vscsiinfo.vdev.chn, vscsiinfo.vdev.tgt, vscsiinfo.vdev.lun);
                     /*      Idx  BE  state Sta */
@@ -6619,7 +6617,7 @@ int main_vscsilist(int argc, char **argv)
                            vscsiinfo.backend_id,
                            vscsiinfo.vscsi_host_state,
                            vscsiinfo.backend_id,
-                           pdev, vdev,
+                           vscsiinfo.pdev.p_devname, vdev,
                            vscsiinfo.vscsi_dev_state);
 
                     libxl_vscsiinfo_dispose(&vscsiinfo);
@@ -6657,7 +6655,7 @@ static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
 
     libxl_vscsi_dev_init(&v_dev);
     libxl_device_vscsi_init(&v_hst);
-    if (xlu_vscsi_parse(config, tmp, &v_hst, &v_dev))
+    if (xlu_vscsi_parse(config, ctx, tmp, &v_hst, &v_dev))
         goto out;
 
     for (h = 0; h < num; ++h) {

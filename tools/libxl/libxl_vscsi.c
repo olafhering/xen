@@ -1,7 +1,7 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 #include "libxl_internal.h"
 
-static int vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl)
+static int vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
     unsigned int hst, chn, tgt, lun;
 
@@ -13,6 +13,69 @@ static int vscsi_parse_hctl(libxl__gc *gc, char *str, libxl_vscsi_hctl *hctl)
     hctl->tgt = tgt;
     hctl->lun = lun;
     return 0;
+}
+
+static bool vscsi_wwn_valid(const char *p)
+{
+    bool ret = true;
+    int i = 0;
+
+    for (i = 0; i < 16; i++, p++) {
+        if (*p >= '0' && *p <= '9')
+            continue;
+        if (*p >= 'a' && *p <= 'f')
+            continue;
+        if (*p >= 'A' && *p <= 'F')
+            continue;
+        ret = false;
+        break;
+    }
+    return ret;
+}
+
+static bool vscsi_parse_pdev(libxl_ctx *ctx, libxl_vscsi_dev *v_dev,
+                             char *c, char *p, char *v)
+{
+    GC_INIT(ctx);
+    libxl_vscsi_hctl hctl;
+    unsigned int lun;
+    char wwn[16 + 1];
+    bool parsed_ok = false;
+
+    libxl_vscsi_hctl_init(&hctl);
+
+    v_dev->pdev.p_devname = libxl__strdup(NOGC, c);
+
+    /* Translate p-dev back into pdev.type, expect a valid p-devname */
+    if (strncmp(c, "/dev/", 5) == 0) {
+        /* Either xenlinux, or pvops with properly configured alias in sysfs */
+        if (vscsi_parse_hctl(p, &hctl) == 0) {
+            libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_DEV);
+            libxl_vscsi_hctl_copy(ctx, &v_dev->pdev.u.dev, &hctl);
+            parsed_ok = true;
+        }
+    } else if (strncmp(c, "naa.", 4) == 0) {
+        /* WWN as understood by pvops */
+        memset(wwn, 0, sizeof(wwn));
+        if (sscanf(p, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
+            libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
+            v_dev->pdev.u.wwn = libxl__strdup(NOGC, c);
+            parsed_ok = true;
+        }
+    } else if (vscsi_parse_hctl(p, &hctl) == 0) {
+        /* Either xenlinux, or pvops with properly configured alias in sysfs */
+        libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
+        libxl_vscsi_hctl_copy(ctx, &v_dev->pdev.u.hctl, &hctl);
+        parsed_ok = true;
+    }
+
+    if (parsed_ok && vscsi_parse_hctl(v, &v_dev->vdev) != 0)
+        parsed_ok = false;
+
+    libxl_vscsi_hctl_dispose(&hctl);
+
+    GC_FREE;
+    return parsed_ok;
 }
 
 libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int *num)
@@ -78,12 +141,11 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int 
                     v = libxl__xs_read(gc, XBT_NULL,
                                           GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev",
                                           be_path, vscsi_dev_id));
-                    if (c && p && v) {
-                        v_dev->p_devname = libxl__strdup(NOGC, c);
-                        /* FIXME pdev not always in hctl format with pvops */
-                        if (vscsi_parse_hctl(gc, p, &v_dev->pdev) == 0 &&
-                            vscsi_parse_hctl(gc, v, &v_dev->vdev) == 0)
-                            parsed_ok = true;
+                    if (c && p && v)
+                        parsed_ok = vscsi_parse_pdev(ctx, v_dev, c, p, v);
+
+                    /* Indication for caller that this v_dev is usable */
+                    if (parsed_ok) {
                         v_dev->vscsi_dev_id = vscsi_dev_id;
                         if (vscsi_dev_id > v_hst->next_vscsi_dev_id)
                             v_hst->next_vscsi_dev_id = vscsi_dev_id + 1;
@@ -120,7 +182,7 @@ int libxl_device_vscsi_getinfo(libxl_ctx *ctx, uint32_t domid,
     libxl_vscsiinfo_init(vscsiinfo);
     dompath = libxl__xs_get_dompath(gc, domid);
     vscsiinfo->devid = vscsi_host->devid;
-    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->pdev, &vscsi_dev->pdev);
+    libxl_vscsi_pdev_copy(ctx, &vscsiinfo->pdev, &vscsi_dev->pdev);
     libxl_vscsi_hctl_copy(ctx, &vscsiinfo->vdev, &vscsi_dev->vdev);
 
     vscsipath = GCSPRINTF("%s/device/vscsi/%d", dompath, vscsiinfo->devid);

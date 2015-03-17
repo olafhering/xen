@@ -117,33 +117,48 @@ static bool xlu__vscsi_wwn_valid(const char *p)
     return ret;
 }
 
-static int xlu__vscsi_parse_pdev(XLU_Config *cfg, char *pdev, libxl_vscsi_dev *new_dev)
+static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
+                                 libxl_vscsi_pdev *pdev)
 {
     int rc = 0;
     unsigned int lun;
     char wwn[16 + 1];
+    libxl_vscsi_hctl hctl;
 
-    if (strncmp(pdev, "/dev/", 5) == 0) {
+    libxl_vscsi_hctl_init(&hctl);
+    if (strncmp(str, "/dev/", 5) == 0) {
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
-        if (xlu__vscsi_parse_dev(cfg, pdev, &new_dev->pdev) == 0)
-            new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_DEV;
-    } else if (strncmp(pdev, "naa.", 4) == 0) {
+        if (xlu__vscsi_parse_dev(cfg, str, &hctl) == 0) {
+            libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_DEV);
+            libxl_vscsi_hctl_copy(ctx, &pdev->u.dev, &hctl);
+        }
+    } else if (strncmp(str, "naa.", 4) == 0) {
         /* WWN as understood by pvops */
         memset(wwn, 0, sizeof(wwn));
-        if (sscanf(pdev, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
-            new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_WWN;
-            new_dev->pdev.lun = lun;
+        if (sscanf(str, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
+            libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
+            pdev->u.wwn = strdup(str);
+            if (!pdev->u.wwn)
+                rc = ERROR_NOMEM;
         }
-    } else if (xlu__vscsi_parse_hctl(pdev, &new_dev->pdev) == 0) {
+    } else if (xlu__vscsi_parse_hctl(str, &hctl) == 0) {
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
-        new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_HCTL;
+        libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
+        libxl_vscsi_hctl_copy(ctx, &pdev->u.dev, &hctl);
     } else
         rc = ERROR_INVAL;
 
+    if (rc == 0) {
+            pdev->p_devname = strdup(str);
+            if (!pdev->p_devname)
+                rc = ERROR_NOMEM;
+    }
+
+    libxl_vscsi_hctl_dispose(&hctl);
     return rc;
 }
 
-int xlu_vscsi_parse(XLU_Config *cfg, const char *str,
+int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                              libxl_device_vscsi *new_host,
                              libxl_vscsi_dev *new_dev)
 {
@@ -168,26 +183,16 @@ int xlu_vscsi_parse(XLU_Config *cfg, const char *str,
     pdev = xlu__vscsi_trim_string(pdev);
     vdev = xlu__vscsi_trim_string(vdev);
 
-    new_dev->pdev_type = LIBXL_VSCSI_PDEV_TYPE_INVALID;
-    rc = xlu__vscsi_parse_pdev(cfg, pdev, new_dev);
-    switch (rc) {
-        case ERROR_NOPARAVIRT:
-            LOG(cfg, "vscsi: not supported");
-            goto out;
-        default:
-            LOG(cfg, "vscsi: failed to parse %s", pdev);
-            goto out;
+    rc = xlu__vscsi_parse_pdev(cfg, ctx, pdev, &new_dev->pdev);
+    if (rc) {
+        LOG(cfg, "vscsi: failed to parse %s, rc == %d", pdev, rc);
+        goto out;
     }
 
-    switch (new_dev->pdev_type) {
+    switch (new_dev->pdev.type) {
         case LIBXL_VSCSI_PDEV_TYPE_WWN:
         case LIBXL_VSCSI_PDEV_TYPE_DEV:
         case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-            new_dev->p_devname = strdup(pdev);
-            if (!new_dev->p_devname) {
-                rc = ERROR_NOMEM;
-                goto out;
-            }
             break;
         case LIBXL_VSCSI_PDEV_TYPE_INVALID:
             LOG(cfg, "vscsi: invalid pdev '%s'", pdev);
@@ -260,10 +265,9 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
     libxl_device_vscsi_init(new_host);
     libxl_vscsi_dev_init(new_dev);
 
-    if (xlu_vscsi_parse(cfg, str, new_host, new_dev)) {
-        rc = ERROR_INVAL;
+    rc = xlu_vscsi_parse(cfg, ctx, str, new_host, new_dev);
+    if (rc)
         goto out;
-    }
 
     /* Look for existing vscsi_host for given domain */
     vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);

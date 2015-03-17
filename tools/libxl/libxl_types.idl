@@ -556,12 +556,21 @@ libxl_vscsi_hctl = Struct("vscsi_hctl", [
     ("lun", uint32),
     ])
 
+libxl_vscsi_pdev = Struct("vscsi_pdev", [
+    ("p_devname",        string),
+    ("u", KeyedUnion(None, libxl_vscsi_pdev_type, "type",
+        [
+         ("invalid", None),
+         ("dev", libxl_vscsi_hctl),
+         ("wwn", string),
+         ("hctl", libxl_vscsi_hctl),
+        ])),
+    ])
+
 libxl_vscsi_dev = Struct("vscsi_dev", [
     ("vscsi_dev_id",     libxl_devid),
     ("remove",           bool),
-    ("p_devname",        string),
-    ("pdev_type",        libxl_vscsi_pdev_type),
-    ("pdev",             libxl_vscsi_hctl),
+    ("pdev",             libxl_vscsi_pdev),
     ("vdev",             libxl_vscsi_hctl),
     ])
 
@@ -624,8 +633,7 @@ libxl_vscsiinfo = Struct("vscsiinfo", [
     ("frontend", string),
     ("frontend_id", uint32),
     ("devid", libxl_devid),
-    ("p_devname", string),
-    ("pdev", libxl_vscsi_hctl),
+    ("pdev", libxl_vscsi_pdev),
     ("vdev", libxl_vscsi_hctl),
     ("vscsi_dev_id", libxl_devid),
     ("feature_host", bool),

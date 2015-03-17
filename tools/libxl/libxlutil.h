@@ -108,7 +108,7 @@ int xlu_vscsi_get_host(XLU_Config *config,
                                uint32_t domid,
                                const char *str,
                                libxl_device_vscsi *vscsi_host);
-int xlu_vscsi_parse(XLU_Config *cfg, const char *str,
+int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                              libxl_device_vscsi *new_host,
                              libxl_vscsi_dev *new_dev);
 #endif /* LIBXLUTIL_H */

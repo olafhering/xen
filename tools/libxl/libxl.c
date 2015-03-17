@@ -1989,6 +1989,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     flexarray_t *front;
     flexarray_t *back;
     libxl__device *device;
+    libxl_vscsi_hctl *hctl;
     char *be_path;
     unsigned int be_dirs = 0, rc, i;
 
@@ -2034,18 +2035,24 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
                 continue;
             }
         }
-        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-devname", v->vscsi_dev_id), v->p_devname);
-        switch (v->pdev_type) {
+        flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-devname", v->vscsi_dev_id), v->pdev.p_devname);
+        switch (v->pdev.type) {
             case LIBXL_VSCSI_PDEV_TYPE_WWN:
                 flexarray_append_pair(back,
                                       GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
-                                      v->p_devname);
+                                      v->pdev.u.wwn);
                 break;
             case LIBXL_VSCSI_PDEV_TYPE_DEV:
-            case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+                hctl = &v->pdev.u.dev;
                 flexarray_append_pair(back,
                                       GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
-                                      GCSPRINTF("%u:%u:%u:%u", v->pdev.hst, v->pdev.chn, v->pdev.tgt, v->pdev.lun));
+                                      GCSPRINTF("%u:%u:%u:%u", hctl->hst, hctl->chn, hctl->tgt, hctl->lun));
+                break;
+            case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+                hctl = &v->pdev.u.hctl;
+                flexarray_append_pair(back,
+                                      GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
+                                      GCSPRINTF("%u:%u:%u:%u", hctl->hst, hctl->chn, hctl->tgt, hctl->lun));
                 break;
             case LIBXL_VSCSI_PDEV_TYPE_INVALID:
             default:
