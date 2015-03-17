@@ -222,6 +222,7 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
     rc = 0;
 
 out:
+    free(tmp);
     return rc;
 }
 
