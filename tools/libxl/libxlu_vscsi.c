@@ -197,18 +197,6 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
         goto out;
     }
 
-    switch (new_dev->pdev.type) {
-        case LIBXL_VSCSI_PDEV_TYPE_WWN:
-        case LIBXL_VSCSI_PDEV_TYPE_DEV:
-        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-            break;
-        case LIBXL_VSCSI_PDEV_TYPE_INVALID:
-            LOG(cfg, "vscsi: invalid pdev '%s'", pdev);
-            rc = ERROR_INVAL;
-            goto out;
-    }
-
-
     if (xlu__vscsi_parse_hctl(vdev, &new_dev->vdev)) {
         LOG(cfg, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", vdev);
         rc = ERROR_INVAL;
