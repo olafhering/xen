@@ -7,7 +7,6 @@
 #define LOG(_c, _x, _a...) \
         if((_c) && (_c)->report) fprintf((_c)->report, _x, ##_a)
 
-#ifdef __linux__
 static int xlu__vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
     unsigned int hst, chn, tgt, lun;
@@ -35,6 +34,7 @@ static char *xlu__vscsi_trim_string(char *s)
 }
 
 
+#ifdef __linux__
 static int xlu__vscsi_parse_dev(XLU_Config *cfg, char *pdev, libxl_vscsi_hctl *hctl)
 {
     struct stat dentry;
