@@ -17,6 +17,7 @@
 #include <xen/percpu.h>
 #include <xen/sched.h>
 #include <xen/sched-if.h>
+#include <xen/keyhandler.h>
 #include <xen/cpu.h>
 
 #define for_each_cpupool(ptr)    \
@@ -379,12 +380,6 @@ static int cpupool_unassign_cpu(struct cpupool *c, unsigned int cpu)
     atomic_inc(&c->refcnt);
     cpupool_cpu_moving = c;
     cpumask_clear_cpu(cpu, c->cpu_valid);
-
-    rcu_read_lock(&domlist_read_lock);
-    for_each_domain_in_cpupool(d, c)
-        domain_update_node_affinity(d);
-    rcu_read_unlock(&domlist_read_lock);
-
     spin_unlock(&cpupool_lock);
 
     work_cpu = smp_processor_id();
@@ -664,6 +659,12 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
     return ret;
 }
 
+static void print_cpumap(const char *str, const cpumask_t *map)
+{
+    cpulist_scnprintf(keyhandler_scratch, sizeof(keyhandler_scratch), map);
+    printk("%s: %s\n", str, keyhandler_scratch);
+}
+
 void dump_runq(unsigned char key)
 {
     unsigned long    flags;
@@ -677,12 +678,17 @@ void dump_runq(unsigned char key)
             sched_smt_power_savings? "enabled":"disabled");
     printk("NOW=0x%08X%08X\n",  (u32)(now>>32), (u32)now);
 
+    print_cpumap("Online Cpus", &cpu_online_map);
+    if ( !cpumask_empty(&cpupool_free_cpus) )
+        print_cpumap("Free Cpus", &cpupool_free_cpus);
+
     printk("Idle cpupool:\n");
     schedule_dump(NULL);
 
     for_each_cpupool(c)
     {
         printk("Cpupool %d:\n", (*c)->cpupool_id);
+        print_cpumap("Cpus", (*c)->cpu_valid);
         schedule_dump(*c);
     }
 

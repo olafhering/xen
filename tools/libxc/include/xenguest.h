@@ -23,6 +23,8 @@
 #ifndef XENGUEST_H
 #define XENGUEST_H
 
+#define XC_NUMA_NO_NODE   (~0U)
+
 #define XCFLAGS_LIVE      (1 << 0)
 #define XCFLAGS_DEBUG     (1 << 1)
 #define XCFLAGS_HVM       (1 << 2)
@@ -230,6 +232,17 @@ struct xc_hvm_build_args {
     struct xc_hvm_firmware_module smbios_module;
     /* Whether to use claim hypercall (1 - enable, 0 - disable). */
     int claim_enabled;
+
+    /* vNUMA information*/
+    xen_vmemrange_t *vmemranges;
+    unsigned int nr_vmemranges;
+    unsigned int *vnode_to_pnode;
+    unsigned int nr_vnodes;
+
+    /* Out parameters  */
+    uint64_t lowmem_end;
+    uint64_t highmem_end;
+    uint64_t mmio_start;
 };
 
 /**

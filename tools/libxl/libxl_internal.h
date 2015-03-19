@@ -108,6 +108,22 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
+#define min(X, Y) ({                             \
+            const typeof (X) _x = (X);           \
+            const typeof (Y) _y = (Y);           \
+            (void) (&_x == &_y);                 \
+            (_x < _y) ? _x : _y; })
+#define max(X, Y) ({                             \
+            const typeof (X) _x = (X);           \
+            const typeof (Y) _y = (Y);           \
+            (void) (&_x == &_y);                 \
+            (_x > _y) ? _x : _y; })
+
+#define min_t(type, x, y)                                               \
+    ({ const type _x = (x); const type _y = (y); _x < _y ? _x: _y; })
+#define max_t(type, x, y)                                               \
+    ({ const type _x = (x); const type _y = (y); _x > _y ? _x: _y; })
+
 #define LIBXL__LOGGING_ENABLED
 
 #ifdef LIBXL__LOGGING_ENABLED
@@ -973,6 +989,9 @@ typedef struct {
     libxl__file_reference pv_ramdisk;
     const char * pv_cmdline;
     bool pvh_enabled;
+
+    xen_vmemrange_t *vmemranges;
+    uint32_t num_vmemranges;
 } libxl__domain_build_state;
 
 _hidden int libxl__build_pre(libxl__gc *gc, uint32_t domid,
@@ -2512,8 +2531,9 @@ typedef struct libxl__datacopier_buf libxl__datacopier_buf;
 
 /* onwrite==1 means failure happened when writing, logged, errnoval is valid
  * onwrite==0 means failure happened when reading
- *     errnoval==0 means we got eof and all data was written
- *     errnoval!=0 means we had a read error, logged
+ *     errnoval>=0 means we got eof and all data was written or number of bytes
+ *                 written when in read mode
+ *     errnoval<0 means we had a read error, logged
  * onwrite==-1 means some other internal failure, errnoval not valid, logged
  * If we get POLLHUP, we call callback_pollhup(..., onwrite, -1);
  * or if callback_pollhup==0 this is an internal failure, as above.
@@ -2533,10 +2553,14 @@ struct libxl__datacopier_state {
     libxl__ao *ao;
     int readfd, writefd;
     ssize_t maxsz;
+    ssize_t bytes_to_read; /* set to -1 to read until EOF */
     const char *copywhat, *readwhat, *writewhat; /* for error msgs */
     FILE *log; /* gets a copy of everything */
     libxl__datacopier_callback *callback;
     libxl__datacopier_callback *callback_pollhup;
+    void *readbuf; /* Set this to read data into it without writing to an
+                      fd. The buffer should be at least as large as the
+                      bytes_to_read parameter, which should not be -1. */
     /* remaining fields are private to datacopier */
     libxl__ev_fd toread, towrite;
     ssize_t used;
@@ -3398,6 +3422,27 @@ void libxl__numa_candidate_put_nodemap(libxl__gc *gc,
 {
     libxl_bitmap_copy(CTX, &cndt->nodemap, nodemap);
 }
+
+/* Check if vNUMA config is valid. Returns 0 if valid,
+ * ERROR_VNUMA_CONFIG_INVALID otherwise.
+ */
+int libxl__vnuma_config_check(libxl__gc *gc,
+                              const libxl_domain_build_info *b_info,
+                              const libxl__domain_build_state *state);
+int libxl__vnuma_build_vmemrange_pv_generic(libxl__gc *gc,
+                                            uint32_t domid,
+                                            libxl_domain_build_info *b_info,
+                                            libxl__domain_build_state *state);
+int libxl__vnuma_build_vmemrange_pv(libxl__gc *gc,
+                                    uint32_t domid,
+                                    libxl_domain_build_info *b_info,
+                                    libxl__domain_build_state *state);
+int libxl__vnuma_build_vmemrange_hvm(libxl__gc *gc,
+                                     uint32_t domid,
+                                     libxl_domain_build_info *b_info,
+                                     libxl__domain_build_state *state,
+                                     struct xc_hvm_build_args *args);
+bool libxl__vnuma_configured(const libxl_domain_build_info *b_info);
 
 _hidden int libxl__ms_vm_genid_set(libxl__gc *gc, uint32_t domid,
                                    const libxl_ms_vm_genid *id);

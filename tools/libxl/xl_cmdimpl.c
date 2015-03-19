@@ -289,6 +289,16 @@ static void *xmalloc(size_t sz) {
     return r;
 }
 
+static void *xcalloc(size_t n, size_t sz) __attribute__((unused));
+static void *xcalloc(size_t n, size_t sz) {
+    void *r = calloc(n, sz);
+    if (!r) {
+        fprintf(stderr,"xl: Unable to calloc %zu bytes.\n", sz*n);
+        exit(-ERROR_FAIL);
+    }
+    return r;
+}
+
 static void *xrealloc(void *ptr, size_t sz) {
     void *r;
     if (!sz) { free(ptr); return 0; }
@@ -760,7 +770,7 @@ static int update_cpumap_range(const char *str, libxl_bitmap *cpumap)
  * single cpus or as eintire NUMA nodes) and turns it into the
  * corresponding libxl_bitmap (in cpumap).
  */
-static int vcpupin_parse(const char *cpu, libxl_bitmap *cpumap)
+static int cpurange_parse(const char *cpu, libxl_bitmap *cpumap)
 {
     char *ptr, *saveptr = NULL, *buf = strdup(cpu);
     int rc = 0;
@@ -813,8 +823,11 @@ static char *parse_cmdline(XLU_Config *config)
             fprintf(stderr, "Warning: ignoring root= and extra= "
                     "in favour of cmdline=\n");
     } else {
-        if (root) {
+        if (root && extra) {
             if (asprintf(&cmdline, "root=%s %s", root, extra) == -1)
+                cmdline = NULL;
+        } else if (root) {
+            if (asprintf(&cmdline, "root=%s", root) == -1)
                 cmdline = NULL;
         } else if (extra) {
             cmdline = strdup(extra);
@@ -870,7 +883,7 @@ static void parse_vcpu_affinity(libxl_domain_build_info *b_info,
                 exit(1);
             }
 
-            if (vcpupin_parse(buf, &vcpu_affinity_array[j]))
+            if (cpurange_parse(buf, &vcpu_affinity_array[j]))
                 exit(1);
 
             j++;
@@ -887,7 +900,7 @@ static void parse_vcpu_affinity(libxl_domain_build_info *b_info,
             exit(1);
         }
 
-        if (vcpupin_parse(buf, &vcpu_affinity_array[0]))
+        if (cpurange_parse(buf, &vcpu_affinity_array[0]))
             exit(1);
 
         for (i = 1; i < b_info->max_vcpus; i++) {
@@ -977,13 +990,183 @@ static int parse_nic_config(libxl_device_nic *nic, XLU_Config **config, char *to
     return 0;
 }
 
+static unsigned long parse_ulong(const char *str)
+{
+    char *endptr;
+    unsigned long val;
+
+    val = strtoul(str, &endptr, 10);
+    if (endptr == str || val == ULONG_MAX) {
+        fprintf(stderr, "xl: failed to convert \"%s\" to number\n", str);
+        exit(1);
+    }
+    return val;
+}
+
+static void parse_vnuma_config(const XLU_Config *config,
+                               libxl_domain_build_info *b_info)
+{
+    libxl_physinfo physinfo;
+    uint32_t nr_nodes;
+    XLU_ConfigList *vnuma;
+    int i, j, len, num_vnuma;
+    unsigned long max_vcpus = 0, max_memkb = 0;
+    /* Temporary storage for parsed vcpus information to avoid
+     * parsing config twice. This array has num_vnuma elements.
+     */
+    struct vcpu_range_parsed {
+        unsigned long start, end;
+    } *vcpu_range_parsed;
+
+    libxl_physinfo_init(&physinfo);
+    if (libxl_get_physinfo(ctx, &physinfo) != 0) {
+        libxl_physinfo_dispose(&physinfo);
+        fprintf(stderr, "libxl_get_physinfo failed\n");
+        exit(1);
+    }
+
+    nr_nodes = physinfo.nr_nodes;
+    libxl_physinfo_dispose(&physinfo);
+
+    if (xlu_cfg_get_list(config, "vnuma", &vnuma, &num_vnuma, 1))
+        return;
+
+    b_info->num_vnuma_nodes = num_vnuma;
+    b_info->vnuma_nodes = xcalloc(num_vnuma, sizeof(libxl_vnode_info));
+    vcpu_range_parsed = xcalloc(num_vnuma, sizeof(*vcpu_range_parsed));
+
+    for (i = 0; i < b_info->num_vnuma_nodes; i++) {
+        libxl_vnode_info *p = &b_info->vnuma_nodes[i];
+
+        libxl_vnode_info_init(p);
+        p->distances = xcalloc(b_info->num_vnuma_nodes,
+                               sizeof(*p->distances));
+        p->num_distances = b_info->num_vnuma_nodes;
+    }
+
+    for (i = 0; i < num_vnuma; i++) {
+        XLU_ConfigValue *vnode_spec, *conf_option;
+        XLU_ConfigList *vnode_config_list;
+        int conf_count;
+        libxl_vnode_info *p = &b_info->vnuma_nodes[i];
+
+        vnode_spec = xlu_cfg_get_listitem2(vnuma, i);
+        assert(vnode_spec);
+
+        xlu_cfg_value_get_list(config, vnode_spec, &vnode_config_list, 0);
+        if (!vnode_config_list) {
+            fprintf(stderr, "xl: cannot get vnode config option list\n");
+            exit(1);
+        }
+
+        for (conf_count = 0;
+             (conf_option =
+              xlu_cfg_get_listitem2(vnode_config_list, conf_count));
+             conf_count++) {
+
+            if (xlu_cfg_value_type(conf_option) == XLU_STRING) {
+                char *buf, *option_untrimmed, *value_untrimmed;
+                char *option, *value;
+                unsigned long val;
+
+                xlu_cfg_value_get_string(config, conf_option, &buf, 0);
+
+                if (!buf) continue;
+
+                if (split_string_into_pair(buf, "=",
+                                           &option_untrimmed,
+                                           &value_untrimmed)) {
+                    fprintf(stderr, "xl: failed to split \"%s\" into pair\n",
+                            buf);
+                    exit(1);
+                }
+                trim(isspace, option_untrimmed, &option);
+                trim(isspace, value_untrimmed, &value);
+
+                if (!strcmp("pnode", option)) {
+                    val = parse_ulong(value);
+                    if (val >= nr_nodes) {
+                        fprintf(stderr,
+                                "xl: invalid pnode number: %lu\n", val);
+                        exit(1);
+                    }
+                    p->pnode = val;
+                    libxl_defbool_set(&b_info->numa_placement, false);
+                } else if (!strcmp("size", option)) {
+                    val = parse_ulong(value);
+                    p->memkb = val << 10;
+                    max_memkb += p->memkb;
+                } else if (!strcmp("vcpus", option)) {
+                    libxl_string_list cpu_spec_list;
+                    unsigned long s, e;
+
+                    split_string_into_string_list(value, ",", &cpu_spec_list);
+                    len = libxl_string_list_length(&cpu_spec_list);
+
+                    for (j = 0; j < len; j++)
+                        parse_range(cpu_spec_list[j], &s, &e);
+
+                    vcpu_range_parsed[i].start = s;
+                    vcpu_range_parsed[i].end   = e;
+                    max_vcpus += (e - s + 1);
+                    libxl_string_list_dispose(&cpu_spec_list);
+                } else if (!strcmp("vdistances", option)) {
+                    libxl_string_list vdist;
+
+                    split_string_into_string_list(value, ",", &vdist);
+                    len = libxl_string_list_length(&vdist);
+
+                    for (j = 0; j < len; j++) {
+                        val = parse_ulong(value);
+                        p->distances[j] = val;
+                    }
+                    libxl_string_list_dispose(&vdist);
+                }
+                free(option);
+                free(value);
+                free(option_untrimmed);
+                free(value_untrimmed);
+            }
+        }
+    }
+
+    /* User has specified maxvcpus= */
+    if (b_info->max_vcpus != 0 &&  b_info->max_vcpus != max_vcpus) {
+        fprintf(stderr, "xl: vnuma vcpus and maxvcpus= mismatch\n");
+        exit(1);
+    } else
+        b_info->max_vcpus = max_vcpus;
+
+    /* User has specified maxmem= */
+    if (b_info->max_memkb != LIBXL_MEMKB_DEFAULT &&
+        b_info->max_memkb != max_memkb) {
+        fprintf(stderr, "xl: maxmem and vnuma memory size mismatch\n");
+        exit(1);
+    } else
+        b_info->max_memkb = max_memkb;
+
+    for (i = 0; i < b_info->num_vnuma_nodes; i++) {
+        libxl_vnode_info *p = &b_info->vnuma_nodes[i];
+        int cpu;
+
+        libxl_cpu_bitmap_alloc(ctx, &p->vcpus, b_info->max_vcpus);
+        libxl_bitmap_set_none(&p->vcpus);
+        for (cpu = vcpu_range_parsed[i].start;
+             cpu <= vcpu_range_parsed[i].end;
+             cpu++)
+            libxl_bitmap_set(&p->vcpus, cpu);
+    }
+
+    free(vcpu_range_parsed);
+}
+
 static void parse_config_data(const char *config_source,
                               const char *config_data,
                               int config_len,
                               libxl_domain_config *d_config)
 {
     const char *buf;
-    long l;
+    long l, vcpus = 0;
     XLU_Config *config;
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsis;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian;
@@ -1070,9 +1253,14 @@ static void parse_config_data(const char *config_source,
     if (!xlu_cfg_get_long (config, "extratime", &l, 0))
         b_info->sched_params.extratime = l;
 
-    if (!xlu_cfg_get_long (config, "vcpus", &l, 0)) {
-        b_info->max_vcpus = l;
+    if (!xlu_cfg_get_long (config, "memory", &l, 0))
+        b_info->target_memkb = l * 1024;
 
+    if (!xlu_cfg_get_long (config, "maxmem", &l, 0))
+        b_info->max_memkb = l * 1024;
+
+    if (!xlu_cfg_get_long (config, "vcpus", &l, 0)) {
+        vcpus = l;
         if (libxl_cpu_bitmap_alloc(ctx, &b_info->avail_vcpus, l)) {
             fprintf(stderr, "Unable to allocate cpumap\n");
             exit(1);
@@ -1085,6 +1273,21 @@ static void parse_config_data(const char *config_source,
     if (!xlu_cfg_get_long (config, "maxvcpus", &l, 0))
         b_info->max_vcpus = l;
 
+    parse_vnuma_config(config, b_info);
+
+    /* Set max_memkb to target_memkb and max_vcpus to avail_vcpus if
+     * they are not set by user specified config option or vnuma.
+     */
+    if (b_info->max_memkb == LIBXL_MEMKB_DEFAULT)
+        b_info->max_memkb = b_info->target_memkb;
+    if (b_info->max_vcpus == 0)
+        b_info->max_vcpus = vcpus;
+
+    if (b_info->max_vcpus < vcpus) {
+        fprintf(stderr, "xl: maxvcpus < vcpus\n");
+        exit(1);
+    }
+
     buf = NULL;
     if (!xlu_cfg_get_list (config, "cpus", &cpus, &num_cpus, 1) ||
         !xlu_cfg_get_string (config, "cpus", &buf, 0))
@@ -1094,14 +1297,6 @@ static void parse_config_data(const char *config_source,
     if (!xlu_cfg_get_list (config, "cpus_soft", &cpus, &num_cpus, 1) ||
         !xlu_cfg_get_string (config, "cpus_soft", &buf, 0))
         parse_vcpu_affinity(b_info, cpus, buf, num_cpus, false);
-
-    if (!xlu_cfg_get_long (config, "memory", &l, 0)) {
-        b_info->max_memkb = l * 1024;
-        b_info->target_memkb = b_info->max_memkb;
-    }
-
-    if (!xlu_cfg_get_long (config, "maxmem", &l, 0))
-        b_info->max_memkb = l * 1024;
 
     libxl_defbool_set(&b_info->claim_mode, claim_mode);
 
@@ -2258,9 +2453,8 @@ static int preserve_domain(uint32_t *r_domid, libxl_event *event,
 
 static int freemem(uint32_t domid, libxl_domain_build_info *b_info)
 {
-    int rc, retries;
-    const int MAX_RETRIES = 3;
-    uint32_t need_memkb, free_memkb, free_memkb_prev = 0;
+    int rc, retries = 3;
+    uint32_t need_memkb, free_memkb;
 
     if (!autoballoon)
         return 0;
@@ -2269,7 +2463,6 @@ static int freemem(uint32_t domid, libxl_domain_build_info *b_info)
     if (rc < 0)
         return rc;
 
-    retries = MAX_RETRIES;
     do {
         rc = libxl_get_free_memory(ctx, &free_memkb);
         if (rc < 0)
@@ -2282,28 +2475,13 @@ static int freemem(uint32_t domid, libxl_domain_build_info *b_info)
         if (rc < 0)
             return rc;
 
-        rc = libxl_wait_for_free_memory(ctx, domid, need_memkb, 10);
-        if (!rc)
-            return 0;
-        else if (rc != ERROR_NOMEM)
-            return rc;
-
-        /* the memory target has been reached but the free memory is still
-         * not enough: loop over again */
-        rc = libxl_wait_for_memory_target(ctx, 0, 1);
+        /* wait until dom0 reaches its target, as long as we are making
+         * progress */
+        rc = libxl_wait_for_memory_target(ctx, 0, 10);
         if (rc < 0)
             return rc;
 
-        /*
-         * If the amount of free mem has increased on this iteration (i.e.
-         * some progress has been made) then reset the retry counter.
-         */
-        if (free_memkb > free_memkb_prev) {
-            retries = MAX_RETRIES;
-            free_memkb_prev = free_memkb;
-        } else {
-            retries--;
-        }
+        retries--;
     } while (retries > 0);
 
     return ERROR_NOMEM;
@@ -3580,8 +3758,8 @@ static void print_bitmap(uint8_t *map, int maplen, FILE *stream)
     }
 }
 
-static void list_domains(int verbose, int context, int claim, int numa,
-                         const libxl_dominfo *info, int nb_domain)
+static void list_domains(bool verbose, bool context, bool claim, bool numa,
+                         bool cpupool, const libxl_dominfo *info, int nb_domain)
 {
     int i;
     static const char shutdown_reason_letters[]= "-rscw";
@@ -3595,6 +3773,7 @@ static void list_domains(int verbose, int context, int claim, int numa,
     if (verbose) printf("   UUID                            Reason-Code\tSecurity Label");
     if (context && !verbose) printf("   Security Label");
     if (claim) printf("  Claimed");
+    if (cpupool) printf("         Cpupool");
     if (numa) {
         if (libxl_node_bitmap_alloc(ctx, &nodemap, 0)) {
             fprintf(stderr, "libxl_node_bitmap_alloc_failed.\n");
@@ -3639,6 +3818,11 @@ static void list_domains(int verbose, int context, int claim, int numa,
             printf(" %5lu", (unsigned long)info[i].outstanding_memkb / 1024);
         if (verbose || context)
             printf(" %16s", info[i].ssid_label ? : "-");
+        if (cpupool) {
+            char *poolname = libxl_cpupoolid_to_name(ctx, info[i].cpupool);
+            printf("%16s", poolname);
+            free(poolname);
+        }
         if (numa) {
             libxl_domain_get_nodeaffinity(ctx, info[i].domid, &nodemap);
 
@@ -4564,14 +4748,17 @@ int main_reboot(int argc, char **argv)
 
 int main_list(int argc, char **argv)
 {
-    int opt, verbose = 0;
-    int context = 0;
-    int details = 0;
-    int numa = 0;
+    int opt;
+    bool verbose = false;
+    bool context = false;
+    bool details = false;
+    bool cpupool = false;
+    bool numa = false;
     static struct option opts[] = {
         {"long", 0, 0, 'l'},
         {"verbose", 0, 0, 'v'},
         {"context", 0, 0, 'Z'},
+        {"cpupool", 0, 0, 'c'},
         {"numa", 0, 0, 'n'},
         COMMON_LONG_OPTS,
         {0, 0, 0, 0}
@@ -4581,18 +4768,21 @@ int main_list(int argc, char **argv)
     libxl_dominfo *info, *info_free=0;
     int nb_domain, rc;
 
-    SWITCH_FOREACH_OPT(opt, "lvhZn", opts, "list", 0) {
+    SWITCH_FOREACH_OPT(opt, "lvhZcn", opts, "list", 0) {
     case 'l':
-        details = 1;
+        details = true;
         break;
     case 'v':
-        verbose = 1;
+        verbose = true;
         break;
     case 'Z':
-        context = 1;
+        context = true;
+        break;
+    case 'c':
+        cpupool = true;
         break;
     case 'n':
-        numa = 1;
+        numa = true;
         break;
     }
 
@@ -4625,7 +4815,8 @@ int main_list(int argc, char **argv)
     if (details)
         list_domains_details(info, nb_domain);
     else
-        list_domains(verbose, context, 0 /* claim */, numa, info, nb_domain);
+        list_domains(verbose, context, false /* claim */, numa, cpupool,
+                     info, nb_domain);
 
     if (info_free)
         libxl_dominfo_list_free(info, nb_domain);
@@ -5026,7 +5217,7 @@ int main_vcpupin(int argc, char **argv)
      */
     if (!strcmp(hard_str, "-"))
         hard = NULL;
-    else if (vcpupin_parse(hard_str, hard))
+    else if (cpurange_parse(hard_str, hard))
         goto out;
     /*
      * Soft affinity is handled similarly. Only difference: we also want
@@ -5034,7 +5225,7 @@ int main_vcpupin(int argc, char **argv)
      */
     if (argc <= optind+3 || !strcmp(soft_str, "-"))
         soft = NULL;
-    else if (vcpupin_parse(soft_str, soft))
+    else if (cpurange_parse(soft_str, soft))
         goto out;
 
     if (dryrun_only) {
@@ -6898,8 +7089,8 @@ int main_claims(int argc, char **argv)
         return 1;
     }
 
-    list_domains(0 /* verbose */, 0 /* context */, 1 /* claim */,
-                 0 /* numa */, info, nb_domain);
+    list_domains(false /* verbose */, false /* context */, true /* claim */,
+                 false /* numa */, false /* cpupool */, info, nb_domain);
 
     libxl_dominfo_list_free(info, nb_domain);
     return 0;
@@ -7304,7 +7495,7 @@ int main_cpupoolcreate(int argc, char **argv)
     libxl_bitmap cpumap;
     libxl_uuid uuid;
     libxl_cputopology *topology;
-    int rc = -ERROR_FAIL;
+    int rc = 1;
 
     SWITCH_FOREACH_OPT(opt, "hnf:", opts, "cpupool-create", 0) {
     case 'f':
@@ -7433,16 +7624,27 @@ int main_cpupoolcreate(int argc, char **argv)
             fprintf(stderr, "no free cpu found\n");
             goto out_cfg;
         }
-    } else if (!xlu_cfg_get_list(config, "cpus", &cpus, 0, 0)) {
+    } else if (!xlu_cfg_get_list(config, "cpus", &cpus, 0, 1)) {
         n_cpus = 0;
         while ((buf = xlu_cfg_get_listitem(cpus, n_cpus)) != NULL) {
             i = atoi(buf);
-            if ((i < 0) || (i >= freemap.size * 8) ||
-                !libxl_bitmap_test(&freemap, i)) {
+            if ((i < 0) || !libxl_bitmap_test(&freemap, i)) {
                 fprintf(stderr, "cpu %d illegal or not free\n", i);
                 goto out_cfg;
             }
             libxl_bitmap_set(&cpumap, i);
+            n_cpus++;
+        }
+    } else if (!xlu_cfg_get_string(config, "cpus", &buf, 0)) {
+        if (cpurange_parse(buf, &cpumap))
+            goto out_cfg;
+
+        n_cpus = 0;
+        libxl_for_each_set_bit(i, cpumap) {
+            if (!libxl_bitmap_test(&freemap, i)) {
+                fprintf(stderr, "cpu %d illegal or not free\n", i);
+                goto out_cfg;
+            }
             n_cpus++;
         }
     } else
@@ -7487,7 +7689,6 @@ int main_cpupoollist(int argc, char **argv)
     int n_pools, p, c, n;
     uint32_t poolid;
     char *name;
-    int ret = 0;
 
     SWITCH_FOREACH_OPT(opt, "hc", opts, "cpupool-list", 0) {
     case 'c':
@@ -7499,14 +7700,14 @@ int main_cpupoollist(int argc, char **argv)
         pool = argv[optind];
         if (libxl_name_to_cpupoolid(ctx, pool, &poolid)) {
             fprintf(stderr, "Pool \'%s\' does not exist\n", pool);
-            return -ERROR_FAIL;
+            return 1;
         }
     }
 
     poolinfo = libxl_list_cpupool(ctx, &n_pools);
     if (!poolinfo) {
         fprintf(stderr, "error getting cpupool info\n");
-        return -ERROR_NOMEM;
+        return 1;
     }
 
     printf("%-19s", "Name");
@@ -7516,7 +7717,7 @@ int main_cpupoollist(int argc, char **argv)
         printf("CPUs   Sched     Active   Domain count\n");
 
     for (p = 0; p < n_pools; p++) {
-        if (!ret && (!pool || (poolinfo[p].poolid == poolid))) {
+        if (!pool || (poolinfo[p].poolid == poolid)) {
             name = poolinfo[p].pool_name;
             printf("%-19s", name);
             n = 0;
@@ -7537,7 +7738,7 @@ int main_cpupoollist(int argc, char **argv)
 
     libxl_cpupoolinfo_list_free(poolinfo, n_pools);
 
-    return ret;
+    return 0;
 }
 
 int main_cpupooldestroy(int argc, char **argv)
@@ -7554,11 +7755,14 @@ int main_cpupooldestroy(int argc, char **argv)
 
     if (libxl_cpupool_qualifier_to_cpupoolid(ctx, pool, &poolid, NULL) ||
         !libxl_cpupoolid_is_valid(ctx, poolid)) {
-        fprintf(stderr, "unknown cpupool \'%s\'\n", pool);
-        return -ERROR_FAIL;
+        fprintf(stderr, "unknown cpupool '%s'\n", pool);
+        return 1;
     }
 
-    return -libxl_cpupool_destroy(ctx, poolid);
+    if (libxl_cpupool_destroy(ctx, poolid))
+        return 1;
+
+    return 0;
 }
 
 int main_cpupoolrename(int argc, char **argv)
@@ -7576,14 +7780,14 @@ int main_cpupoolrename(int argc, char **argv)
 
     if (libxl_cpupool_qualifier_to_cpupoolid(ctx, pool, &poolid, NULL) ||
         !libxl_cpupoolid_is_valid(ctx, poolid)) {
-        fprintf(stderr, "unknown cpupool \'%s\'\n", pool);
-        return -ERROR_FAIL;
+        fprintf(stderr, "unknown cpupool '%s'\n", pool);
+        return 1;
     }
 
     new_name = argv[optind];
 
     if (libxl_cpupool_rename(ctx, new_name, poolid)) {
-        fprintf(stderr, "Can't rename cpupool '%s'.\n", pool);
+        fprintf(stderr, "Can't rename cpupool '%s'\n", pool);
         return 1;
     }
 
@@ -7595,44 +7799,37 @@ int main_cpupoolcpuadd(int argc, char **argv)
     int opt;
     const char *pool;
     uint32_t poolid;
-    int cpu;
-    int node;
-    int n;
+    libxl_bitmap cpumap;
+    int rc = 1;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "cpupool-cpu-add", 2) {
         /* No options */
     }
 
-    pool = argv[optind++];
-    node = -1;
-    cpu = -1;
-    if (strncmp(argv[optind], "node:", 5) == 0) {
-        node = atoi(argv[optind] + 5);
-    } else {
-        cpu = atoi(argv[optind]);
+    libxl_bitmap_init(&cpumap);
+    if (libxl_cpu_bitmap_alloc(ctx, &cpumap, 0)) {
+        fprintf(stderr, "Unable to allocate cpumap");
+        return 1;
     }
+
+    pool = argv[optind++];
+    if (cpurange_parse(argv[optind], &cpumap))
+        goto out;
 
     if (libxl_cpupool_qualifier_to_cpupoolid(ctx, pool, &poolid, NULL) ||
         !libxl_cpupoolid_is_valid(ctx, poolid)) {
         fprintf(stderr, "unknown cpupool \'%s\'\n", pool);
-        return -ERROR_FAIL;
+        goto out;
     }
 
-    if (cpu >= 0) {
-        return -libxl_cpupool_cpuadd(ctx, poolid, cpu);
-    }
+    if (libxl_cpupool_cpuadd_cpumap(ctx, poolid, &cpumap))
+        fprintf(stderr, "some cpus may not have been added to %s\n", pool);
 
-    if (libxl_cpupool_cpuadd_node(ctx, poolid, node, &n)) {
-        fprintf(stderr, "libxl_cpupool_cpuadd_node failed\n");
-        return -ERROR_FAIL;
-    }
+    rc = 0;
 
-    if (n > 0) {
-        return 0;
-    }
-
-    fprintf(stderr, "no free cpu found\n");
-    return -ERROR_FAIL;
+out:
+    libxl_bitmap_dispose(&cpumap);
+    return rc;
 }
 
 int main_cpupoolcpuremove(int argc, char **argv)
@@ -7640,44 +7837,37 @@ int main_cpupoolcpuremove(int argc, char **argv)
     int opt;
     const char *pool;
     uint32_t poolid;
-    int cpu;
-    int node;
-    int n;
+    libxl_bitmap cpumap;
+    int rc = 1;
+
+    libxl_bitmap_init(&cpumap);
+    if (libxl_cpu_bitmap_alloc(ctx, &cpumap, 0)) {
+        fprintf(stderr, "Unable to allocate cpumap");
+        return 1;
+    }
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "cpupool-cpu-remove", 2) {
         /* No options */
     }
 
     pool = argv[optind++];
-    node = -1;
-    cpu = -1;
-    if (strncmp(argv[optind], "node:", 5) == 0) {
-        node = atoi(argv[optind] + 5);
-    } else {
-        cpu = atoi(argv[optind]);
-    }
+    if (cpurange_parse(argv[optind], &cpumap))
+        goto out;
 
     if (libxl_cpupool_qualifier_to_cpupoolid(ctx, pool, &poolid, NULL) ||
         !libxl_cpupoolid_is_valid(ctx, poolid)) {
         fprintf(stderr, "unknown cpupool \'%s\'\n", pool);
-        return -ERROR_FAIL;
+        goto out;
     }
 
-    if (cpu >= 0) {
-        return -libxl_cpupool_cpuremove(ctx, poolid, cpu);
-    }
+    if (libxl_cpupool_cpuremove_cpumap(ctx, poolid, &cpumap))
+        fprintf(stderr, "some cpus may not have been removed from %s\n", pool);
 
-    if (libxl_cpupool_cpuremove_node(ctx, poolid, node, &n)) {
-        fprintf(stderr, "libxl_cpupool_cpuremove_node failed\n");
-        return -ERROR_FAIL;
-    }
+    rc = 0;
 
-    if (n == 0) {
-        fprintf(stderr, "no cpu of node found in cpupool\n");
-        return -ERROR_FAIL;
-    }
-
-    return 0;
+out:
+    libxl_bitmap_dispose(&cpumap);
+    return rc;
 }
 
 int main_cpupoolmigrate(int argc, char **argv)
@@ -7697,22 +7887,25 @@ int main_cpupoolmigrate(int argc, char **argv)
 
     if (libxl_domain_qualifier_to_domid(ctx, dom, &domid) ||
         !libxl_domid_to_name(ctx, domid)) {
-        fprintf(stderr, "unknown domain \'%s\'\n", dom);
-        return -ERROR_FAIL;
+        fprintf(stderr, "unknown domain '%s'\n", dom);
+        return 1;
     }
 
     if (libxl_cpupool_qualifier_to_cpupoolid(ctx, pool, &poolid, NULL) ||
         !libxl_cpupoolid_is_valid(ctx, poolid)) {
-        fprintf(stderr, "unknown cpupool \'%s\'\n", pool);
-        return -ERROR_FAIL;
+        fprintf(stderr, "unknown cpupool '%s'\n", pool);
+        return 1;
     }
 
-    return -libxl_cpupool_movedomain(ctx, poolid, domid);
+    if (libxl_cpupool_movedomain(ctx, poolid, domid))
+        return 1;
+
+    return 0;
 }
 
 int main_cpupoolnumasplit(int argc, char **argv)
 {
-    int ret;
+    int rc;
     int opt;
     int p;
     int c;
@@ -7733,34 +7926,32 @@ int main_cpupoolnumasplit(int argc, char **argv)
         /* No options */
     }
 
-    ret = 0;
+    rc = 1;
 
     libxl_bitmap_init(&cpumap);
     poolinfo = libxl_list_cpupool(ctx, &n_pools);
     if (!poolinfo) {
         fprintf(stderr, "error getting cpupool info\n");
-        return -ERROR_NOMEM;
+        return 1;
     }
     poolid = poolinfo[0].poolid;
     sched = poolinfo[0].sched;
-    for (p = 0; p < n_pools; p++) {
-        libxl_cpupoolinfo_dispose(poolinfo + p);
-    }
+    libxl_cpupoolinfo_list_free(poolinfo, n_pools);
+
     if (n_pools > 1) {
         fprintf(stderr, "splitting not possible, already cpupools in use\n");
-        return -ERROR_FAIL;
+        return 1;
     }
 
     topology = libxl_get_cpu_topology(ctx, &n_cpus);
     if (topology == NULL) {
         fprintf(stderr, "libxl_get_topologyinfo failed\n");
-        return -ERROR_FAIL;
+        return 1;
     }
 
     if (libxl_cpu_bitmap_alloc(ctx, &cpumap, 0)) {
         fprintf(stderr, "Failed to allocate cpumap\n");
-        libxl_cputopology_list_free(topology, n_cpus);
-        return -ERROR_FAIL;
+        goto out;
     }
 
     /* Reset Pool-0 to 1st node: first add cpus, then remove cpus to avoid
@@ -7769,12 +7960,11 @@ int main_cpupoolnumasplit(int argc, char **argv)
     node = topology[0].node;
     if (libxl_cpupool_cpuadd_node(ctx, 0, node, &n)) {
         fprintf(stderr, "error on adding cpu to Pool 0\n");
-        return -ERROR_FAIL;
+        goto out;
     }
 
     snprintf(name, 15, "Pool-node%d", node);
-    ret = -libxl_cpupool_rename(ctx, name, 0);
-    if (ret) {
+    if (libxl_cpupool_rename(ctx, name, 0)) {
         fprintf(stderr, "error on renaming Pool 0\n");
         goto out;
     }
@@ -7813,8 +8003,7 @@ int main_cpupoolnumasplit(int argc, char **argv)
         }
 
         node = topology[c].node;
-        ret = -libxl_cpupool_cpuremove_node(ctx, 0, node, &n);
-        if (ret) {
+        if (libxl_cpupool_cpuremove_node(ctx, 0, node, &n)) {
             fprintf(stderr, "error on removing cpu from Pool 0\n");
             goto out;
         }
@@ -7822,14 +8011,12 @@ int main_cpupoolnumasplit(int argc, char **argv)
         snprintf(name, 15, "Pool-node%d", node);
         libxl_uuid_generate(&uuid);
         poolid = 0;
-        ret = -libxl_cpupool_create(ctx, name, sched, cpumap, &uuid, &poolid);
-        if (ret) {
+        if (libxl_cpupool_create(ctx, name, sched, cpumap, &uuid, &poolid)) {
             fprintf(stderr, "error on creating cpupool\n");
             goto out;
         }
 
-        ret = -libxl_cpupool_cpuadd_node(ctx, poolid, node, &n);
-        if (ret) {
+        if (libxl_cpupool_cpuadd_node(ctx, poolid, node, &n)) {
             fprintf(stderr, "error on adding cpus to cpupool\n");
             goto out;
         }
@@ -7841,11 +8028,13 @@ int main_cpupoolnumasplit(int argc, char **argv)
         }
     }
 
+    rc = 0;
+
 out:
     libxl_cputopology_list_free(topology, n_cpus);
     libxl_bitmap_dispose(&cpumap);
 
-    return ret;
+    return rc;
 }
 
 int main_getenforce(int argc, char **argv)

@@ -581,7 +581,7 @@ static struct page_info *alloc_heap_pages(
     struct domain *d)
 {
     unsigned int i, j, zone = 0, nodemask_retry = 0;
-    nodeid_t first_node, node = MEMF_get_node(memflags);
+    nodeid_t first_node, node = MEMF_get_node(memflags), req_node = node;
     unsigned long request = 1UL << order;
     struct page_info *pg;
     nodemask_t nodemask = (d != NULL ) ? d->node_affinity : node_online_map;
@@ -593,7 +593,6 @@ static struct page_info *alloc_heap_pages(
 
     if ( node == NUMA_NO_NODE )
     {
-        memflags &= ~MEMF_exact_node;
         if ( d != NULL )
         {
             node = next_node(d->last_alloc_node, nodemask);
@@ -654,7 +653,7 @@ static struct page_info *alloc_heap_pages(
                     goto found;
         } while ( zone-- > zone_lo ); /* careful: unsigned zone may wrap */
 
-        if ( memflags & MEMF_exact_node )
+        if ( (memflags & MEMF_exact_node) && req_node != NUMA_NO_NODE )
             goto not_found;
 
         /* Pick next node. */
@@ -671,7 +670,7 @@ static struct page_info *alloc_heap_pages(
         if ( node == first_node )
         {
             /* When we have tried all in nodemask, we fall back to others. */
-            if ( nodemask_retry++ )
+            if ( (memflags & MEMF_exact_node) || nodemask_retry++ )
                 goto not_found;
             nodes_andnot(nodemask, node_online_map, nodemask);
             first_node = node = first_node(nodemask);
@@ -1686,9 +1685,13 @@ struct page_info *alloc_domheap_pages(
 
     ASSERT(!in_irq());
 
-    bits = domain_clamp_alloc_bitsize(d, bits ? : (BITS_PER_LONG+PAGE_SHIFT));
+    bits = domain_clamp_alloc_bitsize(memflags & MEMF_no_owner ? NULL : d,
+                                      bits ? : (BITS_PER_LONG+PAGE_SHIFT));
     if ( (zone_hi = min_t(unsigned int, bits_to_zone(bits), zone_hi)) == 0 )
         return NULL;
+
+    if ( memflags & MEMF_no_owner )
+        memflags |= MEMF_no_refcount;
 
     if ( dma_bitsize && ((dma_zone = bits_to_zone(dma_bitsize)) < zone_hi) )
         pg = alloc_heap_pages(dma_zone + 1, zone_hi, order, memflags, d);
@@ -1699,7 +1702,8 @@ struct page_info *alloc_domheap_pages(
                                   memflags, d)) == NULL)) )
          return NULL;
 
-    if ( (d != NULL) && assign_pages(d, pg, order, memflags) )
+    if ( d && !(memflags & MEMF_no_owner) &&
+         assign_pages(d, pg, order, memflags) )
     {
         free_heap_pages(pg, order);
         return NULL;

@@ -264,18 +264,17 @@ rt_dump(const struct scheduler *ops)
     struct list_head *iter_sdom, *iter_svc, *runq, *depletedq, *iter;
     struct rt_private *prv = rt_priv(ops);
     struct rt_vcpu *svc;
-    cpumask_t *online;
     struct rt_dom *sdom;
     unsigned long flags;
 
-    ASSERT(!list_empty(&prv->sdom));
+    spin_lock_irqsave(&prv->lock, flags);
 
-    sdom = list_entry(prv->sdom.next, struct rt_dom, sdom_elem);
-    online = cpupool_scheduler_cpumask(sdom->dom->cpupool);
+    if ( list_empty(&prv->sdom) )
+        goto out;
+
     runq = rt_runq(ops);
     depletedq = rt_depletedq(ops);
 
-    spin_lock_irqsave(&prv->lock, flags);
     printk("Global RunQueue info:\n");
     list_for_each( iter, runq )
     {
@@ -303,6 +302,7 @@ rt_dump(const struct scheduler *ops)
         }
     }
 
+ out:
     spin_unlock_irqrestore(&prv->lock, flags);
 }
 
@@ -444,6 +444,23 @@ rt_alloc_pdata(const struct scheduler *ops, int cpu)
     return (void *)1;
 }
 
+static void
+rt_free_pdata(const struct scheduler *ops, void *pcpu, int cpu)
+{
+    struct rt_private *prv = rt_priv(ops);
+    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
+    unsigned long flags;
+
+    spin_lock_irqsave(&prv->lock, flags);
+
+    /* Move spinlock back to the default lock */
+    ASSERT(sd->schedule_lock == &prv->lock);
+    ASSERT(!spin_is_locked(&sd->_lock));
+    sd->schedule_lock = &sd->_lock;
+
+    spin_unlock_irqrestore(&prv->lock, flags);
+}
+
 static void *
 rt_alloc_domdata(const struct scheduler *ops, struct domain *dom)
 {
@@ -525,6 +542,8 @@ rt_alloc_vdata(const struct scheduler *ops, struct vcpu *vc, void *dd)
     if ( !is_idle_vcpu(vc) )
         svc->budget = RTDS_DEFAULT_BUDGET;
 
+    SCHED_STAT_CRANK(vcpu_init);
+
     return svc;
 }
 
@@ -573,6 +592,8 @@ rt_vcpu_remove(const struct scheduler *ops, struct vcpu *vc)
     struct rt_vcpu * const svc = rt_vcpu(vc);
     struct rt_dom * const sdom = svc->sdom;
     spinlock_t *lock;
+
+    SCHED_STAT_CRANK(vcpu_destroy);
 
     BUG_ON( sdom == NULL );
 
@@ -847,6 +868,7 @@ rt_vcpu_sleep(const struct scheduler *ops, struct vcpu *vc)
     struct rt_vcpu * const svc = rt_vcpu(vc);
 
     BUG_ON( is_idle_vcpu(vc) );
+    SCHED_STAT_CRANK(vcpu_sleep);
 
     if ( curr_on_cpu(vc->processor) == vc )
         cpu_raise_softirq(vc->processor, SCHEDULE_SOFTIRQ);
@@ -924,6 +946,7 @@ runq_tickle(const struct scheduler *ops, struct rt_vcpu *new)
     }
 
     /* didn't tickle any cpu */
+    SCHED_STAT_CRANK(tickle_idlers_none);
     return;
 out:
     /* TRACE */
@@ -939,6 +962,7 @@ out:
     }
 
     cpumask_set_cpu(cpu_to_tickle, &prv->tickled);
+    SCHED_STAT_CRANK(tickle_idlers_some);
     cpu_raise_softirq(cpu_to_tickle, SCHEDULE_SOFTIRQ);
     return;
 }
@@ -962,11 +986,22 @@ rt_vcpu_wake(const struct scheduler *ops, struct vcpu *vc)
     BUG_ON( is_idle_vcpu(vc) );
 
     if ( unlikely(curr_on_cpu(vc->processor) == vc) )
+    {
+        SCHED_STAT_CRANK(vcpu_wake_running);
         return;
+    }
 
     /* on RunQ/DepletedQ, just update info is ok */
     if ( unlikely(__vcpu_on_q(svc)) )
+    {
+        SCHED_STAT_CRANK(vcpu_wake_onrunq);
         return;
+    }
+
+    if ( likely(vcpu_runnable(vc)) )
+        SCHED_STAT_CRANK(vcpu_wake_runnable);
+    else
+        SCHED_STAT_CRANK(vcpu_wake_not_runnable);
 
     /* If context hasn't been saved for this vcpu yet, we can't put it on
      * the Runqueue/DepletedQ. Instead, we set a flag so that it will be
@@ -1090,6 +1125,7 @@ const struct scheduler sched_rtds_def = {
     .init           = rt_init,
     .deinit         = rt_deinit,
     .alloc_pdata    = rt_alloc_pdata,
+    .free_pdata     = rt_free_pdata,
     .alloc_domdata  = rt_alloc_domdata,
     .free_domdata   = rt_free_domdata,
     .init_domain    = rt_dom_init,

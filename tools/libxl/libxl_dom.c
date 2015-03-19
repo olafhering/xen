@@ -515,6 +515,51 @@ retry_transaction:
     return 0;
 }
 
+static int set_vnuma_info(libxl__gc *gc, uint32_t domid,
+                          const libxl_domain_build_info *info,
+                          const libxl__domain_build_state *state)
+{
+    int rc = 0;
+    unsigned int i, nr_vdistance;
+    unsigned int *vcpu_to_vnode, *vnode_to_pnode, *vdistance = NULL;
+
+    vcpu_to_vnode = libxl__calloc(gc, info->max_vcpus,
+                                  sizeof(unsigned int));
+    vnode_to_pnode = libxl__calloc(gc, info->num_vnuma_nodes,
+                                   sizeof(unsigned int));
+
+    nr_vdistance = info->num_vnuma_nodes * info->num_vnuma_nodes;
+    vdistance = libxl__calloc(gc, nr_vdistance, sizeof(unsigned int));
+
+    for (i = 0; i < info->num_vnuma_nodes; i++) {
+        libxl_vnode_info *v = &info->vnuma_nodes[i];
+        int j;
+
+        /* vnode to pnode mapping */
+        vnode_to_pnode[i] = v->pnode;
+
+        /* vcpu to vnode mapping */
+        libxl_for_each_set_bit(j, v->vcpus)
+            vcpu_to_vnode[j] = i;
+
+        /* node distances */
+        assert(info->num_vnuma_nodes == v->num_distances);
+        memcpy(vdistance + (i * info->num_vnuma_nodes),
+               v->distances,
+               v->num_distances * sizeof(unsigned int));
+    }
+
+    if (xc_domain_setvnuma(CTX->xch, domid, info->num_vnuma_nodes,
+                           state->num_vmemranges, info->max_vcpus,
+                           state->vmemranges, vdistance,
+                           vcpu_to_vnode, vnode_to_pnode) < 0) {
+        LOGE(ERROR, "xc_domain_setvnuma failed");
+        rc = ERROR_FAIL;
+    }
+
+    return rc;
+}
+
 int libxl__build_pv(libxl__gc *gc, uint32_t domid,
              libxl_domain_build_info *info, libxl__domain_build_state *state)
 {
@@ -571,6 +616,38 @@ int libxl__build_pv(libxl__gc *gc, uint32_t domid,
     dom->xenstore_evtchn = state->store_port;
     dom->xenstore_domid = state->store_domid;
     dom->claim_enabled = libxl_defbool_val(info->claim_mode);
+
+    if (info->num_vnuma_nodes != 0) {
+        unsigned int i;
+
+        ret = libxl__vnuma_build_vmemrange_pv(gc, domid, info, state);
+        if (ret) {
+            LOGE(ERROR, "cannot build vmemranges");
+            goto out;
+        }
+        ret = libxl__vnuma_config_check(gc, info, state);
+        if (ret) goto out;
+
+        ret = set_vnuma_info(gc, domid, info, state);
+        if (ret) goto out;
+
+        dom->nr_vmemranges = state->num_vmemranges;
+        dom->vmemranges = xc_dom_malloc(dom, sizeof(*dom->vmemranges) *
+                                        dom->nr_vmemranges);
+
+        for (i = 0; i < dom->nr_vmemranges; i++) {
+            dom->vmemranges[i].start = state->vmemranges[i].start;
+            dom->vmemranges[i].end   = state->vmemranges[i].end;
+            dom->vmemranges[i].flags = state->vmemranges[i].flags;
+            dom->vmemranges[i].nid   = state->vmemranges[i].nid;
+        }
+
+        dom->nr_vnodes = info->num_vnuma_nodes;
+        dom->vnode_to_pnode = xc_dom_malloc(dom, sizeof(*dom->vnode_to_pnode) *
+                                            dom->nr_vnodes);
+        for (i = 0; i < info->num_vnuma_nodes; i++)
+            dom->vnode_to_pnode[i] = info->vnuma_nodes[i].pnode;
+    }
 
     if ( (ret = xc_dom_boot_xen_init(dom, ctx->xch, domid)) != 0 ) {
         LOGE(ERROR, "xc_dom_boot_xen_init failed");
@@ -816,12 +893,55 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
         goto out;
     }
 
+    if (info->num_vnuma_nodes != 0) {
+        int i;
+
+        args.nr_vmemranges = state->num_vmemranges;
+        args.vmemranges = libxl__malloc(gc, sizeof(*args.vmemranges) *
+                                        args.nr_vmemranges);
+
+        for (i = 0; i < args.nr_vmemranges; i++) {
+            args.vmemranges[i].start = state->vmemranges[i].start;
+            args.vmemranges[i].end   = state->vmemranges[i].end;
+            args.vmemranges[i].flags = state->vmemranges[i].flags;
+            args.vmemranges[i].nid   = state->vmemranges[i].nid;
+        }
+
+        /* Consider video ram belongs to vmemrange 0 -- just shrink it
+         * by the size of video ram.
+         */
+        if (((args.vmemranges[0].end - args.vmemranges[0].start) >> 10)
+            < info->video_memkb) {
+            LOG(ERROR, "vmemrange 0 too small to contain video ram");
+            goto out;
+        }
+
+        args.vmemranges[0].end -= (info->video_memkb << 10);
+
+        args.nr_vnodes = info->num_vnuma_nodes;
+        args.vnode_to_pnode = libxl__malloc(gc, sizeof(*args.vnode_to_pnode) *
+                                            args.nr_vnodes);
+        for (i = 0; i < args.nr_vnodes; i++)
+            args.vnode_to_pnode[i] = info->vnuma_nodes[i].pnode;
+    }
+
     ret = xc_hvm_build(ctx->xch, domid, &args);
     if (ret) {
         LOGEV(ERROR, ret, "hvm building failed");
         goto out;
     }
 
+    if (info->num_vnuma_nodes != 0) {
+        ret = libxl__vnuma_build_vmemrange_hvm(gc, domid, info, state, &args);
+        if (ret) {
+            LOGEV(ERROR, ret, "hvm build vmemranges failed");
+            goto out;
+        }
+        ret = libxl__vnuma_config_check(gc, info, state);
+        if (ret) goto out;
+        ret = set_vnuma_info(gc, domid, info, state);
+        if (ret) goto out;
+    }
     ret = hvm_build_set_params(ctx->xch, domid, info, state->store_port,
                                &state->store_mfn, state->console_port,
                                &state->console_mfn, state->store_domid,
@@ -1922,6 +2042,7 @@ void libxl__domain_save_device_model(libxl__egc *egc,
     dc->readfd = -1;
     dc->writefd = fd;
     dc->maxsz = INT_MAX;
+    dc->bytes_to_read = -1;
     dc->copywhat = GCSPRINTF("qemu save file for domain %"PRIu32, dss->domid);
     dc->writewhat = "save/migration stream";
     dc->callback = save_device_model_datacopier_done;

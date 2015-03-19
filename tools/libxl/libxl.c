@@ -5138,26 +5138,41 @@ int libxl_wait_for_memory_target(libxl_ctx *ctx, uint32_t domid, int wait_secs)
 {
     int rc = 0;
     uint32_t target_memkb = 0;
+    uint64_t current_memkb, prev_memkb;
     libxl_dominfo info;
 
+    rc = libxl_get_memory_target(ctx, domid, &target_memkb);
+    if (rc < 0)
+        return rc;
+
     libxl_dominfo_init(&info);
+    prev_memkb = UINT64_MAX;
 
     do {
-        wait_secs--;
-        sleep(1);
-
-        rc = libxl_get_memory_target(ctx, domid, &target_memkb);
-        if (rc < 0)
-            goto out;
+        sleep(2);
 
         libxl_dominfo_dispose(&info);
         libxl_dominfo_init(&info);
         rc = libxl_domain_info(ctx, &info, domid);
         if (rc < 0)
             goto out;
-    } while (wait_secs > 0 && (info.current_memkb + info.outstanding_memkb) > target_memkb);
 
-    if ((info.current_memkb + info.outstanding_memkb) <= target_memkb)
+        current_memkb = info.current_memkb + info.outstanding_memkb;
+
+        if (current_memkb > prev_memkb)
+        {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+        else if (current_memkb == prev_memkb)
+            wait_secs -= 2;
+        /* if current_memkb < prev_memkb loop for free as progress has
+         * been made */
+
+        prev_memkb = current_memkb;
+    } while (wait_secs > 0 && current_memkb > target_memkb);
+
+    if (current_memkb <= target_memkb)
         rc = 0;
     else
         rc = ERROR_FAIL;
@@ -6522,15 +6537,33 @@ out:
 
 int libxl_cpupool_cpuadd(libxl_ctx *ctx, uint32_t poolid, int cpu)
 {
-    int rc;
+    GC_INIT(ctx);
+    int rc = 0;
 
     rc = xc_cpupool_addcpu(ctx->xch, poolid, cpu);
     if (rc) {
-        LIBXL__LOG_ERRNOVAL(ctx, LIBXL__LOG_ERROR, rc,
-            "Error moving cpu to cpupool");
-        return ERROR_FAIL;
+        LOGE(ERROR, "Error moving cpu %d to cpupool", cpu);
+        rc = ERROR_FAIL;
     }
-    return 0;
+
+    GC_FREE;
+    return rc;
+}
+
+int libxl_cpupool_cpuadd_cpumap(libxl_ctx *ctx, uint32_t poolid,
+                                const libxl_bitmap *cpumap)
+{
+    int c, ncpus = 0, rc = 0;
+
+    libxl_for_each_set_bit(c, *cpumap) {
+        if (!libxl_cpupool_cpuadd(ctx, poolid, c))
+            ncpus++;
+    }
+
+    if (ncpus != libxl_bitmap_count_set(cpumap))
+        rc = ERROR_FAIL;
+
+    return rc;
 }
 
 int libxl_cpupool_cpuadd_node(libxl_ctx *ctx, uint32_t poolid, int node, int *cpus)
@@ -6567,15 +6600,33 @@ out:
 
 int libxl_cpupool_cpuremove(libxl_ctx *ctx, uint32_t poolid, int cpu)
 {
-    int rc;
+    GC_INIT(ctx);
+    int rc = 0;
 
     rc = xc_cpupool_removecpu(ctx->xch, poolid, cpu);
     if (rc) {
-        LIBXL__LOG_ERRNOVAL(ctx, LIBXL__LOG_ERROR, rc,
-            "Error removing cpu from cpupool");
-        return ERROR_FAIL;
+        LOGE(ERROR, "Error removing cpu %d from cpupool", cpu);
+        rc = ERROR_FAIL;
     }
-    return 0;
+
+    GC_FREE;
+    return rc;
+}
+
+int libxl_cpupool_cpuremove_cpumap(libxl_ctx *ctx, uint32_t poolid,
+                                   const libxl_bitmap *cpumap)
+{
+    int c, ncpus = 0, rc = 0;
+
+    libxl_for_each_set_bit(c, *cpumap) {
+        if (!libxl_cpupool_cpuremove(ctx, poolid, c))
+            ncpus++;
+    }
+
+    if (ncpus != libxl_bitmap_count_set(cpumap))
+        rc = ERROR_FAIL;
+
+    return rc;
 }
 
 int libxl_cpupool_cpuremove_node(libxl_ctx *ctx, uint32_t poolid, int node, int *cpus)

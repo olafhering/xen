@@ -462,7 +462,8 @@ static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
         /* Allocate a chunk's worth of anonymous output pages. */
         for ( j = 0; j < (1UL << out_chunk_order); j++ )
         {
-            page = alloc_domheap_pages(NULL, exch.out.extent_order, memflags);
+            page = alloc_domheap_pages(d, exch.out.extent_order,
+                                       MEMF_no_owner | memflags);
             if ( unlikely(page == NULL) )
             {
                 rc = -ENOMEM;
@@ -712,9 +713,37 @@ static int construct_memop_from_reservation(
         a->memflags = MEMF_bits(address_bits);
     }
 
-    a->memflags |= MEMF_node(XENMEMF_get_node(r->mem_flags));
-    if ( r->mem_flags & XENMEMF_exact_node_request )
-        a->memflags |= MEMF_exact_node;
+    if ( r->mem_flags & XENMEMF_vnode )
+    {
+        nodeid_t vnode, pnode;
+        struct domain *d = a->domain;
+
+        read_lock(&d->vnuma_rwlock);
+        if ( d->vnuma )
+        {
+            vnode = XENMEMF_get_node(r->mem_flags);
+            if ( vnode >= d->vnuma->nr_vnodes )
+            {
+                read_unlock(&d->vnuma_rwlock);
+                return -EINVAL;
+            }
+
+            pnode = d->vnuma->vnode_to_pnode[vnode];
+            if ( pnode != NUMA_NO_NODE )
+            {
+                a->memflags |= MEMF_node(pnode);
+                if ( r->mem_flags & XENMEMF_exact_node_request )
+                    a->memflags |= MEMF_exact_node;
+            }
+        }
+        read_unlock(&d->vnuma_rwlock);
+    }
+    else
+    {
+        a->memflags |= MEMF_node(XENMEMF_get_node(r->mem_flags));
+        if ( r->mem_flags & XENMEMF_exact_node_request )
+            a->memflags |= MEMF_exact_node;
+    }
 
     return 0;
 }
@@ -744,20 +773,23 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( unlikely(start_extent >= reservation.nr_extents) )
             return start_extent;
 
-        if ( construct_memop_from_reservation(&reservation, &args) )
-            return start_extent;
-        args.nr_done      = start_extent;
-        args.preempted    = 0;
-
-
-        if ( op == XENMEM_populate_physmap
-             && (reservation.mem_flags & XENMEMF_populate_on_demand) )
-            args.memflags |= MEMF_populate_on_demand;
-
         d = rcu_lock_domain_by_any_id(reservation.domid);
         if ( d == NULL )
             return start_extent;
         args.domain = d;
+
+        if ( construct_memop_from_reservation(&reservation, &args) )
+        {
+            rcu_unlock_domain(d);
+            return start_extent;
+        }
+
+        args.nr_done   = start_extent;
+        args.preempted = 0;
+
+        if ( op == XENMEM_populate_physmap
+             && (reservation.mem_flags & XENMEMF_populate_on_demand) )
+            args.memflags |= MEMF_populate_on_demand;
 
         if ( xsm_memory_adjust_reservation(XSM_TARGET, current->domain, d) )
         {

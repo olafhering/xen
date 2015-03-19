@@ -134,7 +134,7 @@ static void datacopier_check_state(libxl__egc *egc, libxl__datacopier_state *dc)
     STATE_AO_GC(dc->ao);
     int rc;
     
-    if (dc->used) {
+    if (dc->used && !dc->readbuf) {
         if (!libxl__ev_fd_isregistered(&dc->towrite)) {
             rc = libxl__ev_fd_register(gc, &dc->towrite, datacopier_writable,
                                        dc->writefd, POLLOUT);
@@ -145,9 +145,10 @@ static void datacopier_check_state(libxl__egc *egc, libxl__datacopier_state *dc)
                 return;
             }
         }
-    } else if (!libxl__ev_fd_isregistered(&dc->toread)) {
+    } else if (!libxl__ev_fd_isregistered(&dc->toread) ||
+               dc->bytes_to_read == 0) {
         /* we have had eof */
-        datacopier_callback(egc, dc, 0, 0);
+        datacopier_callback(egc, dc, 0, dc->readbuf ? dc->used : 0);
         return;
     } else {
         /* nothing buffered, but still reading */
@@ -160,6 +161,8 @@ void libxl__datacopier_prefixdata(libxl__egc *egc, libxl__datacopier_state *dc,
 {
     EGC_GC;
     libxl__datacopier_buf *buf;
+    const uint8_t *ptr;
+
     /*
      * It is safe for this to be called immediately after _start, as
      * is documented in the public comment.  _start's caller must have
@@ -170,12 +173,14 @@ void libxl__datacopier_prefixdata(libxl__egc *egc, libxl__datacopier_state *dc,
 
     assert(len < dc->maxsz - dc->used);
 
-    buf = libxl__zalloc(NOGC, sizeof(*buf));
-    buf->used = len;
-    memcpy(buf->buf, data, len);
+    for (ptr = data; len; len -= buf->used, ptr += buf->used) {
+        buf = libxl__malloc(NOGC, sizeof(*buf));
+        buf->used = min(len, sizeof(buf->buf));
+        memcpy(buf->buf, ptr, buf->used);
 
-    dc->used += len;
-    LIBXL_TAILQ_INSERT_TAIL(&dc->bufs, buf, entry);
+        dc->used += buf->used;
+        LIBXL_TAILQ_INSERT_TAIL(&dc->bufs, buf, entry);
+    }
 }
 
 static int datacopier_pollhup_handled(libxl__egc *egc,
@@ -200,6 +205,9 @@ static void datacopier_readable(libxl__egc *egc, libxl__ev_fd *ev,
     libxl__datacopier_state *dc = CONTAINER_OF(ev, *dc, toread);
     STATE_AO_GC(dc->ao);
 
+    if ((revents & (POLLHUP|POLLIN)) == (POLLHUP|POLLIN))
+        revents &= ~POLLHUP;
+
     if (datacopier_pollhup_handled(egc, dc, revents, 0))
         return;
 
@@ -211,25 +219,31 @@ static void datacopier_readable(libxl__egc *egc, libxl__ev_fd *ev,
     }
     assert(revents & POLLIN);
     for (;;) {
-        while (dc->used >= dc->maxsz) {
-            libxl__datacopier_buf *rm = LIBXL_TAILQ_FIRST(&dc->bufs);
-            dc->used -= rm->used;
-            assert(dc->used >= 0);
-            LIBXL_TAILQ_REMOVE(&dc->bufs, rm, entry);
-            free(rm);
-        }
+        libxl__datacopier_buf *buf = NULL;
+        int r;
 
-        libxl__datacopier_buf *buf =
-            LIBXL_TAILQ_LAST(&dc->bufs, libxl__datacopier_bufs);
-        if (!buf || buf->used >= sizeof(buf->buf)) {
-            buf = malloc(sizeof(*buf));
-            if (!buf) libxl__alloc_failed(CTX, __func__, 1, sizeof(*buf));
-            buf->used = 0;
-            LIBXL_TAILQ_INSERT_TAIL(&dc->bufs, buf, entry);
+        if (dc->readbuf) {
+            r = read(ev->fd, dc->readbuf + dc->used, dc->bytes_to_read);
+        } else {
+            while (dc->used >= dc->maxsz) {
+                libxl__datacopier_buf *rm = LIBXL_TAILQ_FIRST(&dc->bufs);
+                dc->used -= rm->used;
+                assert(dc->used >= 0);
+                LIBXL_TAILQ_REMOVE(&dc->bufs, rm, entry);
+                free(rm);
+            }
+
+            buf = LIBXL_TAILQ_LAST(&dc->bufs, libxl__datacopier_bufs);
+            if (!buf || buf->used >= sizeof(buf->buf)) {
+                buf = malloc(sizeof(*buf));
+                if (!buf) libxl__alloc_failed(CTX, __func__, 1, sizeof(*buf));
+                buf->used = 0;
+                LIBXL_TAILQ_INSERT_TAIL(&dc->bufs, buf, entry);
+            }
+            r = read(ev->fd, buf->buf + buf->used,
+                     min_t(size_t, sizeof(buf->buf) - buf->used,
+                           (dc->bytes_to_read == -1) ? SIZE_MAX : dc->bytes_to_read));
         }
-        int r = read(ev->fd,
-                     buf->buf + buf->used,
-                     sizeof(buf->buf) - buf->used);
         if (r < 0) {
             if (errno == EINTR) continue;
             if (errno == EWOULDBLOCK) break;
@@ -252,9 +266,15 @@ static void datacopier_readable(libxl__egc *egc, libxl__ev_fd *ev,
                 return;
             }
         }
-        buf->used += r;
+        if (!dc->readbuf) {
+            buf->used += r;
+            assert(buf->used <= sizeof(buf->buf));
+        }
         dc->used += r;
-        assert(buf->used <= sizeof(buf->buf));
+        if (dc->bytes_to_read > 0)
+            dc->bytes_to_read -= r;
+        if (dc->bytes_to_read == 0)
+            break;
     }
     datacopier_check_state(egc, dc);
 }
@@ -309,13 +329,20 @@ int libxl__datacopier_start(libxl__datacopier_state *dc)
 
     libxl__datacopier_init(dc);
 
-    rc = libxl__ev_fd_register(gc, &dc->toread, datacopier_readable,
-                               dc->readfd, POLLIN);
-    if (rc) goto out;
+    assert(dc->readfd >= 0 || dc->writefd >= 0);
+    assert(!(dc->readbuf && dc->bytes_to_read == -1));
 
-    rc = libxl__ev_fd_register(gc, &dc->towrite, datacopier_writable,
-                               dc->writefd, POLLOUT);
-    if (rc) goto out;
+    if (dc->readfd >= 0) {
+        rc = libxl__ev_fd_register(gc, &dc->toread, datacopier_readable,
+                                   dc->readfd, POLLIN);
+        if (rc) goto out;
+    }
+
+    if (dc->writefd >= 0) {
+        rc = libxl__ev_fd_register(gc, &dc->towrite, datacopier_writable,
+                                   dc->writefd, POLLOUT);
+        if (rc) goto out;
+    }
 
     return 0;
 

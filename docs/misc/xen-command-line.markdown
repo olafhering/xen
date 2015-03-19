@@ -551,6 +551,18 @@ any dom0 autoballooning feature present in your toolstack. See the
 _xl.conf(5)_ man page or [Xen Best
 Practices](http://wiki.xen.org/wiki/Xen_Best_Practices#Xen_dom0_dedicated_memory_and_preventing_dom0_memory_ballooning).
 
+### dom0\_nodes
+
+> `= List of [ <integer> | relaxed | strict ]`
+
+> Default: `strict`
+
+Specify the NUMA nodes to place Dom0 on. Defaults for vCPU-s created
+and memory assigned to Dom0 will be adjusted to match the node
+restrictions set up here. Note that the values to be specified here are
+ACPI PXM ones, not Xen internal node numbers. `relaxed` sets up vCPU
+affinities to prefer but be not limited to the specified node(s).
+
 ### dom0\_shadow
 > `= <boolean>`
 
@@ -626,11 +638,31 @@ hardware domain is architecture dependent.
 Note that specifying zero as domU value means zero, while for dom0 it means
 to use the default.
 
-### flask\_enabled
-> `= <integer>`
+### flask
+> `= permissive | enforcing | late | disabled`
 
-### flask\_enforcing
-> `= <integer>`
+> Default: `permissive`
+
+Specify how the FLASK security server should be configured.  This option is only
+available if the hypervisor was compiled with XSM support (which can be enabled
+by setting XSM\_ENABLE = y in .config).
+
+* `permissive`: This is intended for development and is not suitable for use
+  with untrusted guests.  If a policy is provided by the bootloader, it will be
+  loaded; errors will be reported to the ring buffer but will not prevent
+  booting.  The policy can be changed to enforcing mode using "xl setenforce".
+* `enforcing`: This requires a security policy to be provided by the bootloader
+  and will enter enforcing mode prior to the creation of domain 0.  If a valid
+  policy is not provided, the hypervisor will not continue booting.
+* `late`: This disables loading of the security policy from the bootloader.
+  FLASK will be enabled but will not enforce access controls until a policy is
+  loaded by a domain using "xl loadpolicy".  Once a policy is loaded, FLASK will
+  run in enforcing mode unless "xl setenforce" has changed that setting.
+* `disabled`: This causes the XSM framework to revert to the dummy module.  The
+  dummy module provides the same security policy as is used when compiling the
+  hypervisor without support for XSM.  The xsm\_op hypercall can also be used to
+  switch to this mode after boot, but there is no way to re-enable FLASK once
+  the dummy module is loaded.
 
 ### font
 > `= <height>` where height is `8x8 | 8x14 | 8x16`
@@ -1113,7 +1145,7 @@ The following resources are available:
   Technology.
 
 ### reboot
-> `= t[riple] | k[bd] | a[cpi] | p[ci] | n[o] [, [w]arm | [c]old]`
+> `= t[riple] | k[bd] | a[cpi] | p[ci] | P[ower] | e[fi] | n[o] [, [w]arm | [c]old]`
 
 > Default: `0`
 
@@ -1132,6 +1164,11 @@ Specify the host reboot method.
 `acpi` instructs Xen to reboot the host using RESET_REG in the ACPI FADT.
 
 `pci` instructs Xen to reboot the host using PCI reset register (port CF9).
+
+`Power` instructs Xen to power-cycle the host using PCI reset register (port CF9).
+
+'efi' instructs Xen to reboot using the EFI reboot call (in EFI mode by
+ default it will use that method first).
 
 ### ro-hpet
 > `= <boolean>`

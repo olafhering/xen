@@ -150,7 +150,7 @@ long arch_do_domctl(
                 break;
             }
 
-            page = alloc_domheap_page(NULL, 0);
+            page = alloc_domheap_page(current->domain, MEMF_no_owner);
             if ( !page )
             {
                 ret = -ENOMEM;
@@ -386,15 +386,17 @@ long arch_do_domctl(
 
         page = get_page_from_gfn(d, gmfn, NULL, P2M_ALLOC);
 
-        ret = -EACCES;
         if ( !page || !get_page_type(page, PGT_writable_page) )
         {
             if ( page )
+            {
+                ret = -EPERM;
                 put_page(page);
+            }
+            else
+                ret = -EINVAL;
             break;
         }
-
-        ret = 0;
 
         hypercall_page = __map_domain_page(page);
         hypercall_page_initialise(d, hypercall_page);

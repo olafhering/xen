@@ -255,9 +255,9 @@ MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
 OVMF_UPSTREAM_REVISION ?= a065efc7c7ce8bb3e5cb3e463099d023d4a92927
 QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= 55f7cd7427ef3e7fe3563a3da46d8664a2ed0d6d
-# Thu Jan 29 19:10:04 2015 +0000
-# Mini-OS: standalone build
+MINIOS_UPSTREAM_REVISION ?= edfd5aae6ec5ba7d0a8834a3e9dfe5e69424150a
+# Thu Mar 12 19:08:05 2015 +0100
+# Fix accidentally removed brace causing a build error.
 
 SEABIOS_UPSTREAM_REVISION ?= rel-1.8.0
 # Wed Feb 18 12:49:59 2015 -0500

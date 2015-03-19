@@ -24,15 +24,12 @@
 #define _copy_to_guest copy_to_guest
 #define _copy_from_guest copy_from_guest
 
-#ifdef FLASK_DEVELOP
-int flask_enforcing = 0;
-integer_param("flask_enforcing", flask_enforcing);
-#endif
+enum flask_bootparam_t __read_mostly flask_bootparam = FLASK_BOOTPARAM_PERMISSIVE;
+static void parse_flask_param(char *s);
+custom_param("flask", parse_flask_param);
 
-#ifdef FLASK_BOOTPARAM
-int flask_enabled = 1;
-integer_param("flask_enabled", flask_enabled);
-#endif
+bool_t __read_mostly flask_enforcing = 0;
+boolean_param("flask_enforcing", flask_enforcing);
 
 #define MAX_POLICY_SIZE 0x4000000
 
@@ -63,6 +60,26 @@ static int flask_security_make_bools(void);
 extern int ss_initialized;
 
 extern struct xsm_operations *original_ops;
+
+static void __init parse_flask_param(char *s)
+{
+    if ( !strcmp(s, "enforcing") )
+    {
+        flask_enforcing = 1;
+        flask_bootparam = FLASK_BOOTPARAM_ENFORCING;
+    }
+    else if ( !strcmp(s, "late") )
+    {
+        flask_enforcing = 1;
+        flask_bootparam = FLASK_BOOTPARAM_LATELOAD;
+    }
+    else if ( !strcmp(s, "disabled") )
+        flask_bootparam = FLASK_BOOTPARAM_DISABLED;
+    else if ( !strcmp(s, "permissive") )
+        flask_bootparam = FLASK_BOOTPARAM_PERMISSIVE;
+    else
+        flask_bootparam = FLASK_BOOTPARAM_INVALID;
+}
 
 static int domain_has_security(struct domain *d, u32 perms)
 {
@@ -506,6 +523,7 @@ static int flask_security_load(struct xen_flask_load *load)
 {
     int ret;
     void *buf = NULL;
+    bool_t is_reload = ss_initialized;
 
     ret = domain_has_security(current->domain, SECURITY__LOAD_POLICY);
     if ( ret )
@@ -530,6 +548,10 @@ static int flask_security_load(struct xen_flask_load *load)
     if ( ret )
         goto out;
 
+    if ( !is_reload )
+        printk(XENLOG_INFO "Flask: Policy loaded, continuing in %s mode.\n",
+            flask_enforcing ? "enforcing" : "permissive");
+
     xfree(bool_pending_values);
     bool_pending_values = NULL;
     ret = 0;
@@ -539,6 +561,27 @@ static int flask_security_load(struct xen_flask_load *load)
  out_free:
     xfree(buf);
     return ret;
+}
+
+static int flask_devicetree_label(struct xen_flask_devicetree_label *arg)
+{
+    int rv;
+    char *buf;
+    u32 sid = arg->sid;
+    u32 perm = sid ? SECURITY__ADD_OCONTEXT : SECURITY__DEL_OCONTEXT;
+
+    rv = domain_has_security(current->domain, perm);
+    if ( rv )
+        return rv;
+
+    rv = flask_copyin_string(arg->path, &buf, arg->length, PAGE_SIZE);
+    if ( rv )
+        return rv;
+
+    /* buf is consumed or freed by this function */
+    rv = security_devicetree_setlabel(buf, sid);
+
+    return rv;
 }
 
 #ifndef COMPAT
@@ -768,6 +811,10 @@ ret_t do_flask_op(XEN_GUEST_HANDLE_PARAM(xsm_op_t) u_flask_op)
         rv = flask_relabel_domain(&op.u.relabel);
         break;
 
+    case FLASK_DEVICETREE_LABEL:
+        rv = flask_devicetree_label(&op.u.devicetree_label);
+        break;
+
     default:
         rv = -ENOSYS;
     }
@@ -825,6 +872,9 @@ CHECK_flask_transition;
 #define flask_security_resolve_bool compat_security_resolve_bool
 #define flask_security_get_bool compat_security_get_bool
 #define flask_security_set_bool compat_security_set_bool
+
+#define xen_flask_devicetree_label compat_flask_devicetree_label
+#define flask_devicetree_label compat_devicetree_label
 
 #define xen_flask_op_t compat_flask_op_t
 #undef ret_t

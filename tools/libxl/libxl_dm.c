@@ -180,7 +180,14 @@ static char ** libxl__build_device_model_args_old(libxl__gc *gc,
         if (libxl_defbool_val(vnc->findunused)) {
             flexarray_append(dm_args, "-vncunused");
         }
-    }
+    } else
+        /*
+         * VNC is not enabled by default by qemu-xen-traditional,
+         * however passing -vnc none causes SDL to not be
+         * (unexpectedly) enabled by default. This is overridden by
+         * explicitly passing -sdl below as required.
+         */
+        flexarray_append_pair(dm_args, "-vnc", "none");
 
     if (sdl) {
         flexarray_append(dm_args, "-sdl");
@@ -522,7 +529,17 @@ static char ** libxl__build_device_model_args_new(libxl__gc *gc,
         }
 
         flexarray_append(dm_args, vncarg);
-    }
+    } else
+        /*
+         * Ensure that by default no vnc server is created.
+         */
+        flexarray_append_pair(dm_args, "-vnc", "none");
+
+    /*
+     * Ensure that by default no display backend is created. Further
+     * options given below might then enable more.
+     */
+    flexarray_append_pair(dm_args, "-display", "none");
 
     if (sdl) {
         flexarray_append(dm_args, "-sdl");
@@ -1175,10 +1192,6 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
         num_console++;
 
     console = libxl__calloc(gc, num_console, sizeof(libxl__device_console));
-    if (!console) {
-        ret = ERROR_NOMEM;
-        goto out;
-    }
 
     for (i = 0; i < num_console; i++) {
         libxl__device device;
@@ -1365,13 +1378,15 @@ void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
                         libxl__sprintf(gc, "%s/hvmloader/bios", path),
                         "%s", libxl_bios_type_to_string(b_info->u.hvm.bios));
         /* Disable relocating memory to make the MMIO hole larger
-         * unless we're running qemu-traditional */
+         * unless we're running qemu-traditional and vNUMA is not
+         * configured. */
         libxl__xs_write(gc, XBT_NULL,
                         libxl__sprintf(gc,
                                        "%s/hvmloader/allow-memory-relocate",
                                        path),
                         "%d",
-                        b_info->device_model_version==LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL);
+                        b_info->device_model_version==LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL &&
+                        !libxl__vnuma_configured(b_info));
         free(path);
     }
 
