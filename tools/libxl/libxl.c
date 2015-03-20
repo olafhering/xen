@@ -2040,16 +2040,16 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
             case LIBXL_VSCSI_PDEV_TYPE_WWN:
                 flexarray_append_pair(back,
                                       GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
-                                      v->pdev.u.wwn);
+                                      v->pdev.u.wwn.m);
                 break;
             case LIBXL_VSCSI_PDEV_TYPE_DEV:
-                hctl = &v->pdev.u.dev;
+                hctl = &v->pdev.u.dev.m;
                 flexarray_append_pair(back,
                                       GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
                                       GCSPRINTF("%u:%u:%u:%u", hctl->hst, hctl->chn, hctl->tgt, hctl->lun));
                 break;
             case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-                hctl = &v->pdev.u.hctl;
+                hctl = &v->pdev.u.hctl.m;
                 flexarray_append_pair(back,
                                       GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
                                       GCSPRINTF("%u:%u:%u:%u", hctl->hst, hctl->chn, hctl->tgt, hctl->lun));

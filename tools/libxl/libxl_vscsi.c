@@ -51,7 +51,7 @@ static bool vscsi_parse_pdev(libxl_ctx *ctx, libxl_vscsi_dev *v_dev,
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
         if (vscsi_parse_hctl(p, &hctl) == 0) {
             libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_DEV);
-            libxl_vscsi_hctl_copy(ctx, &v_dev->pdev.u.dev, &hctl);
+            libxl_vscsi_hctl_copy(ctx, &v_dev->pdev.u.dev.m, &hctl);
             parsed_ok = true;
         }
     } else if (strncmp(c, "naa.", 4) == 0) {
@@ -59,13 +59,13 @@ static bool vscsi_parse_pdev(libxl_ctx *ctx, libxl_vscsi_dev *v_dev,
         memset(wwn, 0, sizeof(wwn));
         if (sscanf(p, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
             libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
-            v_dev->pdev.u.wwn = libxl__strdup(NOGC, c);
+            v_dev->pdev.u.wwn.m = libxl__strdup(NOGC, c);
             parsed_ok = true;
         }
     } else if (vscsi_parse_hctl(p, &hctl) == 0) {
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
         libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
-        libxl_vscsi_hctl_copy(ctx, &v_dev->pdev.u.hctl, &hctl);
+        libxl_vscsi_hctl_copy(ctx, &v_dev->pdev.u.hctl.m, &hctl);
         parsed_ok = true;
     }
 

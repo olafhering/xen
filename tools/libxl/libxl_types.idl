@@ -571,9 +571,9 @@ libxl_vscsi_pdev = Struct("vscsi_pdev", [
     ("u", KeyedUnion(None, libxl_vscsi_pdev_type, "type",
         [
          ("invalid", None),
-         ("dev", libxl_vscsi_hctl),
-         ("wwn", string),
-         ("hctl", libxl_vscsi_hctl),
+         ("dev", Struct(None, [("m", libxl_vscsi_hctl)])),
+         ("wwn", Struct(None, [("m", string)])),
+         ("hctl", Struct(None, [("m", libxl_vscsi_hctl)])),
         ])),
     ])
 
