@@ -1168,22 +1168,20 @@ static void domain_death_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
                                         const char *wpath, const char *epath) {
     EGC_GC;
     libxl_evgen_domain_death *evg;
-    uint32_t domid;
     int rc;
 
     CTX_LOCK;
 
     evg = LIBXL_TAILQ_FIRST(&CTX->death_list);
-    if (!evg) goto out;
-
-    domid = evg->domid;
 
     for (;;) {
+        if (!evg) goto out;
+
         int nentries = LIBXL_TAILQ_NEXT(evg, entry) ? 200 : 1;
         xc_domaininfo_t domaininfos[nentries];
         const xc_domaininfo_t *got = domaininfos, *gotend;
 
-        rc = xc_domain_getinfolist(CTX->xch, domid, nentries, domaininfos);
+        rc = xc_domain_getinfolist(CTX->xch, evg->domid, nentries, domaininfos);
         if (rc == -1) {
             LIBXL__EVENT_DISASTER(egc, "xc_domain_getinfolist failed while"
                                   " processing @releaseDomain watch event",
@@ -1193,8 +1191,10 @@ static void domain_death_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
         gotend = &domaininfos[rc];
 
         LIBXL__LOG(CTX, LIBXL__LOG_DEBUG, "[evg=%p:%"PRIu32"]"
-                   " from domid=%"PRIu32" nentries=%d rc=%d",
-                   evg, evg->domid, domid, nentries, rc);
+                   " nentries=%d rc=%d %ld..%ld",
+                   evg, evg->domid, nentries, rc,
+                   rc>0 ? (long)domaininfos[0].domain : 0,
+                   rc>0 ? (long)domaininfos[rc-1].domain : 0);
 
         for (;;) {
             if (!evg) {
@@ -1257,7 +1257,6 @@ static void domain_death_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
         }
 
         assert(rc); /* rc==0 results in us eating all evgs and quitting */
-        domid = gotend[-1].domain;
     }
  all_reported:
  out:
@@ -1559,6 +1558,10 @@ static void devices_destroy_cb(libxl__egc *egc,
                                libxl__devices_remove_state *drs,
                                int rc);
 
+static void domain_destroy_domid_cb(libxl__egc *egc,
+                                    libxl__ev_child *destroyer,
+                                    pid_t pid, int status);
+
 void libxl__destroy_domid(libxl__egc *egc, libxl__destroy_domid_state *dis)
 {
     STATE_AO_GC(dis->ao);
@@ -1567,6 +1570,8 @@ void libxl__destroy_domid(libxl__egc *egc, libxl__destroy_domid_state *dis)
     char *dom_path;
     char *pid;
     int rc, dm_present;
+
+    libxl__ev_child_init(&dis->destroyer);
 
     rc = libxl_domain_info(ctx, NULL, domid);
     switch(rc) {
@@ -1637,7 +1642,7 @@ static void devices_destroy_cb(libxl__egc *egc,
     uint32_t domid = dis->domid;
     char *dom_path;
     char *vm_path;
-    libxl__domain_userdata_lock *lock = NULL;
+    libxl__domain_userdata_lock *lock;
 
     dom_path = libxl__xs_get_dompath(gc, domid);
     if (!dom_path) {
@@ -1671,18 +1676,60 @@ static void devices_destroy_cb(libxl__egc *egc,
     }
     libxl__userdata_destroyall(gc, domid);
 
-    rc = xc_domain_destroy(ctx->xch, domid);
-    if (rc < 0) {
-        LIBXL__LOG_ERRNOVAL(ctx, LIBXL__LOG_ERROR, rc, "xc_domain_destroy failed for %d", domid);
+    libxl__unlock_domain_userdata(lock);
+
+    rc = libxl__ev_child_fork(gc, &dis->destroyer, domain_destroy_domid_cb);
+    if (rc < 0) goto out;
+    if (!rc) { /* child */
+        ctx->xch = xc_interface_open(ctx->lg,0,0);
+        if (!ctx->xch) goto badchild;
+
+        rc = xc_domain_destroy(ctx->xch, domid);
+        if (rc < 0) goto badchild;
+        _exit(0);
+
+    badchild:
+        if (errno > 0  && errno < 126) {
+            _exit(errno);
+        } else {
+            LOGE(ERROR,
+ "xc_domain_destroy failed for %d (with difficult errno value %d)",
+                 domid, errno);
+            _exit(-1);
+        }
+    }
+    LOG(INFO, "forked pid %ld for destroy of domain %d", (long)rc, domid);
+
+    return;
+
+out:
+    dis->callback(egc, dis, rc);
+    return;
+}
+
+static void domain_destroy_domid_cb(libxl__egc *egc,
+                                    libxl__ev_child *destroyer,
+                                    pid_t pid, int status)
+{
+    libxl__destroy_domid_state *dis = CONTAINER_OF(destroyer, *dis, destroyer);
+    STATE_AO_GC(dis->ao);
+    int rc;
+
+    if (status) {
+        if (WIFEXITED(status) && WEXITSTATUS(status)<126) {
+            LOGEV(ERROR, WEXITSTATUS(status),
+                  "xc_domain_destroy failed for %"PRIu32"", dis->domid);
+        } else {
+            libxl_report_child_exitstatus(CTX, XTL_ERROR,
+                                          "async domain destroy", pid, status);
+        }
         rc = ERROR_FAIL;
         goto out;
     }
     rc = 0;
 
-out:
-    if (lock) libxl__unlock_domain_userdata(lock);
+ out:
     dis->callback(egc, dis, rc);
-    return;
 }
 
 int libxl_console_exec(libxl_ctx *ctx, uint32_t domid, int cons_num,
@@ -5233,64 +5280,51 @@ int libxl_get_physinfo(libxl_ctx *ctx, libxl_physinfo *physinfo)
 libxl_cputopology *libxl_get_cpu_topology(libxl_ctx *ctx, int *nb_cpu_out)
 {
     GC_INIT(ctx);
-    xc_topologyinfo_t tinfo;
-    DECLARE_HYPERCALL_BUFFER(xc_cpu_to_core_t, coremap);
-    DECLARE_HYPERCALL_BUFFER(xc_cpu_to_socket_t, socketmap);
-    DECLARE_HYPERCALL_BUFFER(xc_cpu_to_node_t, nodemap);
+    xc_cputopoinfo_t tinfo;
+    DECLARE_HYPERCALL_BUFFER(xen_sysctl_cputopo_t, cputopo);
     libxl_cputopology *ret = NULL;
     int i;
-    int max_cpus;
 
-    max_cpus = libxl_get_max_cpus(ctx);
-    if (max_cpus < 0)
+    /* Setting buffer to NULL makes the hypercall return number of CPUs */
+    set_xen_guest_handle(tinfo.cputopo, HYPERCALL_BUFFER_NULL);
+    if (xc_cputopoinfo(ctx->xch, &tinfo) != 0)
     {
         LIBXL__LOG(ctx, XTL_ERROR, "Unable to determine number of CPUS");
         ret = NULL;
         goto out;
     }
 
-    coremap = xc_hypercall_buffer_alloc
-        (ctx->xch, coremap, sizeof(*coremap) * max_cpus);
-    socketmap = xc_hypercall_buffer_alloc
-        (ctx->xch, socketmap, sizeof(*socketmap) * max_cpus);
-    nodemap = xc_hypercall_buffer_alloc
-        (ctx->xch, nodemap, sizeof(*nodemap) * max_cpus);
-    if ((coremap == NULL) || (socketmap == NULL) || (nodemap == NULL)) {
+    cputopo = xc_hypercall_buffer_alloc(ctx->xch, cputopo,
+                                        sizeof(*cputopo) * tinfo.num_cpus);
+    if (cputopo == NULL) {
         LIBXL__LOG_ERRNOVAL(ctx, XTL_ERROR, ENOMEM,
                             "Unable to allocate hypercall arguments");
         goto fail;
     }
+    set_xen_guest_handle(tinfo.cputopo, cputopo);
 
-    set_xen_guest_handle(tinfo.cpu_to_core, coremap);
-    set_xen_guest_handle(tinfo.cpu_to_socket, socketmap);
-    set_xen_guest_handle(tinfo.cpu_to_node, nodemap);
-    tinfo.max_cpu_index = max_cpus - 1;
-    if (xc_topologyinfo(ctx->xch, &tinfo) != 0) {
-        LIBXL__LOG_ERRNO(ctx, XTL_ERROR, "Topology info hypercall failed");
+    if (xc_cputopoinfo(ctx->xch, &tinfo) != 0) {
+        LIBXL__LOG_ERRNO(ctx, XTL_ERROR, "CPU topology info hypercall failed");
         goto fail;
     }
 
-    if (tinfo.max_cpu_index < max_cpus - 1)
-        max_cpus = tinfo.max_cpu_index + 1;
+    ret = libxl__zalloc(NOGC, sizeof(libxl_cputopology) * tinfo.num_cpus);
 
-    ret = libxl__zalloc(NOGC, sizeof(libxl_cputopology) * max_cpus);
-
-    for (i = 0; i < max_cpus; i++) {
-#define V(map, i) (map[i] == INVALID_TOPOLOGY_ID) ? \
-    LIBXL_CPUTOPOLOGY_INVALID_ENTRY : map[i]
-        ret[i].core = V(coremap, i);
-        ret[i].socket = V(socketmap, i);
-        ret[i].node = V(nodemap, i);
+    for (i = 0; i < tinfo.num_cpus; i++) {
+#define V(map, i, invalid) ( cputopo[i].map == invalid) ? \
+   LIBXL_CPUTOPOLOGY_INVALID_ENTRY : cputopo[i].map
+        ret[i].core = V(core, i, XEN_INVALID_CORE_ID);
+        ret[i].socket = V(socket, i, XEN_INVALID_SOCKET_ID);
+        ret[i].node = V(node, i, XEN_INVALID_NODE_ID);
 #undef V
     }
 
 fail:
-    xc_hypercall_buffer_free(ctx->xch, coremap);
-    xc_hypercall_buffer_free(ctx->xch, socketmap);
-    xc_hypercall_buffer_free(ctx->xch, nodemap);
+    xc_hypercall_buffer_free(ctx->xch, cputopo);
 
     if (ret)
-        *nb_cpu_out = max_cpus;
+        *nb_cpu_out = tinfo.num_cpus;
+
  out:
     GC_FREE;
     return ret;
