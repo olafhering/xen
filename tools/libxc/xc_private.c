@@ -427,7 +427,7 @@ int xc_mmuext_op(
 {
     DECLARE_HYPERCALL;
     DECLARE_HYPERCALL_BOUNCE(op, nr_ops*sizeof(*op), XC_HYPERCALL_BUFFER_BOUNCE_BOTH);
-    long ret = -EINVAL;
+    long ret = -1;
 
     if ( xc_hypercall_bounce_pre(xch, op) )
     {
@@ -516,7 +516,7 @@ int do_memory_op(xc_interface *xch, int cmd, void *arg, size_t len)
 {
     DECLARE_HYPERCALL;
     DECLARE_HYPERCALL_BOUNCE(arg, len, XC_HYPERCALL_BUFFER_BOUNCE_BOTH);
-    long ret = -EINVAL;
+    long ret = -1;
 
     if ( xc_hypercall_bounce_pre(xch, arg) )
     {
@@ -535,9 +535,16 @@ int do_memory_op(xc_interface *xch, int cmd, void *arg, size_t len)
     return ret;
 }
 
-long xc_maximum_ram_page(xc_interface *xch)
+int xc_maximum_ram_page(xc_interface *xch, unsigned long *max_mfn)
 {
-    return do_memory_op(xch, XENMEM_maximum_ram_page, NULL, 0);
+    long rc = do_memory_op(xch, XENMEM_maximum_ram_page, NULL, 0);
+
+    if ( rc >= 0 )
+    {
+        *max_mfn = rc;
+        rc = 0;
+    }
+    return rc;
 }
 
 long long xc_domain_get_cpu_usage( xc_interface *xch, domid_t domid, int vcpu )

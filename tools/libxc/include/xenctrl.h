@@ -1315,7 +1315,7 @@ int xc_domain_get_tsc_info(xc_interface *xch,
 
 int xc_domain_disable_migrate(xc_interface *xch, uint32_t domid);
 
-int xc_domain_maximum_gpfn(xc_interface *xch, domid_t domid);
+int xc_domain_maximum_gpfn(xc_interface *xch, domid_t domid, xen_pfn_t *gpfns);
 
 int xc_domain_increase_reservation(xc_interface *xch,
                                    uint32_t domid,
@@ -1509,7 +1509,7 @@ int xc_mmuext_op(xc_interface *xch, struct mmuext_op *op, unsigned int nr_ops,
                  domid_t dom);
 
 /* System wide memory properties */
-long xc_maximum_ram_page(xc_interface *xch);
+int xc_maximum_ram_page(xc_interface *xch, unsigned long *max_mfn);
 
 /* Get current total pages allocated to a domain. */
 long xc_get_tot_pages(xc_interface *xch, uint32_t domid);
