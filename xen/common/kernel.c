@@ -306,7 +306,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         {
         case 0:
             fi.submap = (1U << XENFEAT_memory_op_vnode_supported);
-            if ( VM_ASSIST(d, VMASST_TYPE_pae_extended_cr3) )
+            if ( VM_ASSIST(d, pae_extended_cr3) )
                 fi.submap |= (1U << XENFEAT_pae_pgdir_above_4gb);
             if ( paging_mode_translate(d) )
                 fi.submap |= 
@@ -386,10 +386,12 @@ DO(nmi_op)(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     return rc;
 }
 
+#ifdef VM_ASSIST_VALID
 DO(vm_assist)(unsigned int cmd, unsigned int type)
 {
-    return vm_assist(current->domain, cmd, type);
+    return vm_assist(current->domain, cmd, type, VM_ASSIST_VALID);
 }
+#endif
 
 DO(ni_hypercall)(void)
 {
