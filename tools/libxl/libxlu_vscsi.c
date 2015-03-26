@@ -208,13 +208,15 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
 
     if (fhost) {
         fhost = xlu__vscsi_trim_string(fhost);
-        new_host->feature_host = strcmp(fhost, "feature-host") == 0;
-        if (!new_host->feature_host) {
+        if (strcmp(fhost, "feature-host") == 0) {
+            libxl_defbool_set(&new_host->feature_host, true);
+        } else {
             LOG(cfg, "vscsi: invalid option '%s', expecting %s", fhost, "feature-host");
             rc = ERROR_INVAL;
             goto out;
         }
-    }
+    } else
+        libxl_defbool_set(&new_host->feature_host, false);
     rc = 0;
 
 out:
@@ -294,6 +296,16 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
                 rc = ERROR_INVAL;
                 goto out;
             }
+        }
+
+        if (libxl_defbool_val(new_host->feature_host) !=
+            libxl_defbool_val(tmp->feature_host)) {
+            LOG(cfg, "vscsi: different feature-host setting: "
+                      "existing host has it %s, new has it %s\n",
+                libxl_defbool_val(new_host->feature_host) ? "set" : "unset",
+                libxl_defbool_val(tmp->feature_host) ? "set" : "unset");
+            rc = ERROR_INVAL;
+            goto out;
         }
     }
 

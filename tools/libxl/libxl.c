@@ -2063,7 +2063,9 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", domid));
         flexarray_append_pair(back, "online", "1");
         flexarray_append_pair(back, "state", "1");
-        flexarray_append_pair(back, "feature-host", GCSPRINTF("%d", !!vscsi->feature_host));
+        flexarray_append_pair(back, "feature-host",
+                              libxl_defbool_val(vscsi->feature_host) ?
+                              "1" : "0");
 
         flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
         flexarray_append_pair(front, "state", "1");
