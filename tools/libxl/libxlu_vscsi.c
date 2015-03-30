@@ -121,7 +121,7 @@ static bool xlu__vscsi_wwn_valid(const char *p)
 static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
                                  libxl_vscsi_pdev *pdev)
 {
-    int rc = 0;
+    int rc = ERROR_INVAL;
     unsigned int lun;
     char wwn[16 + 1];
     libxl_vscsi_hctl hctl;
@@ -132,6 +132,7 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
         if (xlu__vscsi_parse_dev(cfg, str, &hctl) == 0) {
             libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_DEV);
             libxl_vscsi_hctl_copy(ctx, &pdev->u.dev.m, &hctl);
+            rc = 0;
         }
     } else if (strncmp(str, "naa.", 4) == 0) {
         /* WWN as understood by pvops */
@@ -139,15 +140,13 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
         if (sscanf(str, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
             libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
             pdev->u.wwn.m = strdup(str);
-            if (!pdev->u.wwn.m)
-                rc = ERROR_NOMEM;
+            rc = pdev->u.wwn.m ? 0 : ERROR_NOMEM;
         }
     } else if (xlu__vscsi_parse_hctl(str, &hctl) == 0) {
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
         libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
         libxl_vscsi_hctl_copy(ctx, &pdev->u.dev.m, &hctl);
-    } else
-        rc = ERROR_INVAL;
+    }
 
     if (rc == 0) {
             pdev->p_devname = strdup(str);
