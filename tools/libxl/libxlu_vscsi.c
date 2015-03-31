@@ -1,11 +1,13 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
+#include <unistd.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include "libxlu_internal.h"
 
 #define LOG(_c, _x, _a...) \
-        if((_c) && (_c)->report) fprintf((_c)->report, _x, ##_a)
+        if((_c) && (_c)->report) fprintf((_c)->report, _x "\n", ##_a)
 
 static int xlu__vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
@@ -118,34 +120,271 @@ static bool xlu__vscsi_wwn_valid(const char *p)
     return ret;
 }
 
-static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
-                                 libxl_vscsi_pdev *pdev)
+static bool xlu__vscsi_compare_hctl(libxl_vscsi_hctl *a, libxl_vscsi_hctl *b)
+{
+    if (a->hst == b->hst &&
+        a->chn == b->chn &&
+        a->tgt == b->tgt &&
+        a->lun == b->lun)
+        return true;
+    return false;
+}
+
+/* Finally at
+ * /sys/kernel/config/target/xen-pvscsi/naa.<wwn>/tpgt_1/lun/lun_0/<X>/udev_path
+ */
+static bool xlu__vscsi_compare_udev(XLU_Config *cfg, char *udev_path,
+                                    libxl_vscsi_hctl *pdev_hctl)
+{
+    bool ret;
+    int fd;
+    char *buf;
+    ssize_t read_sz;
+    libxl_vscsi_hctl udev_hctl;
+
+    libxl_vscsi_hctl_init(&udev_hctl);
+
+    buf = calloc(1, 4096);
+    if (!buf) {
+        ret = false;
+        goto out;
+    }
+    fd = open(udev_path, O_RDONLY);
+    if (fd < 0){
+        ret = false;
+        goto out;
+    }
+    read_sz = read(fd, buf, 4096 - 1);
+    close(fd);
+
+    if (read_sz < 0 || read_sz > 4096 - 1) {
+        ret = false;
+        goto out;
+    }
+    buf[read_sz] = '\0';
+    read_sz--;
+    if (buf[read_sz] == '\n')
+        buf[read_sz] = '\0';
+
+    if (xlu__vscsi_parse_dev(cfg, buf, &udev_hctl)) {
+        ret = false;
+        goto out;
+    }
+    ret = xlu__vscsi_compare_hctl(pdev_hctl, &udev_hctl);
+
+out:
+    free(buf);
+    libxl_vscsi_hctl_dispose(&udev_hctl);
+    return ret;
+}
+
+/* /sys/kernel/config/target/xen-pvscsi/naa.<wwn>/tpgt_1/lun/lun_0/<X>/udev_path */
+static bool xlu__vscsi_walk_dir_lun(XLU_Config *cfg, char *lun, libxl_vscsi_hctl *pdev_hctl)
+{
+    bool found;
+    DIR *dirp;
+    struct dirent *de;
+    char *udev_path;
+
+    dirp = opendir(lun);
+    if (!dirp)
+        return false;
+
+    found = false;
+    while ((de = readdir(dirp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        if (asprintf(&udev_path, "%s/%s/udev_path", lun, de->d_name) < 0)
+            goto out;
+
+        found = xlu__vscsi_compare_udev(cfg, udev_path, pdev_hctl);
+        free(udev_path);
+
+        if (found)
+            break;
+    }
+out:
+    closedir(dirp);
+    return found;
+}
+
+/* /sys/kernel/config/target/xen-pvscsi/naa.<wwn>/tpgt_1/lun/lun_0 */
+static bool xlu__vscsi_walk_dir_luns(XLU_Config *cfg, char *luns,
+                                     unsigned int *lunp, libxl_vscsi_hctl *pdev_hctl)
+{
+    bool found;
+    DIR *dirp;
+    struct dirent *de;
+    char *subdir;
+    unsigned int lun;
+
+    dirp = opendir(luns);
+    if (!dirp)
+        return false;
+
+    found = false;
+    while ((de = readdir(dirp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        if (sscanf(de->d_name, "lun_%u", &lun) != 1)
+            continue;
+
+        *lunp = lun;
+
+        if (asprintf(&subdir, "%s/%s", luns, de->d_name) < 0)
+            goto out;
+
+        found = xlu__vscsi_walk_dir_lun(cfg, subdir, pdev_hctl);
+        free(subdir);
+
+        if (found)
+            break;
+    }
+out:
+    closedir(dirp);
+    return found;
+}
+
+/* /sys/kernel/config/target/xen-pvscsi/naa.<wwn>/tpgt_1 */
+static bool xlu__vscsi_walk_dir_naa(XLU_Config *cfg, char *naa,
+                                    unsigned int *lunp, libxl_vscsi_hctl *pdev_hctl)
+{
+    bool found;
+    DIR *dirp;
+    struct dirent *de;
+    unsigned int tpgt;
+    char *subdir;
+
+    dirp = opendir(naa);
+    if (!dirp)
+        return false;
+
+    found = false;
+    while ((de = readdir(dirp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        if (sscanf(de->d_name, "tpgt_%u", &tpgt) != 1)
+            continue;
+
+        if (asprintf(&subdir, "%s/%s/lun", naa, de->d_name) < 0)
+            goto out;
+
+        found = xlu__vscsi_walk_dir_luns(cfg, subdir, lunp, pdev_hctl);
+        free(subdir);
+
+        if (found)
+            break;
+    }
+out:
+    closedir(dirp);
+    return found;
+}
+
+/* /sys/kernel/config/target/xen-pvscsi/naa.<wwn> */
+static bool xlu__vscsi_find_target_wwn(XLU_Config *cfg,
+                                       libxl_vscsi_hctl *pdev_hctl,
+                                       char *wwn, unsigned int *lunp)
+{
+    bool found;
+    DIR *dirp;
+    struct dirent *de;
+    char *dir, *subdir;
+
+    dir = "/sys/kernel/config/target/xen-pvscsi";
+    dirp = opendir(dir);
+    if (!dirp)
+        return false;
+
+    found = false;
+    while ((de = readdir(dirp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        if (sscanf(de->d_name, "naa.%16c", wwn) == 1 && !xlu__vscsi_wwn_valid(wwn))
+            continue;
+
+        if (asprintf(&subdir, "%s/%s", dir, de->d_name) < 0)
+            goto out;
+
+        found = xlu__vscsi_walk_dir_naa(cfg, subdir, lunp, pdev_hctl);
+        free(subdir);
+
+        if (found)
+            break;
+    }
+out:
+    closedir(dirp);
+    return found;
+}
+
+/*
+ * Convert pdev from config string into pdev property for backend,
+ * which is either h:c:t:l for xenlinux or naa.wwn:lun for pvops
+ */
+static int xlu__vscsi_dev_to_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
+                                  libxl_vscsi_hctl *pdev_hctl, libxl_vscsi_pdev *pdev)
+{
+    int rc = ERROR_INVAL;
+    char wwn[16 + 1];
+    unsigned int lun = 0;
+
+    /* First get hctl representation of config item */
+    if (xlu__vscsi_parse_dev(cfg, str, pdev_hctl))
+        goto out;
+
+    /* Check if a SCSI target item exists for the config item */
+    memset(wwn, 0, sizeof(wwn));
+    if (xlu__vscsi_find_target_wwn(cfg, pdev_hctl, wwn, &lun)) {
+        libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
+        if (asprintf(&pdev->u.wwn.m, "naa.%s:%u", wwn, lun) < 0) {
+            rc = ERROR_NOMEM;
+            goto out;
+        }
+    } else {
+        /* Assume xenlinux backend */
+        libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
+        libxl_vscsi_hctl_copy(ctx, &pdev->u.hctl.m, pdev_hctl);
+    }
+    rc = 0;
+
+out:
+    return rc;
+}
+
+/* WWN as understood by pvops */
+static int xlu__vscsi_wwn_to_pdev(XLU_Config *cfg, char *str, libxl_vscsi_pdev *pdev)
 {
     int rc = ERROR_INVAL;
     unsigned int lun;
     char wwn[16 + 1];
-    libxl_vscsi_hctl hctl;
 
-    libxl_vscsi_hctl_init(&hctl);
+    memset(wwn, 0, sizeof(wwn));
+    if (sscanf(str, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
+        libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
+        pdev->u.wwn.m = strdup(str);
+        rc = pdev->u.wwn.m ? 0 : ERROR_NOMEM;
+    }
+    return rc;
+}
+
+static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
+                                 libxl_vscsi_pdev *pdev)
+{
+    int rc = ERROR_INVAL;
+    libxl_vscsi_hctl pdev_hctl;
+
+    libxl_vscsi_hctl_init(&pdev_hctl);
     if (strncmp(str, "/dev/", 5) == 0) {
-        /* Either xenlinux, or pvops with properly configured alias in sysfs */
-        if (xlu__vscsi_parse_dev(cfg, str, &hctl) == 0) {
-            libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_DEV);
-            libxl_vscsi_hctl_copy(ctx, &pdev->u.dev.m, &hctl);
-            rc = 0;
-        }
+        rc = xlu__vscsi_dev_to_pdev(cfg, ctx, str, &pdev_hctl, pdev);
     } else if (strncmp(str, "naa.", 4) == 0) {
-        /* WWN as understood by pvops */
-        memset(wwn, 0, sizeof(wwn));
-        if (sscanf(str, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
-            libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
-            pdev->u.wwn.m = strdup(str);
-            rc = pdev->u.wwn.m ? 0 : ERROR_NOMEM;
-        }
-    } else if (xlu__vscsi_parse_hctl(str, &hctl) == 0) {
+        rc = xlu__vscsi_wwn_to_pdev(cfg, str, pdev);
+    } else if (xlu__vscsi_parse_hctl(str, &pdev_hctl) == 0) {
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
         libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
-        libxl_vscsi_hctl_copy(ctx, &pdev->u.dev.m, &hctl);
+        libxl_vscsi_hctl_copy(ctx, &pdev->u.hctl.m, &pdev_hctl);
     }
 
     if (rc == 0) {
@@ -154,7 +393,7 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
                 rc = ERROR_NOMEM;
     }
 
-    libxl_vscsi_hctl_dispose(&hctl);
+    libxl_vscsi_hctl_dispose(&pdev_hctl);
     return rc;
 }
 #else /* ! __linux__ */

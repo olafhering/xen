@@ -554,9 +554,8 @@ libxl_device_channel = Struct("device_channel", [
 
 libxl_vscsi_pdev_type = Enumeration("vscsi_pdev_type", [
     (0, "INVALID"),
-    (1, "DEV"),
+    (1, "HCTL"),
     (2, "WWN"),
-    (3, "HCTL"),
     ])
 
 libxl_vscsi_hctl = Struct("vscsi_hctl", [
@@ -571,9 +570,8 @@ libxl_vscsi_pdev = Struct("vscsi_pdev", [
     ("u", KeyedUnion(None, libxl_vscsi_pdev_type, "type",
         [
          ("invalid", None),
-         ("dev", Struct(None, [("m", libxl_vscsi_hctl)])),
-         ("wwn", Struct(None, [("m", string)])),
          ("hctl", Struct(None, [("m", libxl_vscsi_hctl)])),
+         ("wwn", Struct(None, [("m", string)])),
         ])),
     ])
 
