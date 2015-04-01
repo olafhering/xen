@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include "libxlu_internal.h"
 
+#ifdef __linux__
 #define LOG(_c, _x, _a...) \
         if((_c) && (_c)->report) fprintf((_c)->report, _x "\n", ##_a)
 
@@ -36,7 +37,6 @@ static char *xlu__vscsi_trim_string(char *s)
 }
 
 
-#ifdef __linux__
 static int xlu__vscsi_parse_dev(XLU_Config *cfg, char *pdev, libxl_vscsi_hctl *hctl)
 {
     struct stat dentry;
@@ -396,13 +396,6 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
     libxl_vscsi_hctl_dispose(&pdev_hctl);
     return rc;
 }
-#else /* ! __linux__ */
-static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
-                                 libxl_vscsi_pdev *pdev)
-{
-    return ERROR_FAIL;
-}
-#endif
 
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                              libxl_device_vscsi *new_host,
@@ -567,3 +560,26 @@ out:
     return rc;
 }
 
+#else /* ! __linux__ */
+int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
+                                   libxl_vscsi_dev *dev)
+{
+    return ERROR_INVAL;
+}
+
+int xlu_vscsi_get_host(XLU_Config *config,
+                               libxl_ctx *ctx,
+                               uint32_t domid,
+                               const char *str,
+                               libxl_device_vscsi *vscsi_host)
+{
+    return ERROR_INVAL;
+}
+
+int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
+                             libxl_device_vscsi *new_host,
+                             libxl_vscsi_dev *new_dev)
+{
+    return ERROR_INVAL;
+}
+#endif
