@@ -11,14 +11,14 @@
         if((_c) && (_c)->report) fprintf((_c)->report, _x "\n", ##_a)
 
 #define XLU_SYSFS_TARGET_PVSCSI "/sys/kernel/config/target/xen-pvscsi"
-
+#define XLU_WWN_LEN 16
 struct xlu__vscsi_target {
     XLU_Config *cfg;
     libxl_vscsi_hctl *pdev_hctl;
     libxl_vscsi_pdev *pdev;
     char path[PATH_MAX];
     char udev_path[PATH_MAX];
-    char wwn[16 + 1];
+    char wwn[XLU_WWN_LEN + 1];
     unsigned int lun;
 };
 
@@ -119,7 +119,7 @@ static bool xlu__vscsi_wwn_valid(const char *p)
     bool ret = true;
     int i = 0;
 
-    for (i = 0; i < 16; i++, p++) {
+    for (i = 0; i < XLU_WWN_LEN; i++, p++) {
         if (*p >= '0' && *p <= '9')
             continue;
         if (*p >= 'a' && *p <= 'f')
@@ -367,7 +367,7 @@ static int xlu__vscsi_wwn_to_pdev(XLU_Config *cfg, char *str, libxl_vscsi_pdev *
 {
     int rc = ERROR_INVAL;
     unsigned int lun;
-    char wwn[16 + 1];
+    char wwn[XLU_WWN_LEN + 1];
 
     memset(wwn, 0, sizeof(wwn));
     if (sscanf(str, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
