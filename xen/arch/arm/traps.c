@@ -63,6 +63,30 @@ static inline void check_stack_alignment_constraints(void) {
 #endif
 }
 
+/*
+ * GUEST_BUG_ON is intended for checking that the guest state has not been
+ * corrupted in hardware and/or that the hardware behaves as we
+ * believe it should (i.e. that certain traps can only occur when the
+ * guest is in a particular mode).
+ *
+ * The intention is to limit the damage such h/w bugs (or spec
+ * misunderstandings) can do by turning them into Denial of Service
+ * attacks instead of e.g. information leaks or privilege escalations.
+ *
+ * GUEST_BUG_ON *MUST* *NOT* be used to check for guest controllable state!
+ *
+ * Compared with regular BUG_ON it dumps the guest vcpu state instead
+ * of Xen's state.
+ */
+#define guest_bug_on_failed(p)                          \
+do {                                                    \
+    show_execution_state(guest_cpu_user_regs());        \
+    panic("Guest Bug: %pv: '%s', line %d, file %s\n",   \
+          current, p, __LINE__, __FILE__);              \
+} while (0)
+#define GUEST_BUG_ON(p) \
+    do { if ( unlikely(p) ) guest_bug_on_failed(#p); } while (0)
+
 #ifdef CONFIG_ARM_32
 static int debug_stack_lines = 20;
 #define stack_words_per_line 8
@@ -455,14 +479,7 @@ static void inject_abt64_exception(struct cpu_user_regs *regs,
         .len = instr_len,
     };
 
-    /*
-     * Trap may have been taken from EL0, which might be in AArch32
-     * mode (PSR_MODE_BIT set), or in AArch64 mode (PSR_MODE_EL0t).
-     *
-     * Since we know the kernel must be 64-bit any trap from a 32-bit
-     * mode must have been from EL0.
-     */
-    if ( psr_mode_is_32bit(regs->cpsr) || psr_mode(regs->cpsr,PSR_MODE_EL0t) )
+    if ( psr_mode_is_user(regs) )
         esr.ec = prefetch
             ? HSR_EC_INSTR_ABORT_LOWER_EL : HSR_EC_DATA_ABORT_LOWER_EL;
     else
@@ -1039,7 +1056,7 @@ void vcpu_show_execution_state(struct vcpu *v)
     vcpu_pause(v); /* acceptably dangerous */
 
     vcpu_show_registers(v);
-    if ( !usr_mode(&v->arch.cpu_info->guest_cpu_user_regs) )
+    if ( !psr_mode_is_user(&v->arch.cpu_info->guest_cpu_user_regs) )
         show_guest_stack(v, &v->arch.cpu_info->guest_cpu_user_regs);
 
     vcpu_unpause(v);
@@ -1494,7 +1511,7 @@ static int check_conditional_instr(struct cpu_user_regs *regs, union hsr hsr)
     {
         unsigned long it;
 
-        BUG_ON( !is_32bit_domain(current->domain) || !(cpsr&PSR_THUMB) );
+        BUG_ON( !psr_mode_is_32bit(regs->cpsr) || !(cpsr&PSR_THUMB) );
 
         it = ( (cpsr >> (10-2)) & 0xfc) | ((cpsr >> 25) & 0x3 );
 
@@ -1503,7 +1520,7 @@ static int check_conditional_instr(struct cpu_user_regs *regs, union hsr hsr)
             return 1;
 
         /* The cond for this instruction works out as the top 4 bits. */
-        cond =  ( it >> 4 );
+        cond = ( it >> 4 );
     }
 
     cpsr_cond = cpsr >> 28;
@@ -1521,10 +1538,10 @@ static void advance_pc(struct cpu_user_regs *regs, union hsr hsr)
     unsigned long itbits, cond, cpsr = regs->cpsr;
 
     /* PSR_IT_MASK bits can only be set for 32-bit processors in Thumb mode. */
-    BUG_ON( (!is_32bit_domain(current->domain)||!(cpsr&PSR_THUMB))
+    BUG_ON( (!psr_mode_is_32bit(cpsr)||!(cpsr&PSR_THUMB))
             && (cpsr&PSR_IT_MASK) );
 
-    if ( is_32bit_domain(current->domain) && (cpsr&PSR_IT_MASK) )
+    if ( cpsr&PSR_IT_MASK )
     {
         /* The ITSTATE[7:0] block is contained in CPSR[15:10],CPSR[26:25]
          *
@@ -1571,47 +1588,14 @@ static void do_cp15_32(struct cpu_user_regs *regs,
 
     switch ( hsr.bits & HSR_CP32_REGS_MASK )
     {
-    case HSR_CPREG32(CLIDR):
-        if ( !cp32.read )
-        {
-            dprintk(XENLOG_ERR,
-                    "attempt to write to read-only register CLIDR\n");
-            domain_crash_synchronous();
-        }
-        *r = READ_SYSREG32(CLIDR_EL1);
-        break;
-    case HSR_CPREG32(CCSIDR):
-        if ( !cp32.read )
-        {
-            dprintk(XENLOG_ERR,
-                    "attempt to write to read-only register CCSIDR\n");
-            domain_crash_synchronous();
-        }
-        *r = READ_SYSREG32(CCSIDR_EL1);
-        break;
-    case HSR_CPREG32(DCCISW):
-        if ( cp32.read )
-        {
-            dprintk(XENLOG_ERR,
-                    "attempt to read from write-only register DCCISW\n");
-            domain_crash_synchronous();
-        }
-#ifdef CONFIG_ARM_32
-        WRITE_CP32(*r, DCCISW);
-#else
-        asm volatile("dc cisw, %0;" : : "r" (*r) : "memory");
-#endif
-        break;
     case HSR_CPREG32(CNTP_CTL):
     case HSR_CPREG32(CNTP_TVAL):
         if ( !vtimer_emulate(regs, hsr) )
-        {
-            dprintk(XENLOG_ERR,
-                    "failed emulation of 32-bit vtimer CP register access\n");
-            domain_crash_synchronous();
-        }
+            goto undef_cp15_32;
         break;
     case HSR_CPREG32(ACTLR):
+        if ( psr_mode_is_user(regs) )
+            goto undef_cp15_32;
         if ( cp32.read )
            *r = v->arch.actlr;
         break;
@@ -1624,6 +1608,18 @@ static void do_cp15_32(struct cpu_user_regs *regs,
      * always support PMCCNTR (the cyle counter): we just RAZ/WI for all
      * PM register, which doesn't crash the kernel at least
      */
+    case HSR_CPREG32(PMUSERENR):
+        /* RO at EL0. RAZ/WI at EL1 */
+        if ( psr_mode_is_user(regs) && !hsr.cp32.read )
+            goto undef_cp15_32;
+        goto cp15_32_raz_wi;
+
+    case HSR_CPREG32(PMINTENSET):
+    case HSR_CPREG32(PMINTENCLR):
+        /* EL1 only, however MDCR_EL2.TPM==1 means EL0 may trap here also. */
+        if ( psr_mode_is_user(regs) )
+            goto undef_cp15_32;
+        goto cp15_32_raz_wi;
     case HSR_CPREG32(PMCR):
     case HSR_CPREG32(PMCNTENSET):
     case HSR_CPREG32(PMCNTENCLR):
@@ -1633,14 +1629,19 @@ static void do_cp15_32(struct cpu_user_regs *regs,
     case HSR_CPREG32(PMCEID0):
     case HSR_CPREG32(PMCEID1):
     case HSR_CPREG32(PMCCNTR):
+    case HSR_CPREG32(PMXEVTYPER):
     case HSR_CPREG32(PMXEVCNTR):
-    case HSR_CPREG32(PMXEVCNR):
-    case HSR_CPREG32(PMUSERENR):
-    case HSR_CPREG32(PMINTENSET):
-    case HSR_CPREG32(PMINTENCLR):
     case HSR_CPREG32(PMOVSSET):
+        /*
+         * Accessible at EL0 only if PMUSERENR_EL0.EN is set. We
+         * emulate that register as 0 above.
+         */
+        if ( psr_mode_is_user(regs) )
+            goto undef_cp15_32;
+ cp15_32_raz_wi:
         if ( cp32.read )
             *r = 0;
+        /* else: write ignored */
         break;
 
     default:
@@ -1650,6 +1651,7 @@ static void do_cp15_32(struct cpu_user_regs *regs,
                  cp32.op1, cp32.reg, cp32.crn, cp32.crm, cp32.op2, regs->pc);
         gdprintk(XENLOG_ERR, "unhandled 32-bit CP15 access %#x\n",
                  hsr.bits & HSR_CP32_REGS_MASK);
+ undef_cp15_32:
         inject_undef_exception(regs, hsr.len);
         return;
     }
@@ -1668,12 +1670,9 @@ static void do_cp15_64(struct cpu_user_regs *regs,
     switch ( hsr.bits & HSR_CP64_REGS_MASK )
     {
     case HSR_CPREG64(CNTPCT):
+    case HSR_CPREG64(CNTP_CVAL):
         if ( !vtimer_emulate(regs, hsr) )
-        {
-            dprintk(XENLOG_ERR,
-                    "failed emulation of 64-bit vtimer CP register access\n");
-            domain_crash_synchronous();
-        }
+            goto undef_cp15_64;
         break;
     default:
         {
@@ -1685,6 +1684,7 @@ static void do_cp15_64(struct cpu_user_regs *regs,
                      cp64.op1, cp64.reg1, cp64.reg2, cp64.crm, regs->pc);
             gdprintk(XENLOG_ERR, "unhandled 64-bit CP15 access %#x\n",
                      hsr.bits & HSR_CP64_REGS_MASK);
+ undef_cp15_64:
             inject_undef_exception(regs, hsr.len);
             return;
         }
@@ -1707,10 +1707,12 @@ static void do_cp14_32(struct cpu_user_regs *regs, union hsr hsr)
     switch ( hsr.bits & HSR_CP32_REGS_MASK )
     {
     case HSR_CPREG32(DBGDIDR):
-
-        /* Read-only register */
+        /*
+         * Read-only register. Accessible by EL0 if DBGDSCRext.UDCCdis
+         * is set to 0, which we emulated below.
+         */
         if ( !cp32.read )
-            goto bad_cp;
+            goto undef_cp14_32;
 
         /* Implement the minimum requirements:
          *  - Number of watchpoints: 1
@@ -1723,15 +1725,28 @@ static void do_cp14_32(struct cpu_user_regs *regs, union hsr hsr)
         break;
 
     case HSR_CPREG32(DBGDSCRINT):
+        /*
+         * Read-only register. Accessible by EL0 if DBGDSCRext.UDCCdis
+         * is set to 0, which we emulated below.
+         */
+        if ( !cp32.read )
+            goto undef_cp14_32;
+
+        *r = 0;
+        break;
+
     case HSR_CPREG32(DBGDSCREXT):
+        if ( usr_mode(regs) )
+            goto undef_cp14_32;
+
         /* Implement debug status and control register as RAZ/WI.
          * The OS won't use Hardware debug if MDBGen not set
          */
         if ( cp32.read )
            *r = 0;
         break;
+
     case HSR_CPREG32(DBGVCR):
-    case HSR_CPREG32(DBGOSLAR):
     case HSR_CPREG32(DBGBVR0):
     case HSR_CPREG32(DBGBCR0):
     case HSR_CPREG32(DBGWVR0):
@@ -1739,19 +1754,29 @@ static void do_cp14_32(struct cpu_user_regs *regs, union hsr hsr)
     case HSR_CPREG32(DBGBVR1):
     case HSR_CPREG32(DBGBCR1):
     case HSR_CPREG32(DBGOSDLR):
+        if ( usr_mode(regs) )
+            goto undef_cp14_32;
         /* RAZ/WI */
         if ( cp32.read )
             *r = 0;
         break;
 
+    case HSR_CPREG32(DBGOSLAR):
+        if ( usr_mode(regs) )
+            goto undef_cp14_32;
+        /* WO */
+        if ( cp32.read )
+            goto undef_cp14_32;
+        /* else: ignore */
+        break;
     default:
-bad_cp:
         gdprintk(XENLOG_ERR,
                  "%s p14, %d, r%d, cr%d, cr%d, %d @ 0x%"PRIregister"\n",
                   cp32.read ? "mrc" : "mcr",
                   cp32.op1, cp32.reg, cp32.crn, cp32.crm, cp32.op2, regs->pc);
         gdprintk(XENLOG_ERR, "unhandled 32-bit cp14 access %#x\n",
                  hsr.bits & HSR_CP32_REGS_MASK);
+ undef_cp14_32:
         inject_undef_exception(regs, hsr.len);
         return;
     }
@@ -1805,9 +1830,42 @@ static void do_sysreg(struct cpu_user_regs *regs,
     /* RAZ/WI registers: */
     /*  - Debug */
     case HSR_SYSREG_MDSCR_EL1:
+    /*  - Breakpoints */
+    HSR_SYSREG_DBG_CASES(DBGBVR):
+    HSR_SYSREG_DBG_CASES(DBGBCR):
+    /*  - Watchpoints */
+    HSR_SYSREG_DBG_CASES(DBGWVR):
+    HSR_SYSREG_DBG_CASES(DBGWCR):
+    /*  - Double Lock Register */
+    case HSR_SYSREG_OSDLR_EL1:
     /*  - Perf monitors */
     case HSR_SYSREG_PMINTENSET_EL1:
     case HSR_SYSREG_PMINTENCLR_EL1:
+        /*
+         * Accessible from EL1 only, but if EL0 trap happens handle as
+         * undef.
+         */
+        if ( psr_mode_is_user(regs) )
+            goto undef_sysreg;
+        goto sysreg_raz_wi;
+
+    case HSR_SYSREG_MDCCSR_EL0:
+        /*
+         * Accessible at EL0 only if MDSCR_EL1.TDCC is set to 0. We emulate that
+         * register as RAZ/WI above. So RO at both EL0 and EL1.
+         */
+        if ( !hsr.sysreg.read )
+            goto undef_sysreg;
+
+        *x = 0;
+        break;
+
+    /* - Perf monitors */
+    case HSR_SYSREG_PMUSERENR_EL0:
+        /* RO at EL0. RAZ/WI at EL1 */
+        if ( psr_mode_is_user(regs) && !hsr.sysreg.read )
+            goto undef_sysreg;
+        goto sysreg_raz_wi;
     case HSR_SYSREG_PMCR_EL0:
     case HSR_SYSREG_PMCNTENSET_EL0:
     case HSR_SYSREG_PMCNTENCLR_EL0:
@@ -1819,16 +1877,14 @@ static void do_sysreg(struct cpu_user_regs *regs,
     case HSR_SYSREG_PMCCNTR_EL0:
     case HSR_SYSREG_PMXEVTYPER_EL0:
     case HSR_SYSREG_PMXEVCNTR_EL0:
-    case HSR_SYSREG_PMUSERENR_EL0:
     case HSR_SYSREG_PMOVSSET_EL0:
-    /* - Breakpoints */
-    HSR_SYSREG_DBG_CASES(DBGBVR):
-    HSR_SYSREG_DBG_CASES(DBGBCR):
-    /* - Watchpoints */
-    HSR_SYSREG_DBG_CASES(DBGWVR):
-    HSR_SYSREG_DBG_CASES(DBGWCR):
-    /* - Double Lock Register */
-    case HSR_SYSREG_OSDLR_EL1:
+        /*
+         * Accessible at EL0 only if PMUSERENR_EL0.EN is set. We
+         * emulate that register as 0 above.
+         */
+        if ( psr_mode_is_user(regs) )
+            goto undef_sysreg;
+ sysreg_raz_wi:
         if ( hsr.sysreg.read )
             *x = 0;
         /* else: write ignored */
@@ -1837,17 +1893,14 @@ static void do_sysreg(struct cpu_user_regs *regs,
     /* Write only, Write ignore registers: */
     case HSR_SYSREG_OSLAR_EL1:
         if ( hsr.sysreg.read )
-            goto bad_sysreg;
+            goto undef_sysreg;
         /* else: write ignored */
         break;
     case HSR_SYSREG_CNTP_CTL_EL0:
     case HSR_SYSREG_CNTP_TVAL_EL0:
+    case HSR_SYSREG_CNTP_CVAL_EL0:
         if ( !vtimer_emulate(regs, hsr) )
-        {
-            dprintk(XENLOG_ERR,
-                    "failed emulation of 64-bit vtimer sysreg access\n");
-            domain_crash_synchronous();
-        }
+            goto undef_sysreg;
         break;
     case HSR_SYSREG_ICC_SGI1R_EL1:
         if ( !vgic_emulate(regs, hsr) )
@@ -1864,7 +1917,6 @@ static void do_sysreg(struct cpu_user_regs *regs,
                 "Emulation of sysreg ICC_SGI0R_EL1/ASGI1R_EL1 not supported\n");
         inject_undef64_exception(regs, hsr.len);
     default:
- bad_sysreg:
         {
             struct hsr_sysreg sysreg = hsr.sysreg;
 
@@ -1878,8 +1930,8 @@ static void do_sysreg(struct cpu_user_regs *regs,
                      sysreg.reg, regs->pc);
             gdprintk(XENLOG_ERR, "unhandled 64-bit sysreg access %#x\n",
                      hsr.bits & HSR_SYSREG_REGS_MASK);
-
-            inject_undef_exception(regs, sysreg.len);
+ undef_sysreg:
+            inject_undef_exception(regs, hsr.sysreg.len);
             return;
         }
     }
@@ -2018,18 +2070,6 @@ asmlinkage void do_trap_hypervisor(struct cpu_user_regs *regs)
 
     enter_hypervisor_head(regs);
 
-    /*
-     * We currently do not handle 32-bit userspace on 64-bit kernels
-     * correctly (See XSA-102). Until that is resolved we treat any
-     * trap from 32-bit userspace on 64-bit kernel as undefined.
-     */
-    if ( !hyp_mode(regs) && is_64bit_domain(current->domain) &&
-         psr_mode_is_32bit(regs->cpsr) )
-    {
-        inject_undef_exception(regs, hsr.len);
-        return;
-    }
-
     switch (hsr.ec) {
     case HSR_EC_WFI_WFE:
         if ( !check_conditional_instr(regs, hsr) )
@@ -2049,40 +2089,37 @@ asmlinkage void do_trap_hypervisor(struct cpu_user_regs *regs)
         advance_pc(regs, hsr);
         break;
     case HSR_EC_CP15_32:
-        if ( !is_32bit_domain(current->domain) )
-            goto bad_trap;
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_cp15_32);
         do_cp15_32(regs, hsr);
         break;
     case HSR_EC_CP15_64:
-        if ( !is_32bit_domain(current->domain) )
-            goto bad_trap;
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_cp15_64);
         do_cp15_64(regs, hsr);
         break;
     case HSR_EC_CP14_32:
-        if ( !is_32bit_domain(current->domain) )
-            goto bad_trap;
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_cp14_32);
         do_cp14_32(regs, hsr);
         break;
     case HSR_EC_CP14_DBG:
-        if ( !is_32bit_domain(current->domain) )
-            goto bad_trap;
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_cp14_dbg);
         do_cp14_dbg(regs, hsr);
         break;
     case HSR_EC_CP:
-        if ( !is_32bit_domain(current->domain) )
-            goto bad_trap;
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_cp);
         do_cp(regs, hsr);
         break;
     case HSR_EC_SMC32:
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_smc32);
         inject_undef32_exception(regs);
         break;
     case HSR_EC_HVC32:
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_hvc32);
 #ifndef NDEBUG
         if ( (hsr.iss & 0xff00) == 0xff00 )
@@ -2094,6 +2131,7 @@ asmlinkage void do_trap_hypervisor(struct cpu_user_regs *regs)
         break;
 #ifdef CONFIG_ARM_64
     case HSR_EC_HVC64:
+        GUEST_BUG_ON(psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_hvc64);
 #ifndef NDEBUG
         if ( (hsr.iss & 0xff00) == 0xff00 )
@@ -2104,12 +2142,12 @@ asmlinkage void do_trap_hypervisor(struct cpu_user_regs *regs)
         do_trap_hypercall(regs, &regs->x16, hsr.iss);
         break;
     case HSR_EC_SMC64:
+        GUEST_BUG_ON(psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_smc64);
         inject_undef64_exception(regs, hsr.len);
         break;
     case HSR_EC_SYSREG:
-        if ( is_32bit_domain(current->domain) )
-            goto bad_trap;
+        GUEST_BUG_ON(psr_mode_is_32bit(regs->cpsr));
         perfc_incr(trap_sysreg);
         do_sysreg(regs, hsr);
         break;
@@ -2131,7 +2169,6 @@ asmlinkage void do_trap_hypervisor(struct cpu_user_regs *regs)
 #endif
 
     default:
- bad_trap:
         printk("Hypervisor Trap. HSR=0x%x EC=0x%x IL=%x Syndrome=0x%"PRIx32"\n",
                hsr.bits, hsr.ec, hsr.len, hsr.iss);
         do_unexpected_trap("Hypervisor", regs);
