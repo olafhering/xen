@@ -32,6 +32,8 @@ INSTALL_SBIN += $(INSTALL_SBIN-y)
 
 # Everything to be installed in a private bin/
 INSTALL_PRIVBIN                += xenpvnetboot
+INSTALL_PRIVBIN                += target-create-xen-scsiback.sh
+INSTALL_PRIVBIN                += target-delete-xen-scsiback.sh
 
 # Everything to be installed
 TARGETS_ALL := $(INSTALL_BIN) $(INSTALL_SBIN) $(INSTALL_PRIVBIN)
@@ -42,6 +44,8 @@ TARGETS_COPY += xen-ringwatch
 TARGETS_COPY += xencons
 TARGETS_COPY += xencov_split
 TARGETS_COPY += xenpvnetboot
+TARGETS_COPY += target-create-xen-scsiback.sh
+TARGETS_COPY += target-delete-xen-scsiback.sh
 
 # Everything which needs to be built
 TARGETS_BUILD := $(filter-out $(TARGETS_COPY),$(TARGETS_ALL))
