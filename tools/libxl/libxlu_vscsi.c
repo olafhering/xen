@@ -393,6 +393,7 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
         libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
         libxl_vscsi_hctl_copy(ctx, &pdev->u.hctl.m, &pdev_hctl);
+        rc = 0;
     }
 
     if (rc == 0) {
