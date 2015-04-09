@@ -131,6 +131,7 @@ CLIENTS = xl testidl libxl-save-helper xen-init-dom0
 
 CFLAGS_XL += $(CFLAGS_libxenlight)
 CFLAGS_XL += -Wshadow
+CFLAGS += -O0 -g3
 
 XL_OBJS = xl.o xl_cmdimpl.o xl_cmdtable.o xl_sxp.o
 $(XL_OBJS) $(TEST_PROG_OBJS) _libxl.api-for-check: \
