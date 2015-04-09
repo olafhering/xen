@@ -77,7 +77,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
     GC_INIT(ctx);
     libxl_vscsi_dev *v_dev;
     libxl_device_vscsi *v_hst, *vscsi_hosts = NULL;
-    char *fe_path, *tmp, *c, *p, *v;
+    char *fe_path, *tmp, *c, *p, *v, *s;
     char **dir, **devs_dir;
     const char *devs_path, *be_path;
     int r;
@@ -143,8 +143,27 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
                     v = libxl__xs_read(gc, XBT_NULL,
                                        GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev",
                                        be_path, vscsi_dev_id));
-                    if (c && p && v)
+                    s = libxl__xs_read(gc, XBT_NULL,
+                                       GCSPRINTF("%s/vscsi-devs/dev-%u/state",
+                                       be_path, vscsi_dev_id));
+                    if (c && p && v && s) {
                         parsed_ok = vscsi_parse_pdev(ctx, v_dev, c, p, v);
+                        LOG(DEBUG, "%s dev-%u state is %s", be_path, vscsi_dev_id, s);
+                        switch (atoi(s)) {
+                            case XenbusStateUnknown:
+                            case XenbusStateInitialising:
+                            case XenbusStateInitWait:
+                            case XenbusStateInitialised:
+                            case XenbusStateConnected:
+                            case XenbusStateReconfiguring:
+                            case XenbusStateReconfigured:
+                                break;
+                            case XenbusStateClosing:
+                            case XenbusStateClosed:
+                                v_dev->remove = true;
+                                break;
+                        }
+                    }
 
                     /* Indication for caller that this v_dev is usable */
                     if (parsed_ok) {
