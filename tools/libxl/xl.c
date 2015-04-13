@@ -331,6 +331,7 @@ int main(int argc, char **argv)
     opterr = 0;
 
     logger = xtl_createlogger_stdiostream(stderr, minmsglevel,
+    XTL_STDIOSTREAM_SHOW_DATE | XTL_STDIOSTREAM_SHOW_PID |
         (progress_use_cr ? XTL_STDIOSTREAM_PROGRESS_USE_CR : 0));
     if (!logger) exit(1);
 
