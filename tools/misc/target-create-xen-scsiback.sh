@@ -68,6 +68,7 @@ do
 		blockdev --rereadpt "${f_link}"
 		udevadm settle --timeout=4
 		echo 1,12,S | sfdisk "${f_link}"
+		udevadm settle --timeout=4
 		blockdev --rereadpt "${f_link}"
 		udevadm settle --timeout=4
 		parted -s "${f_link}" unit s print
