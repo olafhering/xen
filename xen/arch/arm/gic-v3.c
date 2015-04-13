@@ -528,23 +528,24 @@ static void __init gicv3_dist_init(void)
     uint32_t type;
     uint32_t priority;
     uint64_t affinity;
+    unsigned int nr_lines;
     int i;
 
     /* Disable the distributor */
     writel_relaxed(0, GICD + GICD_CTLR);
 
     type = readl_relaxed(GICD + GICD_TYPER);
-    gicv3_info.nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
+    nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
 
     printk("GICv3: %d lines, (IID %8.8x).\n",
-           gicv3_info.nr_lines, readl_relaxed(GICD + GICD_IIDR));
+           nr_lines, readl_relaxed(GICD + GICD_IIDR));
 
     /* Default all global IRQs to level, active low */
-    for ( i = NR_GIC_LOCAL_IRQS; i < gicv3_info.nr_lines; i += 16 )
+    for ( i = NR_GIC_LOCAL_IRQS; i < nr_lines; i += 16 )
         writel_relaxed(0, GICD + GICD_ICFGR + (i / 16) * 4);
 
     /* Default priority for global interrupts */
-    for ( i = NR_GIC_LOCAL_IRQS; i < gicv3_info.nr_lines; i += 4 )
+    for ( i = NR_GIC_LOCAL_IRQS; i < nr_lines; i += 4 )
     {
         priority = (GIC_PRI_IRQ << 24 | GIC_PRI_IRQ << 16 |
                     GIC_PRI_IRQ << 8 | GIC_PRI_IRQ);
@@ -552,7 +553,7 @@ static void __init gicv3_dist_init(void)
     }
 
     /* Disable all global interrupts */
-    for ( i = NR_GIC_LOCAL_IRQS; i < gicv3_info.nr_lines; i += 32 )
+    for ( i = NR_GIC_LOCAL_IRQS; i < nr_lines; i += 32 )
         writel_relaxed(0xffffffff, GICD + GICD_ICENABLER + (i / 32) * 4);
 
     gicv3_dist_wait_for_rwp();
@@ -566,8 +567,11 @@ static void __init gicv3_dist_init(void)
     /* Make sure we don't broadcast the interrupt */
     affinity &= ~GICD_IROUTER_SPI_MODE_ANY;
 
-    for ( i = NR_GIC_LOCAL_IRQS; i < gicv3_info.nr_lines; i++ )
+    for ( i = NR_GIC_LOCAL_IRQS; i < nr_lines; i++ )
         writeq_relaxed(affinity, GICD + GICD_IROUTER + i * 8);
+
+    /* Only 1020 interrupts are supported */
+    gicv3_info.nr_lines = min(1020U, nr_lines);
 }
 
 static int gicv3_enable_redist(void)
@@ -1173,31 +1177,6 @@ static const hw_irq_controller gicv3_guest_irq_type = {
     .set_affinity = gicv3_irq_set_affinity,
 };
 
-static const struct gic_hw_operations gicv3_ops = {
-    .info                = &gicv3_info,
-    .save_state          = gicv3_save_state,
-    .restore_state       = gicv3_restore_state,
-    .dump_state          = gicv3_dump_state,
-    .gicv_setup          = gicv_v3_init,
-    .gic_host_irq_type   = &gicv3_host_irq_type,
-    .gic_guest_irq_type  = &gicv3_guest_irq_type,
-    .eoi_irq             = gicv3_eoi_irq,
-    .deactivate_irq      = gicv3_dir_irq,
-    .read_irq            = gicv3_read_irq,
-    .set_irq_properties  = gicv3_set_irq_properties,
-    .send_SGI            = gicv3_send_sgi,
-    .disable_interface   = gicv3_disable_interface,
-    .update_lr           = gicv3_update_lr,
-    .update_hcr_status   = gicv3_hcr_status,
-    .clear_lr            = gicv3_clear_lr,
-    .read_lr             = gicv3_read_lr,
-    .write_lr            = gicv3_write_lr,
-    .read_vmcr_priority  = gicv3_read_vmcr_priority,
-    .read_apr            = gicv3_read_apr,
-    .secondary_init      = gicv3_secondary_cpu_init,
-    .make_dt_node        = gicv3_make_dt_node,
-};
-
 static int __init cmp_rdist(const void *a, const void *b)
 {
     const struct rdist_region *l = a, *r = a;
@@ -1207,19 +1186,18 @@ static int __init cmp_rdist(const void *a, const void *b)
 }
 
 /* Set up the GIC */
-static int __init gicv3_init(struct dt_device_node *node, const void *data)
+static int __init gicv3_init(void)
 {
     struct rdist_region *rdist_regs;
     int res, i;
     uint32_t reg;
+    const struct dt_device_node *node = gicv3_info.node;
 
     if ( !cpu_has_gicv3 )
     {
         dprintk(XENLOG_ERR, "GICv3: driver requires system register support\n");
         return -ENODEV;
     }
-
-    dt_device_set_used_by(node, DOMID_XEN);
 
     res = dt_device_get_address(node, 0, &gicv3.dbase, &gicv3.dbase_size);
     if ( res || !gicv3.dbase )
@@ -1274,9 +1252,6 @@ static int __init gicv3_init(struct dt_device_node *node, const void *data)
         panic("GICv3: Cannot find the maintenance IRQ");
     gicv3_info.maintenance_irq = res;
 
-    /* Set the GIC as the primary interrupt controller */
-    dt_interrupt_controller = node;
-
     for ( i = 0; i < gicv3.rdist_count; i++ )
     {
         /* map dbase & rdist regions */
@@ -1311,13 +1286,45 @@ static int __init gicv3_init(struct dt_device_node *node, const void *data)
     res = gicv3_cpu_init();
     gicv3_hyp_init();
 
-    gicv3_info.hw_version = GIC_V3;
-    /* Register hw ops*/
-    register_gic_ops(&gicv3_ops);
-
     spin_unlock(&gicv3.lock);
 
     return res;
+}
+
+static const struct gic_hw_operations gicv3_ops = {
+    .info                = &gicv3_info,
+    .init                = gicv3_init,
+    .save_state          = gicv3_save_state,
+    .restore_state       = gicv3_restore_state,
+    .dump_state          = gicv3_dump_state,
+    .gicv_setup          = gicv_v3_init,
+    .gic_host_irq_type   = &gicv3_host_irq_type,
+    .gic_guest_irq_type  = &gicv3_guest_irq_type,
+    .eoi_irq             = gicv3_eoi_irq,
+    .deactivate_irq      = gicv3_dir_irq,
+    .read_irq            = gicv3_read_irq,
+    .set_irq_properties  = gicv3_set_irq_properties,
+    .send_SGI            = gicv3_send_sgi,
+    .disable_interface   = gicv3_disable_interface,
+    .update_lr           = gicv3_update_lr,
+    .update_hcr_status   = gicv3_hcr_status,
+    .clear_lr            = gicv3_clear_lr,
+    .read_lr             = gicv3_read_lr,
+    .write_lr            = gicv3_write_lr,
+    .read_vmcr_priority  = gicv3_read_vmcr_priority,
+    .read_apr            = gicv3_read_apr,
+    .secondary_init      = gicv3_secondary_cpu_init,
+    .make_dt_node        = gicv3_make_dt_node,
+};
+
+static int __init gicv3_preinit(struct dt_device_node *node, const void *data)
+{
+    gicv3_info.hw_version = GIC_V3;
+    gicv3_info.node = node;
+    register_gic_ops(&gicv3_ops);
+    dt_irq_xlate = gic_irq_xlate;
+
+    return 0;
 }
 
 static const struct dt_device_match gicv3_dt_match[] __initconst =
@@ -1328,7 +1335,7 @@ static const struct dt_device_match gicv3_dt_match[] __initconst =
 
 DT_DEVICE_START(gicv3, "GICv3", DEVICE_GIC)
         .dt_match = gicv3_dt_match,
-        .init = gicv3_init,
+        .init = gicv3_preinit,
 DT_DEVICE_END
 
 /*

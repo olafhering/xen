@@ -86,6 +86,7 @@
 #define LIBXL_DESTROY_TIMEOUT 10
 #define LIBXL_HOTPLUG_TIMEOUT 10
 #define LIBXL_DEVICE_MODEL_START_TIMEOUT 10
+#define LIBXL_STUBDOM_START_TIMEOUT 30
 #define LIBXL_QEMU_BODGE_TIMEOUT 2
 #define LIBXL_XENCONSOLE_LIMIT 1048576
 #define LIBXL_XENCONSOLE_PROTOCOL "vt100"
@@ -993,6 +994,8 @@ typedef struct {
 
     xen_vmemrange_t *vmemranges;
     uint32_t num_vmemranges;
+
+    xc_domain_configuration_t config;
 } libxl__domain_build_state;
 
 _hidden int libxl__build_pre(libxl__gc *gc, uint32_t domid,
@@ -1482,8 +1485,9 @@ _hidden  void libxl__exec(libxl__gc *gc, int stdinfd, int stdoutfd,
  /* on entry, libxl_domid_valid_guest(domid) must be false;
   * on exit (even error exit), domid may be valid and refer to a domain */
 _hidden int libxl__domain_make(libxl__gc *gc,
-                               libxl_domain_create_info *info,
-                               uint32_t *domid);
+                               libxl_domain_config *d_config,
+                               uint32_t *domid,
+                               xc_domain_configuration_t *xc_config);
 
 _hidden int libxl__domain_build(libxl__gc *gc,
                                 libxl_domain_config *d_config,
@@ -3080,6 +3084,7 @@ typedef struct {
     libxl__dm_spawn_state pvqemu;
     libxl__destroy_domid_state dis;
     libxl__multidev multidev;
+    libxl__xswait_state xswait;
 } libxl__stub_dm_spawn_state;
 
 _hidden void libxl__spawn_stub_dm(libxl__egc *egc, libxl__stub_dm_spawn_state*);

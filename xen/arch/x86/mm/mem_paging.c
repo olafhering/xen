@@ -22,41 +22,35 @@
 
 
 #include <asm/p2m.h>
-#include <xen/mem_event.h>
+#include <xen/vm_event.h>
 
 
-int mem_paging_memop(struct domain *d, xen_mem_event_op_t *mec)
+int mem_paging_memop(struct domain *d, xen_mem_paging_op_t *mpo)
 {
-    if ( unlikely(!d->mem_event->paging.ring_page) )
-        return -ENODEV;
+    int rc = -ENODEV;
+    if ( unlikely(!d->vm_event->paging.ring_page) )
+        return rc;
 
-    switch( mec->op )
+    switch( mpo->op )
     {
     case XENMEM_paging_op_nominate:
-    {
-        unsigned long gfn = mec->gfn;
-        return p2m_mem_paging_nominate(d, gfn);
-    }
-    break;
+        rc = p2m_mem_paging_nominate(d, mpo->gfn);
+        break;
 
     case XENMEM_paging_op_evict:
-    {
-        unsigned long gfn = mec->gfn;
-        return p2m_mem_paging_evict(d, gfn);
-    }
-    break;
+        rc = p2m_mem_paging_evict(d, mpo->gfn);
+        break;
 
     case XENMEM_paging_op_prep:
-    {
-        unsigned long gfn = mec->gfn;
-        return p2m_mem_paging_prep(d, gfn, mec->buffer);
-    }
-    break;
+        rc = p2m_mem_paging_prep(d, mpo->gfn, mpo->buffer);
+        break;
 
     default:
-        return -ENOSYS;
+        rc = -ENOSYS;
         break;
     }
+
+    return rc;
 }
 
 

@@ -175,6 +175,7 @@ SECTIONS
        *(.bss.percpu.read_mostly)
        . = ALIGN(SMP_CACHE_BYTES);
        __per_cpu_data_end = .;
+       __bss_end = .;
   } :text
   _end = . ;
 
@@ -197,6 +198,8 @@ SECTIONS
        *(.exit.text)
        *(.exit.data)
        *(.exitcall.exit)
+       *(.discard)
+       *(.discard.*)
        *(.eh_frame)
 #ifdef EFI
        *(.comment)

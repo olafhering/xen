@@ -414,7 +414,7 @@ static int hvmemul_virtual_to_linear(
      * The chosen maximum is very conservative but it's what we use in
      * hvmemul_linear_to_phys() so there is no point in using a larger value.
      * If introspection has been enabled for this domain, *reps should be
-     * at most 1, since optimization might otherwise cause a single mem_event
+     * at most 1, since optimization might otherwise cause a single vm_event
      * being triggered for repeated writes to a whole page.
      */
     *reps = min_t(unsigned long, *reps,
@@ -1528,7 +1528,7 @@ int hvm_emulate_one_no_write(
     return _hvm_emulate_one(hvmemul_ctxt, &hvm_emulate_ops_no_write);
 }
 
-void hvm_mem_event_emulate_one(bool_t nowrite, unsigned int trapnr,
+void hvm_mem_access_emulate_one(bool_t nowrite, unsigned int trapnr,
     unsigned int errcode)
 {
     struct hvm_emulate_ctxt ctx = {{ 0 }};
@@ -1545,7 +1545,7 @@ void hvm_mem_event_emulate_one(bool_t nowrite, unsigned int trapnr,
     {
     case X86EMUL_RETRY:
         /*
-         * This function is called when handling an EPT-related mem_event
+         * This function is called when handling an EPT-related vm_event
          * reply. As such, nothing else needs to be done here, since simply
          * returning makes the current instruction cause a page fault again,
          * consistent with X86EMUL_RETRY.

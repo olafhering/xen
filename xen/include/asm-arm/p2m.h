@@ -45,7 +45,7 @@ struct p2m_domain {
         unsigned long shattered[4];
     } stats;
 
-    /* If true, and an access fault comes in and there is no mem_event listener,
+    /* If true, and an access fault comes in and there is no vm_event listener,
      * pause domain. Otherwise, remove access restrictions. */
     bool_t access_required;
 };
@@ -71,11 +71,11 @@ typedef enum {
 } p2m_type_t;
 
 static inline
-void p2m_mem_event_emulate_check(struct vcpu *v,
-                                 const mem_event_response_t *rsp)
+void p2m_mem_access_emulate_check(struct vcpu *v,
+                                  const vm_event_response_t *rsp)
 {
     /* Not supported on ARM. */
-};
+}
 
 static inline
 void p2m_setup_introspection(struct domain *d)

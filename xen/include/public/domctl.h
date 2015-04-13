@@ -64,22 +64,10 @@ struct xen_domctl_createdomain {
 #define _XEN_DOMCTL_CDF_pvh_guest     4
 #define XEN_DOMCTL_CDF_pvh_guest      (1U<<_XEN_DOMCTL_CDF_pvh_guest)
     uint32_t flags;
+    struct xen_arch_domainconfig config;
 };
 typedef struct xen_domctl_createdomain xen_domctl_createdomain_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_createdomain_t);
-
-#if defined(__arm__) || defined(__aarch64__)
-#define XEN_DOMCTL_CONFIG_GIC_DEFAULT   0
-#define XEN_DOMCTL_CONFIG_GIC_V2        1
-#define XEN_DOMCTL_CONFIG_GIC_V3        2
-/* XEN_DOMCTL_configure_domain */
-struct xen_domctl_arm_configuredomain {
-    /* IN/OUT parameters */
-    uint8_t gic_version;
-};
-typedef struct xen_domctl_arm_configuredomain xen_domctl_arm_configuredomain_t;
-DEFINE_XEN_GUEST_HANDLE(xen_domctl_arm_configuredomain_t);
-#endif
 
 /* XEN_DOMCTL_getdomaininfo */
 struct xen_domctl_getdomaininfo {
@@ -751,10 +739,10 @@ struct xen_domctl_gdbsx_domstatus {
 };
 
 /*
- * Memory event operations
+ * VM event operations
  */
 
-/* XEN_DOMCTL_mem_event_op */
+/* XEN_DOMCTL_vm_event_op */
 
 /*
  * Domain memory paging
@@ -763,42 +751,49 @@ struct xen_domctl_gdbsx_domstatus {
  * pager<->hypervisor interface. Use XENMEM_paging_op*
  * to perform per-page operations.
  *
- * The XEN_DOMCTL_MEM_EVENT_OP_PAGING_ENABLE domctl returns several
+ * The XEN_VM_EVENT_PAGING_ENABLE domctl returns several
  * non-standard error codes to indicate why paging could not be enabled:
  * ENODEV - host lacks HAP support (EPT/NPT) or HAP is disabled in guest
  * EMLINK - guest has iommu passthrough enabled
  * EXDEV  - guest has PoD enabled
  * EBUSY  - guest has or had paging enabled, ring buffer still active
  */
-#define XEN_DOMCTL_MEM_EVENT_OP_PAGING            1
+#define XEN_DOMCTL_VM_EVENT_OP_PAGING            1
 
-#define XEN_DOMCTL_MEM_EVENT_OP_PAGING_ENABLE     0
-#define XEN_DOMCTL_MEM_EVENT_OP_PAGING_DISABLE    1
+#define XEN_VM_EVENT_PAGING_ENABLE               0
+#define XEN_VM_EVENT_PAGING_DISABLE              1
 
 /*
- * Access permissions.
+ * Monitor helper.
  *
  * As with paging, use the domctl for teardown/setup of the
  * helper<->hypervisor interface.
  *
- * There are HVM hypercalls to set the per-page access permissions of every
- * page in a domain.  When one of these permissions--independent, read, 
- * write, and execute--is violated, the VCPU is paused and a memory event 
- * is sent with what happened.  (See public/mem_event.h) .
+ * The monitor interface can be used to register for various VM events. For
+ * example, there are HVM hypercalls to set the per-page access permissions
+ * of every page in a domain.  When one of these permissions--independent,
+ * read, write, and execute--is violated, the VCPU is paused and a memory event
+ * is sent with what happened. The memory event handler can then resume the
+ * VCPU and redo the access with a XENMEM_access_op_resume hypercall.
  *
- * The memory event handler can then resume the VCPU and redo the access 
- * with a XENMEM_access_op_resume hypercall.
+ * See public/vm_event.h for the list of available events that can be
+ * subscribed to via the monitor interface.
  *
- * The XEN_DOMCTL_MEM_EVENT_OP_ACCESS_ENABLE domctl returns several
+ * To enable MOV-TO-MSR interception on x86, it is necessary to enable this
+ * interface with the XEN_VM_EVENT_MONITOR_ENABLE_INTROSPECTION
+ * operator.
+ *
+ * The XEN_VM_EVENT_MONITOR_ENABLE* domctls return several
  * non-standard error codes to indicate why access could not be enabled:
  * ENODEV - host lacks HAP support (EPT/NPT) or HAP is disabled in guest
  * EBUSY  - guest has or had access enabled, ring buffer still active
+ *
  */
-#define XEN_DOMCTL_MEM_EVENT_OP_ACCESS                        2
+#define XEN_DOMCTL_VM_EVENT_OP_MONITOR                        2
 
-#define XEN_DOMCTL_MEM_EVENT_OP_ACCESS_ENABLE                 0
-#define XEN_DOMCTL_MEM_EVENT_OP_ACCESS_DISABLE                1
-#define XEN_DOMCTL_MEM_EVENT_OP_ACCESS_ENABLE_INTROSPECTION   2
+#define XEN_VM_EVENT_MONITOR_ENABLE                           0
+#define XEN_VM_EVENT_MONITOR_DISABLE                          1
+#define XEN_VM_EVENT_MONITOR_ENABLE_INTROSPECTION             2
 
 /*
  * Sharing ENOMEM helper.
@@ -813,21 +808,21 @@ struct xen_domctl_gdbsx_domstatus {
  * Note that shring can be turned on (as per the domctl below)
  * *without* this ring being setup.
  */
-#define XEN_DOMCTL_MEM_EVENT_OP_SHARING           3
+#define XEN_DOMCTL_VM_EVENT_OP_SHARING           3
 
-#define XEN_DOMCTL_MEM_EVENT_OP_SHARING_ENABLE    0
-#define XEN_DOMCTL_MEM_EVENT_OP_SHARING_DISABLE   1
+#define XEN_VM_EVENT_SHARING_ENABLE              0
+#define XEN_VM_EVENT_SHARING_DISABLE             1
 
 /* Use for teardown/setup of helper<->hypervisor interface for paging, 
  * access and sharing.*/
-struct xen_domctl_mem_event_op {
-    uint32_t       op;           /* XEN_DOMCTL_MEM_EVENT_OP_*_* */
-    uint32_t       mode;         /* XEN_DOMCTL_MEM_EVENT_OP_* */
+struct xen_domctl_vm_event_op {
+    uint32_t       op;           /* XEN_VM_EVENT_*_* */
+    uint32_t       mode;         /* XEN_DOMCTL_VM_EVENT_OP_* */
 
     uint32_t port;              /* OUT: event channel for ring */
 };
-typedef struct xen_domctl_mem_event_op xen_domctl_mem_event_op_t;
-DEFINE_XEN_GUEST_HANDLE(xen_domctl_mem_event_op_t);
+typedef struct xen_domctl_vm_event_op xen_domctl_vm_event_op_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_vm_event_op_t);
 
 /*
  * Memory sharing operations
@@ -1060,7 +1055,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_suppress_spurious_page_faults 53
 #define XEN_DOMCTL_debug_op                      54
 #define XEN_DOMCTL_gethvmcontext_partial         55
-#define XEN_DOMCTL_mem_event_op                  56
+#define XEN_DOMCTL_vm_event_op                   56
 #define XEN_DOMCTL_mem_sharing_op                57
 #define XEN_DOMCTL_disable_migrate               58
 #define XEN_DOMCTL_gettscinfo                    59
@@ -1080,7 +1075,6 @@ struct xen_domctl {
 #define XEN_DOMCTL_set_vcpu_msrs                 73
 #define XEN_DOMCTL_setvnumainfo                  74
 #define XEN_DOMCTL_psr_cmt_op                    75
-#define XEN_DOMCTL_arm_configure_domain          76
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1089,9 +1083,6 @@ struct xen_domctl {
     domid_t  domain;
     union {
         struct xen_domctl_createdomain      createdomain;
-#if defined(__arm__) || defined(__aarch64__)
-        struct xen_domctl_arm_configuredomain configuredomain;
-#endif
         struct xen_domctl_getdomaininfo     getdomaininfo;
         struct xen_domctl_getmemlist        getmemlist;
         struct xen_domctl_getpageframeinfo  getpageframeinfo;
@@ -1128,7 +1119,7 @@ struct xen_domctl {
         struct xen_domctl_set_target        set_target;
         struct xen_domctl_subscribe         subscribe;
         struct xen_domctl_debug_op          debug_op;
-        struct xen_domctl_mem_event_op      mem_event_op;
+        struct xen_domctl_vm_event_op       vm_event_op;
         struct xen_domctl_mem_sharing_op    mem_sharing_op;
 #if defined(__i386__) || defined(__x86_64__)
         struct xen_domctl_cpuid             cpuid;

@@ -216,9 +216,9 @@ extern enum gic_version gic_hw_version(void);
 /* Program the GIC to route an interrupt */
 extern void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
                                  unsigned int priority);
-extern void gic_route_irq_to_guest(struct domain *, struct irq_desc *desc,
-                                   const cpumask_t *cpu_mask,
-                                   unsigned int priority);
+extern int gic_route_irq_to_guest(struct domain *, unsigned int virq,
+                                  struct irq_desc *desc,
+                                  unsigned int priority);
 
 extern void gic_inject(void);
 extern void gic_clear_pending_irqs(struct vcpu *v);
@@ -232,6 +232,10 @@ extern void gic_remove_from_queues(struct vcpu *v, unsigned int virtual_irq);
 
 /* Accept an interrupt from the GIC and dispatch its handler */
 extern void gic_interrupt(struct cpu_user_regs *regs, int is_fiq);
+/* Find the interrupt controller and set up the callback to translate
+ * device tree IRQ.
+ */
+extern void gic_preinit(void);
 /* Bring up the interrupt controller, and report # cpus attached */
 extern void gic_init(void);
 /* Bring up a secondary CPU's per-CPU GIC interface */
@@ -284,11 +288,15 @@ struct gic_info {
     uint8_t nr_lrs;
     /* Maintenance irq number */
     unsigned int maintenance_irq;
+    /* Pointer to the device tree node representing the interrupt controller */
+    const struct dt_device_node *node;
 };
 
 struct gic_hw_operations {
     /* Hold GIC HW information */
     const struct gic_info *info;
+    /* Initialize the GIC and the boot CPU */
+    int (*init)(void);
     /* Save GIC registers */
     void (*save_state)(struct vcpu *);
     /* Restore GIC registers */

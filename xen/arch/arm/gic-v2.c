@@ -256,6 +256,7 @@ static void __init gicv2_dist_init(void)
     uint32_t type;
     uint32_t cpumask;
     uint32_t gic_cpus;
+    unsigned int nr_lines;
     int i;
 
     cpumask = readl_gicd(GICD_ITARGETSR) & 0xff;
@@ -266,30 +267,33 @@ static void __init gicv2_dist_init(void)
     writel_gicd(0, GICD_CTLR);
 
     type = readl_gicd(GICD_TYPER);
-    gicv2_info.nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
+    nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
     gic_cpus = 1 + ((type & GICD_TYPE_CPUS) >> 5);
     printk("GICv2: %d lines, %d cpu%s%s (IID %8.8x).\n",
-           gicv2_info.nr_lines, gic_cpus, (gic_cpus == 1) ? "" : "s",
+           nr_lines, gic_cpus, (gic_cpus == 1) ? "" : "s",
            (type & GICD_TYPE_SEC) ? ", secure" : "",
            readl_gicd(GICD_IIDR));
 
     /* Default all global IRQs to level, active low */
-    for ( i = 32; i < gicv2_info.nr_lines; i += 16 )
+    for ( i = 32; i < nr_lines; i += 16 )
         writel_gicd(0x0, GICD_ICFGR + (i / 16) * 4);
 
     /* Route all global IRQs to this CPU */
-    for ( i = 32; i < gicv2_info.nr_lines; i += 4 )
+    for ( i = 32; i < nr_lines; i += 4 )
         writel_gicd(cpumask, GICD_ITARGETSR + (i / 4) * 4);
 
     /* Default priority for global interrupts */
-    for ( i = 32; i < gicv2_info.nr_lines; i += 4 )
+    for ( i = 32; i < nr_lines; i += 4 )
         writel_gicd(GIC_PRI_IRQ << 24 | GIC_PRI_IRQ << 16 |
                     GIC_PRI_IRQ << 8 | GIC_PRI_IRQ,
                     GICD_IPRIORITYR + (i / 4) * 4);
 
     /* Disable all global interrupts */
-    for ( i = 32; i < gicv2_info.nr_lines; i += 32 )
+    for ( i = 32; i < nr_lines; i += 32 )
         writel_gicd(~0x0, GICD_ICENABLER + (i / 32) * 4);
+
+    /* Only 1020 interrupts are supported */
+    gicv2_info.nr_lines = min(1020U, nr_lines);
 
     /* Turn on the distributor */
     writel_gicd(GICD_CTL_ENABLE, GICD_CTLR);
@@ -674,37 +678,10 @@ static hw_irq_controller gicv2_guest_irq_type = {
     .set_affinity = gicv2_irq_set_affinity,
 };
 
-const static struct gic_hw_operations gicv2_ops = {
-    .info                = &gicv2_info,
-    .secondary_init      = gicv2_secondary_cpu_init,
-    .save_state          = gicv2_save_state,
-    .restore_state       = gicv2_restore_state,
-    .dump_state          = gicv2_dump_state,
-    .gicv_setup          = gicv2v_setup,
-    .gic_host_irq_type   = &gicv2_host_irq_type,
-    .gic_guest_irq_type  = &gicv2_guest_irq_type,
-    .eoi_irq             = gicv2_eoi_irq,
-    .deactivate_irq      = gicv2_dir_irq,
-    .read_irq            = gicv2_read_irq,
-    .set_irq_properties  = gicv2_set_irq_properties,
-    .send_SGI            = gicv2_send_SGI,
-    .disable_interface   = gicv2_disable_interface,
-    .update_lr           = gicv2_update_lr,
-    .update_hcr_status   = gicv2_hcr_status,
-    .clear_lr            = gicv2_clear_lr,
-    .read_lr             = gicv2_read_lr,
-    .write_lr            = gicv2_write_lr,
-    .read_vmcr_priority  = gicv2_read_vmcr_priority,
-    .read_apr            = gicv2_read_apr,
-    .make_dt_node        = gicv2_make_dt_node,
-};
-
-/* Set up the GIC */
-static int __init gicv2_init(struct dt_device_node *node, const void *data)
+static int __init gicv2_init(void)
 {
     int res;
-
-    dt_device_set_used_by(node, DOMID_XEN);
+    const struct dt_device_node *node = gicv2_info.node;
 
     res = dt_device_get_address(node, 0, &gicv2.dbase, NULL);
     if ( res || !gicv2.dbase || (gicv2.dbase & ~PAGE_MASK) )
@@ -726,9 +703,6 @@ static int __init gicv2_init(struct dt_device_node *node, const void *data)
     if ( res < 0 )
         panic("GICv2: Cannot find the maintenance IRQ");
     gicv2_info.maintenance_irq = res;
-
-    /* Set the GIC as the primary interrupt controller */
-    dt_interrupt_controller = node;
 
     /* TODO: Add check on distributor, cpu size */
 
@@ -774,8 +748,42 @@ static int __init gicv2_init(struct dt_device_node *node, const void *data)
 
     spin_unlock(&gicv2.lock);
 
+    return 0;
+}
+
+const static struct gic_hw_operations gicv2_ops = {
+    .info                = &gicv2_info,
+    .init                = gicv2_init,
+    .secondary_init      = gicv2_secondary_cpu_init,
+    .save_state          = gicv2_save_state,
+    .restore_state       = gicv2_restore_state,
+    .dump_state          = gicv2_dump_state,
+    .gicv_setup          = gicv2v_setup,
+    .gic_host_irq_type   = &gicv2_host_irq_type,
+    .gic_guest_irq_type  = &gicv2_guest_irq_type,
+    .eoi_irq             = gicv2_eoi_irq,
+    .deactivate_irq      = gicv2_dir_irq,
+    .read_irq            = gicv2_read_irq,
+    .set_irq_properties  = gicv2_set_irq_properties,
+    .send_SGI            = gicv2_send_SGI,
+    .disable_interface   = gicv2_disable_interface,
+    .update_lr           = gicv2_update_lr,
+    .update_hcr_status   = gicv2_hcr_status,
+    .clear_lr            = gicv2_clear_lr,
+    .read_lr             = gicv2_read_lr,
+    .write_lr            = gicv2_write_lr,
+    .read_vmcr_priority  = gicv2_read_vmcr_priority,
+    .read_apr            = gicv2_read_apr,
+    .make_dt_node        = gicv2_make_dt_node,
+};
+
+/* Set up the GIC */
+static int __init gicv2_preinit(struct dt_device_node *node, const void *data)
+{
     gicv2_info.hw_version = GIC_V2;
+    gicv2_info.node = node;
     register_gic_ops(&gicv2_ops);
+    dt_irq_xlate = gic_irq_xlate;
 
     return 0;
 }
@@ -788,7 +796,7 @@ static const struct dt_device_match gicv2_dt_match[] __initconst =
 
 DT_DEVICE_START(gicv2, "GICv2", DEVICE_GIC)
         .dt_match = gicv2_dt_match,
-        .init = gicv2_init,
+        .init = gicv2_preinit,
 DT_DEVICE_END
 
 /*

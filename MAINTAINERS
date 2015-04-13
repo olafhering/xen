@@ -158,6 +158,7 @@ F:	xen/common/libfdt/
 F:	xen/common/device_tree.c
 F:	xen/include/xen/libfdt/
 F:	xen/include/xen/device_tree.h
+F:	xen/drivers/passthrough/device_tree.c
 
 EFI
 M:     Jan Beulich <jbeulich@suse.com>
@@ -214,6 +215,7 @@ F:	xen/drivers/passthrough/
 X:	xen/drivers/passthrough/amd/
 X:	xen/drivers/passthrough/arm/
 X:	xen/drivers/passthrough/vtd/
+X:	xen/drivers/passthrough/device_tree.c
 F:	xen/include/xen/iommu.h
 
 KEXEC
@@ -373,11 +375,12 @@ F:	xen/arch/x86/mm/mem_sharing.c
 F:	xen/arch/x86/mm/mem_paging.c
 F:	tools/memshr
 
-MEMORY EVENT AND ACCESS
+VM EVENT AND MEM ACCESS
 M:	Tim Deegan <tim@xen.org>
 S:	Supported
-F:	xen/common/mem_event.c
+F:	xen/common/vm_event.c
 F:	xen/common/mem_access.c
+F:	xen/arch/x86/hvm/event.c
 
 XENTRACE
 M:	George Dunlap <george.dunlap@eu.citrix.com>

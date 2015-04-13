@@ -185,7 +185,7 @@ static void free_xen_data(char *s, char *e)
     memguard_guard_range(__va(__pa(s)), e-s);
 }
 
-extern char __init_begin[], __init_end[], __bss_start[];
+extern char __init_begin[], __init_end[], __bss_start[], __bss_end[];
 
 static void __init init_idle_domain(void)
 {
@@ -1360,8 +1360,12 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     if ( opt_dom0pvh )
         domcr_flags |= DOMCRF_pvh | DOMCRF_hap;
 
-    /* Create initial domain 0. */
-    dom0 = domain_create(0, domcr_flags, 0);
+    /*
+     * Create initial domain 0.
+     * x86 doesn't support arch-configuration. So it's fine to pass
+     * NULL.
+     */
+    dom0 = domain_create(0, domcr_flags, 0, NULL);
     if ( IS_ERR(dom0) || (alloc_dom0_vcpu0(dom0) == NULL) )
         panic("Error creating domain 0");
 
@@ -1493,7 +1497,7 @@ int __hwdom_init xen_in_range(unsigned long mfn)
         xen_regions[region_text].e = __pa(&__init_begin);
         /* bss */
         xen_regions[region_bss].s = __pa(&__bss_start);
-        xen_regions[region_bss].e = __pa(&_end);
+        xen_regions[region_bss].e = __pa(&__bss_end);
     }
 
     start = (paddr_t)mfn << PAGE_SHIFT;

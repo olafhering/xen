@@ -422,7 +422,7 @@ int vcpu_initialise(struct vcpu *v)
     v->arch.flags = TF_kernel_mode;
 
     /* By default, do not emulate */
-    v->arch.mem_event.emulate_flags = 0;
+    v->arch.vm_event.emulate_flags = 0;
 
     rc = mapcache_vcpu_init(v);
     if ( rc )
@@ -507,7 +507,8 @@ void vcpu_destroy(struct vcpu *v)
         xfree(v->arch.pv_vcpu.trap_ctxt);
 }
 
-int arch_domain_create(struct domain *d, unsigned int domcr_flags)
+int arch_domain_create(struct domain *d, unsigned int domcr_flags,
+                       struct xen_arch_domainconfig *config)
 {
     int i, paging_initialised = 0;
     int rc = -ENOMEM;

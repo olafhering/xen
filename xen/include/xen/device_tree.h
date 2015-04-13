@@ -474,7 +474,7 @@ const struct dt_device_node *dt_get_parent(const struct dt_device_node *node);
  * This function resolves an address, walking the tree, for a give
  * device-tree node. It returns 0 on success.
  */
-int dt_device_get_address(const struct dt_device_node *dev, int index,
+int dt_device_get_address(const struct dt_device_node *dev, unsigned int index,
                           u64 *addr, u64 *size);
 
 /**
@@ -504,7 +504,7 @@ unsigned int dt_number_of_address(const struct dt_device_node *device);
  * This function resolves an interrupt, walking the tree, for a given
  * device-tree node. It's the high level pendant to dt_device_get_raw_irq().
  */
-int dt_device_get_irq(const struct dt_device_node *device, int index,
+int dt_device_get_irq(const struct dt_device_node *device, unsigned int index,
                       struct dt_irq *irq);
 
 /**
@@ -516,7 +516,8 @@ int dt_device_get_irq(const struct dt_device_node *device, int index,
  * This function resolves an interrupt for a device, no translation is
  * made. dt_irq_translate can be called after.
  */
-int dt_device_get_raw_irq(const struct dt_device_node *device, int index,
+int dt_device_get_raw_irq(const struct dt_device_node *device,
+                          unsigned int index,
                           struct dt_raw_irq *irq);
 
 /**
@@ -553,6 +554,17 @@ int dt_n_addr_cells(const struct dt_device_node *np);
  * false otherwise.
  */
 bool_t dt_device_is_available(const struct dt_device_node *device);
+
+/**
+ * dt_device_for_passthrough - Check if a device will be used for
+ * passthrough later
+ *
+ * @device: Node to check
+ *
+ * Return true if the property "xen,passthrough" is present in the node,
+ * false otherwise.
+ */
+bool_t dt_device_for_passthrough(const struct dt_device_node *device);
 
 /**
  * dt_match_node - Tell if a device_node has a matching of dt_device_match

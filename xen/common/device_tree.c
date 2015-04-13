@@ -496,7 +496,7 @@ static const struct dt_bus *dt_match_bus(const struct dt_device_node *np)
 }
 
 static const __be32 *dt_get_address(const struct dt_device_node *dev,
-                                    int index, u64 *size,
+                                    unsigned int index, u64 *size,
                                     unsigned int *flags)
 {
     const __be32 *prop;
@@ -683,7 +683,7 @@ bail:
 }
 
 /* dt_device_address - Translate device tree address and return it */
-int dt_device_get_address(const struct dt_device_node *dev, int index,
+int dt_device_get_address(const struct dt_device_node *dev, unsigned int index,
                           u64 *addr, u64 *size)
 {
     const __be32 *addrp;
@@ -1006,7 +1006,8 @@ fail:
     return -EINVAL;
 }
 
-int dt_device_get_raw_irq(const struct dt_device_node *device, int index,
+int dt_device_get_raw_irq(const struct dt_device_node *device,
+                          unsigned int index,
                           struct dt_raw_irq *out_irq)
 {
     const struct dt_device_node *p;
@@ -1014,7 +1015,7 @@ int dt_device_get_raw_irq(const struct dt_device_node *device, int index,
     u32 intsize, intlen;
     int res = -EINVAL;
 
-    dt_dprintk("dt_device_get_raw_irq: dev=%s, index=%d\n",
+    dt_dprintk("dt_device_get_raw_irq: dev=%s, index=%u\n",
                device->full_name, index);
 
     /* Get the interrupts property */
@@ -1058,14 +1059,20 @@ int dt_irq_translate(const struct dt_raw_irq *raw,
                      struct dt_irq *out_irq)
 {
     ASSERT(dt_irq_xlate != NULL);
+    ASSERT(dt_interrupt_controller != NULL);
 
-    /* TODO: Retrieve the right irq_xlate. This is only work for the gic */
+    /*
+     * TODO: Retrieve the right irq_xlate. This is only works for the primary
+     * interrupt controller.
+     */
+    if ( raw->controller != dt_interrupt_controller )
+        return -EINVAL;
 
     return dt_irq_xlate(raw->specifier, raw->size,
                         &out_irq->irq, &out_irq->type);
 }
 
-int dt_device_get_irq(const struct dt_device_node *device, int index,
+int dt_device_get_irq(const struct dt_device_node *device, unsigned int index,
                       struct dt_irq *out_irq)
 {
     struct dt_raw_irq raw;
@@ -1095,6 +1102,12 @@ bool_t dt_device_is_available(const struct dt_device_node *device)
     }
 
     return 0;
+}
+
+bool_t dt_device_for_passthrough(const struct dt_device_node *device)
+{
+    return (dt_find_property(device, "xen,passthrough", NULL) != NULL);
+
 }
 
 static int __dt_parse_phandle_with_args(const struct dt_device_node *np,

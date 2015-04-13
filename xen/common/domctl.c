@@ -24,7 +24,7 @@
 #include <xen/bitmap.h>
 #include <xen/paging.h>
 #include <xen/hypercall.h>
-#include <xen/mem_event.h>
+#include <xen/vm_event.h>
 #include <asm/current.h>
 #include <asm/irq.h>
 #include <asm/page.h>
@@ -592,7 +592,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( op->u.createdomain.flags & XEN_DOMCTL_CDF_oos_off )
             domcr_flags |= DOMCRF_oos_off;
 
-        d = domain_create(dom, domcr_flags, op->u.createdomain.ssidref);
+        d = domain_create(dom, domcr_flags, op->u.createdomain.ssidref,
+                          &op->u.createdomain.config);
         if ( IS_ERR(d) )
         {
             ret = PTR_ERR(d);
@@ -1108,9 +1109,9 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         d->suspend_evtchn = op->u.subscribe.port;
         break;
 
-    case XEN_DOMCTL_mem_event_op:
-        ret = mem_event_domctl(d, &op->u.mem_event_op,
-                               guest_handle_cast(u_domctl, void));
+    case XEN_DOMCTL_vm_event_op:
+        ret = vm_event_domctl(d, &op->u.vm_event_op,
+                              guest_handle_cast(u_domctl, void));
         copyback = 1;
         break;
 

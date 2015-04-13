@@ -15,7 +15,7 @@
 #include <xen/domain.h>
 #include <xen/mm.h>
 #include <xen/event.h>
-#include <xen/mem_event.h>
+#include <xen/vm_event.h>
 #include <xen/time.h>
 #include <xen/console.h>
 #include <xen/softirq.h>
@@ -242,8 +242,9 @@ static void __init parse_extra_guest_irqs(const char *s)
 }
 custom_param("extra_guest_irqs", parse_extra_guest_irqs);
 
-struct domain *domain_create(
-    domid_t domid, unsigned int domcr_flags, uint32_t ssidref)
+struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
+                             uint32_t ssidref,
+                             struct xen_arch_domainconfig *config)
 {
     struct domain *d, **pd, *old_hwdom = NULL;
     enum { INIT_xsm = 1u<<0, INIT_watchdog = 1u<<1, INIT_rangeset = 1u<<2,
@@ -344,8 +345,8 @@ struct domain *domain_create(
         poolid = 0;
 
         err = -ENOMEM;
-        d->mem_event = xzalloc(struct mem_event_per_domain);
-        if ( !d->mem_event )
+        d->vm_event = xzalloc(struct vm_event_per_domain);
+        if ( !d->vm_event )
             goto fail;
 
         d->pbuf = xzalloc_array(char, DOMAIN_PBUF_SIZE);
@@ -353,7 +354,7 @@ struct domain *domain_create(
             goto fail;
     }
 
-    if ( (err = arch_domain_create(d, domcr_flags)) != 0 )
+    if ( (err = arch_domain_create(d, domcr_flags, config)) != 0 )
         goto fail;
     init_status |= INIT_arch;
 
@@ -387,7 +388,7 @@ struct domain *domain_create(
     if ( hardware_domain == d )
         hardware_domain = old_hwdom;
     atomic_set(&d->refcnt, DOMAIN_DESTROYED);
-    xfree(d->mem_event);
+    xfree(d->vm_event);
     xfree(d->pbuf);
     if ( init_status & INIT_arch )
         arch_domain_destroy(d);
@@ -625,7 +626,7 @@ int domain_kill(struct domain *d)
         d->is_dying = DOMDYING_dead;
         /* Mem event cleanup has to go here because the rings 
          * have to be put before we call put_domain. */
-        mem_event_cleanup(d);
+        vm_event_cleanup(d);
         put_domain(d);
         send_global_virq(VIRQ_DOM_EXC);
         /* fallthrough */
@@ -804,7 +805,7 @@ static void complete_domain_destroy(struct rcu_head *head)
     free_xenoprof_pages(d);
 #endif
 
-    xfree(d->mem_event);
+    xfree(d->vm_event);
     xfree(d->pbuf);
 
     for ( i = d->max_vcpus - 1; i >= 0; i-- )
