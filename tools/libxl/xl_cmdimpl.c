@@ -6850,10 +6850,10 @@ static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
         goto out;
 
     for (h = 0; h < num; ++h) {
-        vh = &hosts[h];
+        vh = hosts + h;
         for (d = 0; !found && d < vh->num_vscsi_devs; d++) {
 #define CMP(member) (vd->vdev.member == v_dev.vdev.member)
-            vd = &vh->vscsi_devs[d];
+            vd = vh->vscsi_devs + d;
             if (CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 vd->remove = true;
                 libxl_device_vscsi_remove(ctx, domid, vh, NULL);
