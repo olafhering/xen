@@ -569,6 +569,52 @@ out:
     return rc;
 }
 
+int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
+{
+    libxl_vscsi_dev v_dev = { }, *vd;
+    libxl_device_vscsi v_hst = { }, *vh, *vscsi_hosts;
+    int num_hosts, h, d, found = 0;
+    char *tmp = NULL;
+
+    libxl_device_vscsi_init(&v_hst);
+    libxl_vscsi_dev_init(&v_dev);
+
+    /* Create a dummy cfg */
+    if (asprintf(&tmp, "0:0:0:0,%s", str) < 0) {
+        LOG(cfg, "asprintf failed while removing %s from domid %u", str, domid);
+        goto out;
+    }
+
+    if (xlu_vscsi_parse(cfg, ctx, tmp, &v_hst, &v_dev))
+        goto out;
+
+    vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
+    if (!vscsi_hosts)
+        goto out;
+
+    for (h = 0; h < num_hosts; ++h) {
+        vh = vscsi_hosts + h;
+        for (d = 0; d < vh->num_vscsi_devs; d++) {
+            vd = vh->vscsi_devs + d;
+#define CMP(member) (vd->vdev.member == v_dev.vdev.member)
+            if (!found && CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
+                vd->remove = true;
+                libxl_device_vscsi_remove(ctx, domid, vh, NULL);
+                found = 1;
+            }
+#undef CMP
+            libxl_vscsi_dev_dispose(vd);
+        }
+        libxl_device_vscsi_dispose(vh);
+    }
+    free(vscsi_hosts);
+
+out:
+    free(tmp);
+    libxl_vscsi_dev_dispose(&v_dev);
+    libxl_device_vscsi_dispose(&v_hst);
+    return found;
+}
 #else /* ! __linux__ */
 int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
                                    libxl_vscsi_dev *dev)
