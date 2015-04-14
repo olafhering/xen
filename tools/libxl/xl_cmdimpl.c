@@ -6824,7 +6824,7 @@ int main_vscsilist(int argc, char **argv)
 }
 
 static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
-                       char *vdev)
+                       char *str)
 {
     XLU_Config *config = NULL;
     libxl_vscsi_dev v_dev = { }, *vd;
@@ -6839,7 +6839,7 @@ static int vscsidetach(libxl_device_vscsi *hosts, int num, uint32_t domid,
     }
 
     /* Create a dummy cfg */
-    if (asprintf(&tmp, "0:0:0:0,%s", vdev) < 0) {
+    if (asprintf(&tmp, "0:0:0:0,%s", str) < 0) {
         perror("asprintf");
         goto out;
     }
@@ -6873,7 +6873,7 @@ int main_vscsidetach(int argc, char **argv)
 {
     int opt;
     libxl_device_vscsi *vscsi_hosts;
-    char *dom = argv[1], *vdev = argv[2];
+    char *dom = argv[1], *str = argv[2];
     uint32_t domid;
     int num_hosts, h, found = 0;
 
@@ -6893,10 +6893,10 @@ int main_vscsidetach(int argc, char **argv)
 
     vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
     if (vscsi_hosts)
-        found = vscsidetach(vscsi_hosts, num_hosts, domid, vdev);
+        found = vscsidetach(vscsi_hosts, num_hosts, domid, str);
 
     if (!found)
-        fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, vdev, dom);
+        fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, str, dom);
 
     if (vscsi_hosts) {
         for (h = 0; h < num_hosts; ++h)
