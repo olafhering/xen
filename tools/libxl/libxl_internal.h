@@ -3616,6 +3616,13 @@ static inline void libxl__update_config_nic(libxl__gc *gc,
     libxl_mac_copy(CTX, &dst->mac, &src->mac);
 }
 
+static inline void libxl__update_config_vscsi(libxl__gc *gc,
+                                             libxl_device_vscsi *dst,
+                                             libxl_device_vscsi *src)
+{
+    dst->devid = src->devid;
+}
+
 static inline void libxl__update_config_vtpm(libxl__gc *gc,
                                              libxl_device_vtpm *dst,
                                              libxl_device_vtpm *src)
@@ -3628,6 +3635,7 @@ static inline void libxl__update_config_vtpm(libxl__gc *gc,
  * devices have same identifier. */
 #define COMPARE_DEVID(a, b) ((a)->devid == (b)->devid)
 #define COMPARE_DISK(a, b) (!strcmp((a)->vdev, (b)->vdev))
+#define COMPARE_VSCSI(a, b) ((a)->v_hst == (b)->v_hst)
 #define COMPARE_PCI(a, b) ((a)->func == (b)->func &&    \
                            (a)->bus == (b)->bus &&      \
                            (a)->dev == (b)->dev)
