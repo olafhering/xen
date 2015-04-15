@@ -2361,6 +2361,7 @@ static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
         goto out;
     }
 
+    /* No other code will traverse device list, update json with removal info */
     if (aodev->update_json) {
         lock = libxl__lock_domain_userdata(gc, aodev->dev->domid);
         if (!lock) {
