@@ -412,7 +412,7 @@ ifb device used by Remus to buffer network output from the associated vif.
 [KBDIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,kbdif.h.html
 [LIBXLMEM]: http://xenbits.xen.org/docs/unstable/misc/libxl_memory.txt
 [NETIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,netif.h.html
-[SCSIIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,vscsiif.h.html
+[SCSIIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,vscsiif.h.html
 [SI]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,xen.h.html#Struct_start_info
 [VCPU]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,vcpu.h.html
 [XSWIRE]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,xs_wire.h.html
