@@ -654,4 +654,9 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
 {
     return ERROR_INVAL;
 }
+
+int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
+{
+    return ERROR_INVAL;
+}
 #endif
