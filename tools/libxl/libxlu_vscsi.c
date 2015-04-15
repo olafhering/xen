@@ -558,7 +558,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
         if (libxl_defbool_val(new_host->feature_host) !=
             libxl_defbool_val(tmp->feature_host)) {
             LOG(cfg, "vscsi: different feature-host setting: "
-                      "existing host has it %s, new has it %s\n",
+                      "existing host has it %s, new host has it %s\n",
                 libxl_defbool_val(new_host->feature_host) ? "set" : "unset",
                 libxl_defbool_val(tmp->feature_host) ? "set" : "unset");
             rc = ERROR_INVAL;
