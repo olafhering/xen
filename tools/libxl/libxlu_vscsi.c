@@ -632,6 +632,78 @@ out:
     libxl_device_vscsi_dispose(&v_hst);
     return found;
 }
+
+int xlu_vscsi_config_add(XLU_Config *cfg,
+                         libxl_ctx *ctx,
+                         const char *str,
+                         int *num_vscsis,
+                         libxl_device_vscsi **vscsis)
+{
+    int rc, i;
+    libxl_vscsi_dev v_dev = { };
+    libxl_device_vscsi *tmp, v_hst = { };
+    bool hst_found = false;
+
+    /*
+     * #1: parse the devspec and place it in temporary host+dev part
+     * #2: find existing vscsi_host with number v_hst
+     *     if found, append the vscsi_dev to this vscsi_host
+     * #3: otherwise, create new vscsi_host and append vscsi_dev
+     * Note: v_hst does not represent the index named "num_vscsis",
+     *       it is a private index used just in the config file
+     */
+    libxl_device_vscsi_init(&v_hst);
+    libxl_vscsi_dev_init(&v_dev);
+
+    rc = xlu_vscsi_parse(cfg, ctx, str, &v_hst, &v_dev);
+    if (rc)
+        goto out;
+
+    if (*num_vscsis) {
+        for (i = 0; i < *num_vscsis; i++) {
+            tmp = *vscsis + i;
+            if (tmp->v_hst == v_hst.v_hst) {
+                rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
+                if (rc) {
+                    LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);
+                    goto out;
+                }
+                hst_found = true;
+                break;
+	           }
+        }
+    }
+
+    if (!hst_found || !*num_vscsis) {
+        tmp = realloc(*vscsis, sizeof(v_hst) * (*num_vscsis + 1));
+        if (!tmp) {
+            LOG(cfg, "realloc #%d failed", *num_vscsis + 1);
+            rc = ERROR_NOMEM;
+            goto out;
+        }
+        *vscsis = tmp;
+        tmp = *vscsis + *num_vscsis;
+        libxl_device_vscsi_init(tmp);
+
+        v_hst.devid = *num_vscsis;
+        v_hst.next_vscsi_dev_id = 0;
+        libxl_device_vscsi_copy(ctx, tmp, &v_hst);
+
+        rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
+        if (rc) {
+            LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);
+            goto out;
+        }
+
+        (*num_vscsis)++;
+    }
+
+    rc = 0;
+out:
+    libxl_vscsi_dev_dispose(&v_dev);
+    libxl_device_vscsi_dispose(&v_hst);
+    return rc;
+}
 #else /* ! __linux__ */
 int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
                                    libxl_vscsi_dev *dev)
@@ -656,6 +728,15 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
 }
 
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
+{
+    return ERROR_INVAL;
+}
+
+int xlu_vscsi_config_add(XLU_Config *cfg,
+                         libxl_ctx *ctx,
+                         const char *str,
+                         int *num_vscsis,
+                         libxl_device_vscsi **vscsis)
 {
     return ERROR_INVAL;
 }

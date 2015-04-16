@@ -125,6 +125,11 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                              libxl_device_vscsi *new_host,
                              libxl_vscsi_dev *new_dev);
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str);
+int xlu_vscsi_config_add(XLU_Config *cfg,
+                         libxl_ctx *ctx,
+                         const char *str,
+                         int *num_vscsis,
+                         libxl_device_vscsi **vscsis);
 #endif /* LIBXLUTIL_H */
 
 /*

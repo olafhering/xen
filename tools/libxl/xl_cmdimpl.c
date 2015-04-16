@@ -1688,57 +1688,8 @@ static void parse_config_data(const char *config_source,
         d_config->num_vscsis = 0;
         d_config->vscsis = NULL;
         while ((buf = xlu_cfg_get_listitem (vscsis, num_vscsi_items)) != NULL) {
-            libxl_vscsi_dev v_dev = { };
-            libxl_device_vscsi *tmp, v_hst = { };
-            bool hst_found = false;
-
-            /*
-             * #1: parse the devspec and place it in temporary host+dev part
-             * #2: find existing vscsi_host with number v_hst
-             *     if found, append the vscsi_dev to this vscsi_host
-             * #3: otherwise, create new vscsi_host and append vscsi_dev
-             * Note: v_hst does not represent the index named "num_vscsis",
-             *       it is a private index used just in the config file
-             */
-            libxl_device_vscsi_init(&v_hst);
-            libxl_vscsi_dev_init(&v_dev);
-
-            if (xlu_vscsi_parse(config, ctx, buf, &v_hst, &v_dev))
-                exit (-1);
-
-            if (d_config->num_vscsis) {
-                for (i = 0; i < d_config->num_vscsis; i++) {
-                    if (d_config->vscsis[i].v_hst == v_hst.v_hst) {
-                        tmp = d_config->vscsis + i;
-                        if (xlu_vscsi_append_dev(ctx, tmp, &v_dev)) {
-                            fprintf(stderr, "xlu_vscsi_append_dev failed\n");
-                            exit(-1);
-                        }
-                        hst_found = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!hst_found || !d_config->num_vscsis) {
-                d_config->vscsis = realloc(d_config->vscsis, sizeof(v_hst) * (d_config->num_vscsis + 1));
-                tmp = d_config->vscsis + d_config->num_vscsis;
-                libxl_device_vscsi_init(tmp);
-
-                v_hst.devid = d_config->num_vscsis;
-                v_hst.next_vscsi_dev_id = 0;
-                libxl_device_vscsi_copy(ctx, tmp, &v_hst);
-
-                if (xlu_vscsi_append_dev(ctx, tmp, &v_dev)) {
-                    fprintf(stderr, "xlu_vscsi_append_dev failed\n");
-                    exit(-1);
-                }
-
-                d_config->num_vscsis++;
-            }
-
-            libxl_vscsi_dev_dispose(&v_dev);
-            libxl_device_vscsi_dispose(&v_hst);
+            if (xlu_vscsi_config_add(config, ctx, buf, &d_config->num_vscsis, &d_config->vscsis))
+                exit(1);
             num_vscsi_items++;
         }
     }
