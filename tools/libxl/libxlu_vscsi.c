@@ -25,7 +25,7 @@
 
 #ifdef __linux__
 #define LOG(_c, _x, _a...) \
-        if((_c) && (_c)->report) fprintf((_c)->report, "%s(%u):" _x "\n", __func__, __LINE__, ##_a)
+        if((_c) && (_c)->report) fprintf((_c)->report, "%s(%u): " _x "\n", __func__, __LINE__, ##_a)
 
 #define XLU_SYSFS_TARGET_PVSCSI "/sys/kernel/config/target/xen-pvscsi"
 #define XLU_WWN_LEN 16
