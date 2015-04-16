@@ -25,7 +25,7 @@
 
 #ifdef __linux__
 #define LOG(_c, _x, _a...) \
-        if((_c) && (_c)->report) fprintf((_c)->report, _x "\n", ##_a)
+        if((_c) && (_c)->report) fprintf((_c)->report, "%s(%u):" _x "\n", __func__, __LINE__, ##_a)
 
 #define XLU_SYSFS_TARGET_PVSCSI "/sys/kernel/config/target/xen-pvscsi"
 #define XLU_WWN_LEN 16
@@ -77,7 +77,7 @@ static int xlu__vscsi_parse_dev(XLU_Config *cfg, char *pdev, libxl_vscsi_hctl *h
 
     /* stat pdev to get device's sysfs entry */
     if (stat (pdev, &dentry) < 0) {
-        LOG(cfg, "vscsi: %s, device node not found", pdev);
+        LOG(cfg, "%s, device node not found", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -87,7 +87,7 @@ static int xlu__vscsi_parse_dev(XLU_Config *cfg, char *pdev, libxl_vscsi_hctl *h
     } else if (S_ISCHR (dentry.st_mode)) {
         type = "char";
     } else {
-        LOG(cfg, "vscsi: %s, device node not a block or char device", pdev);
+        LOG(cfg, "%s, device node not a block or char device", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -102,7 +102,7 @@ static int xlu__vscsi_parse_dev(XLU_Config *cfg, char *pdev, libxl_vscsi_hctl *h
 
     dirp = opendir(sysfs);
     if (!dirp) {
-        LOG(cfg, "vscsi: %s, no major:minor link in sysfs", pdev);
+        LOG(cfg, "%s, no major:minor link in sysfs", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -120,7 +120,7 @@ static int xlu__vscsi_parse_dev(XLU_Config *cfg, char *pdev, libxl_vscsi_hctl *h
     closedir(dirp);
 
     if (!found) {
-        LOG(cfg, "vscsi: %s, no h:c:t:l link in sysfs", pdev);
+        LOG(cfg, "%s, no h:c:t:l link in sysfs", pdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -360,7 +360,7 @@ static int xlu__vscsi_dev_to_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
         tgt->pdev = pdev;
         snprintf(tgt->path, sizeof(tgt->path), "%s", xen_pvscsi);
         if (xlu__vscsi_find_target_wwn(tgt) == true) {
-            LOG(cfg, "vscsi: '%s' maps to '%s(%s)'", str, tgt->path, tgt->udev_path);
+            LOG(cfg, "'%s' maps to '%s(%s)'", str, tgt->path, tgt->udev_path);
             libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
             if (asprintf(&pdev->u.wwn.m, "naa.%s:%u", tgt->wwn, tgt->lun) < 0) {
                 rc = ERROR_NOMEM;
@@ -440,7 +440,7 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
     vdev = strtok(NULL, ",");
     fhost = strtok(NULL, ",");
     if (!(pdev && vdev)) {
-        LOG(cfg, "vscsi: invalid devspec: '%s'\n", str);
+        LOG(cfg, "invalid devspec: '%s'\n", str);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -450,12 +450,12 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
 
     rc = xlu__vscsi_parse_pdev(cfg, ctx, pdev, &new_dev->pdev);
     if (rc) {
-        LOG(cfg, "vscsi: failed to parse %s, rc == %d", pdev, rc);
+        LOG(cfg, "failed to parse %s, rc == %d", pdev, rc);
         goto out;
     }
 
     if (xlu__vscsi_parse_hctl(vdev, &new_dev->vdev)) {
-        LOG(cfg, "vscsi: invalid '%s', expecting hst:chn:tgt:lun", vdev);
+        LOG(cfg, "invalid '%s', expecting hst:chn:tgt:lun", vdev);
         rc = ERROR_INVAL;
         goto out;
     }
@@ -468,7 +468,7 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
         if (strcmp(fhost, "feature-host") == 0) {
             libxl_defbool_set(&new_host->feature_host, true);
         } else {
-            LOG(cfg, "vscsi: invalid option '%s', expecting %s", fhost, "feature-host");
+            LOG(cfg, "invalid option '%s', expecting %s", fhost, "feature-host");
             rc = ERROR_INVAL;
             goto out;
         }
@@ -548,7 +548,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
             if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
-                LOG(cfg, "vscsi: vdev '%u:%u:%u:%u' is already used.\n",
+                LOG(cfg, "vdev '%u:%u:%u:%u' is already used.\n",
                     new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
                 rc = ERROR_INVAL;
                 goto out;
@@ -557,7 +557,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const ch
 
         if (libxl_defbool_val(new_host->feature_host) !=
             libxl_defbool_val(tmp->feature_host)) {
-            LOG(cfg, "vscsi: different feature-host setting: "
+            LOG(cfg, "different feature-host setting: "
                       "existing host has it %s, new host has it %s\n",
                 libxl_defbool_val(new_host->feature_host) ? "set" : "unset",
                 libxl_defbool_val(tmp->feature_host) ? "set" : "unset");
