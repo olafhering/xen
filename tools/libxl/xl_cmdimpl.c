@@ -1709,7 +1709,7 @@ static void parse_config_data(const char *config_source,
             if (d_config->num_vscsis) {
                 for (i = 0; i < d_config->num_vscsis; i++) {
                     if (d_config->vscsis[i].v_hst == v_hst.v_hst) {
-                        tmp = &d_config->vscsis[i];
+                        tmp = d_config->vscsis + i;
                         if (xlu_vscsi_append_dev(ctx, tmp, &v_dev)) {
                             fprintf(stderr, "xlu_vscsi_append_dev failed\n");
                             exit(-1);
@@ -1722,7 +1722,7 @@ static void parse_config_data(const char *config_source,
 
             if (!hst_found || !d_config->num_vscsis) {
                 d_config->vscsis = realloc(d_config->vscsis, sizeof(v_hst) * (d_config->num_vscsis + 1));
-                tmp = &d_config->vscsis[d_config->num_vscsis];
+                tmp = d_config->vscsis + d_config->num_vscsis;
                 libxl_device_vscsi_init(tmp);
 
                 v_hst.devid = d_config->num_vscsis;
