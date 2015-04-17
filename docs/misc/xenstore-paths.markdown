@@ -309,7 +309,7 @@ A virtual network device backend. Described by
 
 #### ~/backend/vscsi/$DOMID/$DEVID/* []
 
-A PV SCSI backend. Described in [pvscsi.txt](pvscsi.txt)
+A PV SCSI backend.
 
 #### ~/backend/console/$DOMID/$DEVID/* []
 
