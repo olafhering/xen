@@ -2224,7 +2224,9 @@ static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
             if (libxl__xs_directory(gc, XBT_NULL, dev_path, &nb) && nb) {
                 /* Trigger device removal by forwarding state to XenbusStateClosing */
                 if (do_reconfigure && v->remove)
-                    flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id), GCSPRINTF("%d", XenbusStateClosing));
+                    flexarray_append_pair(back,
+                                          GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id),
+                                          GCSPRINTF("%d", XenbusStateClosing));
                 continue;
             }
             rc = libxl__device_vscsi_dev_backend_set(gc, v, back);
