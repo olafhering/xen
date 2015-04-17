@@ -7179,8 +7179,7 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
 
     MERGE(nic, nics, COMPARE_DEVID, {});
 
-    /* FIXME */
-    MERGE(vscsi, vscsis, COMPARE_DEVID, {});
+    MERGE(vscsi, vscsis, COMPARE_VSCSI, {});
 
     MERGE(vtpm, vtpms, COMPARE_DEVID, {});
 
