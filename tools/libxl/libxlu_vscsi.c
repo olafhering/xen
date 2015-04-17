@@ -505,7 +505,8 @@ out:
     return rc;
 }
 
-int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, const char *str, libxl_device_vscsi *vscsi_host)
+int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
+                       const char *str, libxl_device_vscsi *vscsi_host)
 {
     libxl_vscsi_dev *new_dev = NULL;
     libxl_device_vscsi *new_host, *vscsi_hosts = NULL, *tmp;
