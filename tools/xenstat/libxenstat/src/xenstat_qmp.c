@@ -95,10 +95,10 @@ static char *qmp_get_block_image(xenstat_node *node, char *qmp_devname, int qfd)
 		return NULL;
 
 	/* Use libyajl version 2.0.3 or newer for the tree parser feature with bug fixes */
-	if ((info = yajl_tree_parse((char *)qmp_stats, NULL, 0)) == NULL) {
-		free(qmp_stats);
+	info = yajl_tree_parse((char *)qmp_stats, NULL, 0);
+	free(qmp_stats);
+	if (info == NULL)
 		return NULL;
-	}
 
 	ptr[0] = qblock[QMP_BLOCK_RETURN]; /* "return" */
 	if ((ret_obj = yajl_tree_get(info, ptr, yajl_t_array)) == NULL)
@@ -110,7 +110,7 @@ static char *qmp_get_block_image(xenstat_node *node, char *qmp_devname, int qfd)
 		ptr[0] = qblock[QMP_BLOCK_DEVICE]; /* "device" */
 		if ((dev_obj = yajl_tree_get(n, ptr, yajl_t_any)) != NULL) {
 			tmp = YAJL_GET_STRING(dev_obj);
-			if (strcmp(qmp_devname, tmp))
+			if (!tmp || strcmp(qmp_devname, tmp))
 				continue;
 		}
 		else
@@ -289,13 +289,13 @@ static size_t qmp_write(int qfd, char *cmd, size_t cmd_len)
 static int qmp_read(int qfd, unsigned char **qstats)
 {
 	unsigned char buf[1024], *ptr;
-	struct pollfd pfd[2];
+	struct pollfd pfd[1];
 	int n, qsize = 0;
 
 	*qstats = NULL;
 	pfd[0].fd = qfd;
 	pfd[0].events = POLLIN;
-	while ((n = poll(pfd, POLLIN, 10)) > 0) {
+	while ((n = poll(pfd, 1, 10)) > 0) {
 		if (pfd[0].revents & POLLIN) {
 			if ((n = read(qfd, buf, sizeof(buf))) < 0) {
 				free(*qstats);
@@ -357,17 +357,14 @@ static int qmp_connect(char *path)
 }
 
 /* Get up to 1024 active domains */
-static xc_domaininfo_t *get_domain_ids(int *num_doms)
+static xc_domaininfo_t *get_domain_ids(xc_interface *xc_handle, int *num_doms)
 {
 	xc_domaininfo_t *dominfo;
-	xc_interface *xc_handle;
 
 	dominfo = calloc(1024, sizeof(xc_domaininfo_t));
 	if (dominfo == NULL)
 		return NULL;
-	xc_handle = xc_interface_open(0,0,0);
 	*num_doms = xc_domain_getinfolist(xc_handle, 0, 1024, dominfo);
-	xc_interface_close(xc_handle);
 	return dominfo;
 }
 
@@ -406,7 +403,7 @@ void read_attributes_qdisk(xenstat_node * node)
 	char path[80];
 	int i, qfd, num_doms;
 
-	dominfo = get_domain_ids(&num_doms);
+	dominfo = get_domain_ids(node->handle->xc_handle, &num_doms);
 	if (dominfo == NULL)
 		return;
 

@@ -141,9 +141,18 @@ struct xsm_operations {
     int (*hvm_param_nested) (struct domain *d);
     int (*get_vnumainfo) (struct domain *d);
 
-#ifdef HAS_MEM_ACCESS
     int (*vm_event_control) (struct domain *d, int mode, int op);
-    int (*vm_event_op) (struct domain *d, int op);
+
+#ifdef HAS_MEM_ACCESS
+    int (*mem_access) (struct domain *d);
+#endif
+
+#ifdef HAS_MEM_PAGING
+    int (*mem_paging) (struct domain *d);
+#endif
+
+#ifdef HAS_MEM_SHARING
+    int (*mem_sharing) (struct domain *d);
 #endif
 
 #ifdef CONFIG_X86
@@ -543,15 +552,29 @@ static inline int xsm_get_vnumainfo (xsm_default_t def, struct domain *d)
     return xsm_ops->get_vnumainfo(d);
 }
 
-#ifdef HAS_MEM_ACCESS
 static inline int xsm_vm_event_control (xsm_default_t def, struct domain *d, int mode, int op)
 {
     return xsm_ops->vm_event_control(d, mode, op);
 }
 
-static inline int xsm_vm_event_op (xsm_default_t def, struct domain *d, int op)
+#ifdef HAS_MEM_ACCESS
+static inline int xsm_mem_access (xsm_default_t def, struct domain *d)
 {
-    return xsm_ops->vm_event_op(d, op);
+    return xsm_ops->mem_access(d);
+}
+#endif
+
+#ifdef HAS_MEM_PAGING
+static inline int xsm_mem_paging (xsm_default_t def, struct domain *d)
+{
+    return xsm_ops->mem_paging(d);
+}
+#endif
+
+#ifdef HAS_MEM_SHARING
+static inline int xsm_mem_sharing (xsm_default_t def, struct domain *d)
+{
+    return xsm_ops->mem_sharing(d);
 }
 #endif
 

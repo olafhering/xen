@@ -118,9 +118,18 @@ void xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, remove_from_physmap);
     set_to_dummy_if_null(ops, map_gmfn_foreign);
 
-#ifdef HAS_MEM_ACCESS
     set_to_dummy_if_null(ops, vm_event_control);
-    set_to_dummy_if_null(ops, vm_event_op);
+
+#ifdef HAS_MEM_ACCESS
+    set_to_dummy_if_null(ops, mem_access);
+#endif
+
+#ifdef HAS_MEM_PAGING
+    set_to_dummy_if_null(ops, mem_paging);
+#endif
+
+#ifdef HAS_MEM_SHARING
+    set_to_dummy_if_null(ops, mem_sharing);
 #endif
 
 #ifdef CONFIG_X86

@@ -745,6 +745,17 @@ struct xen_domctl_gdbsx_domstatus {
 /* XEN_DOMCTL_vm_event_op */
 
 /*
+ * There are currently three rings available for VM events:
+ * sharing, monitor and paging. This hypercall allows one to
+ * control these rings (enable/disable), as well as to signal
+ * to the hypervisor to pull responses (resume) from the given
+ * ring.
+ */
+#define XEN_VM_EVENT_ENABLE               0
+#define XEN_VM_EVENT_DISABLE              1
+#define XEN_VM_EVENT_RESUME               2
+
+/*
  * Domain memory paging
  * Page memory in and out.
  * Domctl interface to set up and tear down the 
@@ -760,9 +771,6 @@ struct xen_domctl_gdbsx_domstatus {
  */
 #define XEN_DOMCTL_VM_EVENT_OP_PAGING            1
 
-#define XEN_VM_EVENT_PAGING_ENABLE               0
-#define XEN_VM_EVENT_PAGING_DISABLE              1
-
 /*
  * Monitor helper.
  *
@@ -774,26 +782,18 @@ struct xen_domctl_gdbsx_domstatus {
  * of every page in a domain.  When one of these permissions--independent,
  * read, write, and execute--is violated, the VCPU is paused and a memory event
  * is sent with what happened. The memory event handler can then resume the
- * VCPU and redo the access with a XENMEM_access_op_resume hypercall.
+ * VCPU and redo the access with a XEN_VM_EVENT_RESUME option.
  *
  * See public/vm_event.h for the list of available events that can be
  * subscribed to via the monitor interface.
  *
- * To enable MOV-TO-MSR interception on x86, it is necessary to enable this
- * interface with the XEN_VM_EVENT_MONITOR_ENABLE_INTROSPECTION
- * operator.
- *
- * The XEN_VM_EVENT_MONITOR_ENABLE* domctls return several
+ * The XEN_VM_EVENT_MONITOR_* domctls returns
  * non-standard error codes to indicate why access could not be enabled:
  * ENODEV - host lacks HAP support (EPT/NPT) or HAP is disabled in guest
  * EBUSY  - guest has or had access enabled, ring buffer still active
  *
  */
-#define XEN_DOMCTL_VM_EVENT_OP_MONITOR                        2
-
-#define XEN_VM_EVENT_MONITOR_ENABLE                           0
-#define XEN_VM_EVENT_MONITOR_DISABLE                          1
-#define XEN_VM_EVENT_MONITOR_ENABLE_INTROSPECTION             2
+#define XEN_DOMCTL_VM_EVENT_OP_MONITOR           2
 
 /*
  * Sharing ENOMEM helper.
@@ -810,13 +810,10 @@ struct xen_domctl_gdbsx_domstatus {
  */
 #define XEN_DOMCTL_VM_EVENT_OP_SHARING           3
 
-#define XEN_VM_EVENT_SHARING_ENABLE              0
-#define XEN_VM_EVENT_SHARING_DISABLE             1
-
 /* Use for teardown/setup of helper<->hypervisor interface for paging, 
  * access and sharing.*/
 struct xen_domctl_vm_event_op {
-    uint32_t       op;           /* XEN_VM_EVENT_*_* */
+    uint32_t       op;           /* XEN_VM_EVENT_* */
     uint32_t       mode;         /* XEN_DOMCTL_VM_EVENT_OP_* */
 
     uint32_t port;              /* OUT: event channel for ring */
@@ -1001,6 +998,51 @@ struct xen_domctl_psr_cmt_op {
 typedef struct xen_domctl_psr_cmt_op xen_domctl_psr_cmt_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_psr_cmt_op_t);
 
+/*  XEN_DOMCTL_MONITOR_*
+ *
+ * Enable/disable monitoring various VM events.
+ * This domctl configures what events will be reported to helper apps
+ * via the ring buffer "MONITOR". The ring has to be first enabled
+ * with the domctl XEN_DOMCTL_VM_EVENT_OP_MONITOR.
+ *
+ * NOTICE: mem_access events are also delivered via the "MONITOR" ring buffer;
+ * however, enabling/disabling those events is performed with the use of
+ * memory_op hypercalls!
+ */
+#define XEN_DOMCTL_MONITOR_OP_ENABLE   0
+#define XEN_DOMCTL_MONITOR_OP_DISABLE  1
+
+#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_CR0            0
+#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_CR3            1
+#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_CR4            2
+#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_MSR            3
+#define XEN_DOMCTL_MONITOR_EVENT_SINGLESTEP            4
+#define XEN_DOMCTL_MONITOR_EVENT_SOFTWARE_BREAKPOINT   5
+
+struct xen_domctl_monitor_op {
+    uint32_t op; /* XEN_DOMCTL_MONITOR_OP_* */
+    uint32_t event; /* XEN_DOMCTL_MONITOR_EVENT_* */
+
+    /*
+     * Further options when issuing XEN_DOMCTL_MONITOR_OP_ENABLE.
+     */
+    union {
+        struct {
+            /* Pause vCPU until response */
+            uint8_t sync;
+            /* Send event only on a change of value */
+            uint8_t onchangeonly;
+        } mov_to_cr;
+
+        struct {
+            /* Enable the capture of an extended set of MSRs */
+            uint8_t extended_capture;
+        } mov_to_msr;
+    } u;
+};
+typedef struct xen_domctl__op xen_domctl_monitor_op_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_monitor_op_t);
+
 struct xen_domctl {
     uint32_t cmd;
 #define XEN_DOMCTL_createdomain                   1
@@ -1075,6 +1117,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_set_vcpu_msrs                 73
 #define XEN_DOMCTL_setvnumainfo                  74
 #define XEN_DOMCTL_psr_cmt_op                    75
+#define XEN_DOMCTL_monitor_op                    77
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1137,6 +1180,7 @@ struct xen_domctl {
         struct xen_domctl_gdbsx_domstatus   gdbsx_domstatus;
         struct xen_domctl_vnuma             vnuma;
         struct xen_domctl_psr_cmt_op        psr_cmt_op;
+        struct xen_domctl_monitor_op        monitor_op;
         uint8_t                             pad[128];
     } u;
 };

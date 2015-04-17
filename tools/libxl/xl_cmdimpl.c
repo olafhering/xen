@@ -4747,7 +4747,7 @@ int main_list(int argc, char **argv)
     } else if (optind == argc-1) {
         uint32_t domid = find_domain(argv[optind]);
         rc = libxl_domain_info(ctx, &info_buf, domid);
-        if (rc == ERROR_INVAL) {
+        if (rc == ERROR_DOMAIN_NOTFOUND) {
             fprintf(stderr, "Error: Domain \'%s\' does not exist.\n",
                 argv[optind]);
             return -rc;
@@ -5229,17 +5229,18 @@ int main_vcpupin(int argc, char **argv)
     return rc;
 }
 
-static void vcpuset(uint32_t domid, const char* nr_vcpus, int check_host)
+static int vcpuset(uint32_t domid, const char* nr_vcpus, int check_host)
 {
     char *endptr;
     unsigned int max_vcpus, i;
     libxl_bitmap cpumap;
+    int rc;
 
     libxl_bitmap_init(&cpumap);
     max_vcpus = strtoul(nr_vcpus, &endptr, 10);
     if (nr_vcpus == endptr) {
         fprintf(stderr, "Error: Invalid argument.\n");
-        return;
+        return 1;
     }
 
     /*
@@ -5248,26 +5249,39 @@ static void vcpuset(uint32_t domid, const char* nr_vcpus, int check_host)
      */
     if (check_host) {
         unsigned int host_cpu = libxl_get_max_cpus(ctx);
-        if (max_vcpus > host_cpu) {
-            fprintf(stderr, "You are overcommmitting! You have %d physical " \
-                    " CPUs and want %d vCPUs! Aborting, use --ignore-host to " \
+        libxl_dominfo dominfo;
+
+        rc = libxl_domain_info(ctx, &dominfo, domid);
+        if (rc)
+            return 1;
+
+        if (max_vcpus > dominfo.vcpu_online && max_vcpus > host_cpu) {
+            fprintf(stderr, "You are overcommmitting! You have %d physical" \
+                    " CPUs and want %d vCPUs! Aborting, use --ignore-host to" \
                     " continue\n", host_cpu, max_vcpus);
-            return;
+            rc = 1;
         }
-        /* NB: This also limits how many are set in the bitmap */
-        max_vcpus = (max_vcpus > host_cpu ? host_cpu : max_vcpus);
+        libxl_dominfo_dispose(&dominfo);
+        if (rc)
+            return 1;
     }
-    if (libxl_cpu_bitmap_alloc(ctx, &cpumap, max_vcpus)) {
-        fprintf(stderr, "libxl_cpu_bitmap_alloc failed\n");
-        return;
+    rc = libxl_cpu_bitmap_alloc(ctx, &cpumap, max_vcpus);
+    if (rc) {
+        fprintf(stderr, "libxl_cpu_bitmap_alloc failed, rc: %d\n", rc);
+        return 1;
     }
     for (i = 0; i < max_vcpus; i++)
         libxl_bitmap_set(&cpumap, i);
 
-    if (libxl_set_vcpuonline(ctx, domid, &cpumap) < 0)
-        fprintf(stderr, "libxl_set_vcpuonline failed domid=%d max_vcpus=%d\n", domid, max_vcpus);
+    rc = libxl_set_vcpuonline(ctx, domid, &cpumap);
+    if (rc == ERROR_DOMAIN_NOTFOUND)
+        fprintf(stderr, "Domain %u does not exist.\n", domid);
+    else if (rc)
+        fprintf(stderr, "libxl_set_vcpuonline failed domid=%d max_vcpus=%d," \
+                " rc: %d\n", domid, max_vcpus, rc);
 
     libxl_bitmap_dispose(&cpumap);
+    return rc ? 1 : 0;
 }
 
 int main_vcpuset(int argc, char **argv)
@@ -5286,8 +5300,7 @@ int main_vcpuset(int argc, char **argv)
         break;
     }
 
-    vcpuset(find_domain(argv[optind]), argv[optind + 1], check_host);
-    return 0;
+    return vcpuset(find_domain(argv[optind]), argv[optind + 1], check_host);
 }
 
 static void output_xeninfo(void)
@@ -5518,7 +5531,7 @@ int main_sharing(int argc, char **argv)
     } else if (optind == argc-1) {
         uint32_t domid = find_domain(argv[optind]);
         rc = libxl_domain_info(ctx, &info_buf, domid);
-        if (rc == ERROR_INVAL) {
+        if (rc == ERROR_DOMAIN_NOTFOUND) {
             fprintf(stderr, "Error: Domain \'%s\' does not exist.\n",
                 argv[optind]);
             return -rc;

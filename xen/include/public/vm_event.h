@@ -47,7 +47,6 @@
 #define VM_EVENT_FLAG_VCPU_PAUSED     (1 << 0)
 /* Flags to aid debugging mem_event */
 #define VM_EVENT_FLAG_FOREIGN         (1 << 1)
-#define VM_EVENT_FLAG_DUMMY           (1 << 2)
 
 /*
  * Reasons for the vm event request
@@ -67,7 +66,7 @@
 #define VM_EVENT_REASON_MOV_TO_CR3              5
 /* CR4 was updated */
 #define VM_EVENT_REASON_MOV_TO_CR4              6
-/* An MSR was updated. Does NOT honour HVMPME_onchangeonly */
+/* An MSR was updated. */
 #define VM_EVENT_REASON_MOV_TO_MSR              7
 /* Debug operation executed (e.g. int3) */
 #define VM_EVENT_REASON_SOFTWARE_BREAKPOINT     8
