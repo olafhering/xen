@@ -706,29 +706,35 @@ out:
     return rc;
 }
 #else /* ! __linux__ */
-int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
-                                   libxl_vscsi_dev *dev)
+int xlu_vscsi_append_dev(libxl_ctx *ctx,
+                         libxl_device_vscsi *hst,
+                         libxl_vscsi_dev *dev)
 {
     return ERROR_INVAL;
 }
 
 int xlu_vscsi_get_host(XLU_Config *config,
-                               libxl_ctx *ctx,
-                               uint32_t domid,
-                               const char *str,
-                               libxl_device_vscsi *vscsi_host)
+                       libxl_ctx *ctx,
+                       uint32_t domid,
+                       const char *str,
+                       libxl_device_vscsi *vscsi_host)
 {
     return ERROR_INVAL;
 }
 
-int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
-                             libxl_device_vscsi *new_host,
-                             libxl_vscsi_dev *new_dev)
+int xlu_vscsi_parse(XLU_Config *cfg,
+                    libxl_ctx *ctx,
+                    const char *str,
+                    libxl_device_vscsi *new_host,
+                    libxl_vscsi_dev *new_dev)
 {
     return ERROR_INVAL;
 }
 
-int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
+int xlu_vscsi_detach(XLU_Config *cfg,
+                     libxl_ctx *ctx,
+                     uint32_t domid,
+                     char *str)
 {
     return ERROR_INVAL;
 }
