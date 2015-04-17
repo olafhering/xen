@@ -115,15 +115,15 @@ int xlu_vif_parse_rate(XLU_Config *cfg, const char *rate,
                        libxl_device_nic *nic);
 
 int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
-                                   libxl_vscsi_dev *dev);
+                         libxl_vscsi_dev *dev);
 int xlu_vscsi_get_host(XLU_Config *config,
-                               libxl_ctx *ctx,
-                               uint32_t domid,
-                               const char *str,
-                               libxl_device_vscsi *vscsi_host);
+                       libxl_ctx *ctx,
+                       uint32_t domid,
+                       const char *str,
+                       libxl_device_vscsi *vscsi_host);
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
-                             libxl_device_vscsi *new_host,
-                             libxl_vscsi_dev *new_dev);
+                    libxl_device_vscsi *new_host,
+                    libxl_vscsi_dev *new_dev);
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str);
 int xlu_vscsi_config_add(XLU_Config *cfg,
                          libxl_ctx *ctx,
