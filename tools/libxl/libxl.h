@@ -1260,7 +1260,8 @@ int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
                                  libxl_channelinfo *channelinfo);
 
 /* Virtual SCSI */
-int libxl_device_vscsi_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vscsi *vscsi,
+int libxl_device_vscsi_add(libxl_ctx *ctx, uint32_t domid,
+                           libxl_device_vscsi *vscsi,
                            const libxl_asyncop_how *ao_how)
                            LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_vscsi_remove(libxl_ctx *ctx, uint32_t domid,
@@ -1273,8 +1274,7 @@ int libxl_device_vscsi_destroy(libxl_ctx *ctx, uint32_t domid,
                                LIBXL_EXTERNAL_CALLERS_ONLY;
 
 libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int *num);
-int libxl_device_vscsi_getinfo(libxl_ctx *ctx,
-                               uint32_t domid,
+int libxl_device_vscsi_getinfo(libxl_ctx *ctx, uint32_t domid,
                                libxl_device_vscsi *vscsi_host,
                                libxl_vscsi_dev *vscsi_dev,
                                libxl_vscsiinfo *vscsiinfo);
