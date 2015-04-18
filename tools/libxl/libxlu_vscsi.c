@@ -55,7 +55,7 @@ static int xlu__vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 
 static char *xlu__vscsi_trim_string(char *s)
 {
-    unsigned int len;
+    size_t len;
 
     while (isspace(*s))
         s++;
