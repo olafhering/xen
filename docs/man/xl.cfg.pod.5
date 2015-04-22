@@ -513,7 +513,7 @@ value is optional if this is a guest domain.
 =item B<vscsi=[ "VSCSI_SPEC_STRING", "VSCSI_SPEC_STRING", ...]>
 
 Specifies the PVSCSI devices to be provided to the guest. PVSCSI passes
-dom0 SCSI devices as-is to the guest.
+SCSI devices from the backend domain to the guest.
 
 Each VSCSI_SPEC_STRING consists of "pdev,vdev[,options]".
 'pdev' describes the physical device, preferable in a persistant format.
