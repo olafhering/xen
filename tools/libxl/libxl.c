@@ -2110,7 +2110,7 @@ static int libxl__device_vscsi_new_backend(libxl__egc *egc,
         if (v->remove)
             continue;
         rc = libxl__device_vscsi_dev_backend_set(gc, v, back);
-        if (rc) goto out;
+        if (rc) return rc;
     }
 
     for (;;) {
