@@ -65,6 +65,19 @@ do
 		by_id="`echo ${vpd_uuid} | sed 's@-@@g;s@^\(.\{25\}\)\(.*\)@scsi-36001405\1@'`"
 		ln -sfvbn "/dev/disk/by-id/${by_id}" "${f_link}"
 
+		f_major=$((`stat --dereference --format=0x%t "${f_link}"`))
+		f_minor=$((`stat --dereference --format=0x%T "${f_link}"`))
+		if test -z "${f_major}" || test -z "${f_minor}"
+		then
+			exit 1
+		fi
+		f_alias=`ls -d /sys/dev/block/${f_major}:${f_minor}/device/scsi_device/*:*:*:*`
+		if test -z "${f_alias}"
+		then
+			exit 1
+		fi
+		f_alias=${f_alias##*/}
+
 		blockdev --rereadpt "${f_link}"
 		udevadm settle --timeout=4
 		echo 1,12,S | sfdisk "${f_link}"
@@ -87,6 +100,7 @@ do
 
 		targetcli /backstores/pscsi create "dev=${f_link}" "${pscsi_name}"
 		targetcli /xen-pvscsi/${pvscsi_wwn}/tpg1/luns create "/backstores/pscsi/${pscsi_name}" $lun
+		targetcli /xen-pvscsi/${pvscsi_wwn}/tpg1  set parameter alias=${f_alias%:*}
 
 		lun=$(( $lun + 1 ))
 	done
