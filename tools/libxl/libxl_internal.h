@@ -177,6 +177,9 @@ typedef void libxl__ev_fd_callback(libxl__egc *egc, libxl__ev_fd *ev,
    *
    * It is not permitted to listen for the same or overlapping events
    * on the same fd using multiple different libxl__ev_fd's.
+   *
+   * (Spurious wakeups, and spurious bits set in revents, are
+   * suppressed by the libxl event core.)
    */
 struct libxl__ev_fd {
     /* caller should include this in their own struct */
@@ -1586,6 +1589,10 @@ _hidden int libxl__device_destroy_tapdisk(libxl__gc *gc, const char *params);
 _hidden int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
                                    libxl_device_disk *disk,
                                    libxl__device *device);
+
+/* Calls poll() again - useful to check whether a signaled condition
+ * is still true.  Cannot fail.  Returns currently-true revents. */
+_hidden short libxl__fd_poll_recheck(libxl__egc *egc, int fd, short events);
 
 _hidden char *libxl__uuid2string(libxl__gc *gc, const libxl_uuid uuid);
 

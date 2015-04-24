@@ -40,6 +40,7 @@
 #include <asm/psci.h>
 #include <asm/mmio.h>
 #include <asm/cpufeature.h>
+#include <asm/flushtlb.h>
 
 #include "decode.h"
 #include "vtimer.h"
@@ -1999,8 +2000,48 @@ done:
 static void do_trap_instr_abort_guest(struct cpu_user_regs *regs,
                                       union hsr hsr)
 {
-    register_t addr = READ_SYSREG(FAR_EL2);
-    inject_iabt_exception(regs, addr, hsr.len);
+    int rc;
+    register_t gva = READ_SYSREG(FAR_EL2);
+
+    switch ( hsr.iabt.ifsc & 0x3f )
+    {
+    case FSC_FLT_PERM ... FSC_FLT_PERM + 3:
+    {
+        paddr_t gpa;
+        const struct npfec npfec = {
+            .insn_fetch = 1,
+            .gla_valid = 1,
+            .kind = hsr.iabt.s1ptw ? npfec_kind_in_gpt : npfec_kind_with_gla
+        };
+
+        if ( hsr.iabt.s1ptw )
+            gpa = READ_SYSREG(HPFAR_EL2);
+        else
+        {
+            /*
+             * Flush the TLB to make sure the DTLB is clear before
+             * doing GVA->IPA translation. If we got here because of
+             * an entry only present in the ITLB, this translation may
+             * still be inaccurate.
+             */
+            flush_tlb_local();
+
+            rc = gva_to_ipa(gva, &gpa, GV2M_READ);
+            if ( rc == -EFAULT )
+                goto bad_insn_abort;
+        }
+
+        rc = p2m_mem_access_check(gpa, gva, npfec);
+
+        /* Trap was triggered by mem_access, work here is done */
+        if ( !rc )
+            return;
+    }
+    break;
+    }
+
+bad_insn_abort:
+    inject_iabt_exception(regs, gva, hsr.len);
 }
 
 static void do_trap_data_abort_guest(struct cpu_user_regs *regs,
@@ -2023,11 +2064,36 @@ static void do_trap_data_abort_guest(struct cpu_user_regs *regs,
     info.gva = READ_SYSREG64(FAR_EL2);
 #endif
 
-    if (dabt.s1ptw)
-        goto bad_data_abort;
+    if ( dabt.s1ptw )
+        info.gpa = READ_SYSREG(HPFAR_EL2);
+    else
+    {
+        rc = gva_to_ipa(info.gva, &info.gpa, GV2M_READ);
+        if ( rc == -EFAULT )
+            goto bad_data_abort;
+    }
 
-    rc = gva_to_ipa(info.gva, &info.gpa);
-    if ( rc == -EFAULT )
+    switch ( dabt.dfsc & 0x3f )
+    {
+    case FSC_FLT_PERM ... FSC_FLT_PERM + 3:
+    {
+        const struct npfec npfec = {
+            .read_access = !dabt.write,
+            .write_access = dabt.write,
+            .gla_valid = 1,
+            .kind = dabt.s1ptw ? npfec_kind_in_gpt : npfec_kind_with_gla
+        };
+
+        rc = p2m_mem_access_check(info.gpa, info.gva, npfec);
+
+        /* Trap was triggered by mem_access, work here is done */
+        if ( !rc )
+            return;
+    }
+    break;
+    }
+
+    if ( dabt.s1ptw )
         goto bad_data_abort;
 
     /* XXX: Decode the instruction if ISS is not valid */

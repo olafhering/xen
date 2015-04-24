@@ -236,6 +236,29 @@ void libxl__ev_fd_deregister(libxl__gc *gc, libxl__ev_fd *ev)
     CTX_UNLOCK;
 }
 
+short libxl__fd_poll_recheck(libxl__egc *egc, int fd, short events) {
+    struct pollfd check;
+    int r;
+
+    for (;;) {
+        check.fd = fd;
+        check.events = events;
+        r = poll(&check, 1, 0);
+        DBG("poll recheck fd=%d r=%d revents=%#x", fd, r, check.revents);
+        if (!r)
+            break;
+        if (r==1)
+            break;
+        assert(r<0);
+        if (errno != EINTR) {
+            LIBXL__EVENT_DISASTER(egc, "failed poll to check for fd", errno, 0);
+            return 0;
+        }
+    }
+    assert(!!r == !!check.revents);
+    return check.revents;
+}
+
 /*
  * timeouts
  */
@@ -661,9 +684,8 @@ static void evtchn_fd_callback(libxl__egc *egc, libxl__ev_fd *ev,
 {
     EGC_GC;
     libxl__ev_evtchn *evev;
-    int r, rc;
+    int rc;
     evtchn_port_or_error_t port;
-    struct pollfd recheck;
 
     rc = evtchn_revents_check(egc, revents);
     if (rc) return;
@@ -674,21 +696,10 @@ static void evtchn_fd_callback(libxl__egc *egc, libxl__ev_fd *ev,
          * held continuously since someone noticed the fd.  Normally
          * this wouldn't be a problem but evtchn devices don't always
          * honour O_NONBLOCK (see xenctrl.h). */
-
-        recheck.fd = fd;
-        recheck.events = POLLIN;
-        recheck.revents = 0;
-        r = poll(&recheck, 1, 0);
-        DBG("ev_evtchn recheck r=%d revents=%#x", r, recheck.revents);
-        if (r < 0) {
-            LIBXL__EVENT_DISASTER(egc,
-     "unexpected failure polling event channel fd for recheck",
-                                  errno, 0);
-            return;
-        }
-        if (r == 0)
+        revents = libxl__fd_poll_recheck(egc,fd,POLLIN);
+        if (!revents)
             break;
-        rc = evtchn_revents_check(egc, recheck.revents);
+        rc = evtchn_revents_check(egc, revents);
         if (rc) return;
 
         /* OK, that's that workaround done.  We can actually check for
@@ -1110,6 +1121,17 @@ static int afterpoll_check_fd(libxl__poller *poller,
     return revents;
 }
 
+static void fd_occurs(libxl__egc *egc, libxl__ev_fd *efd, short revents_ign)
+{
+    short revents_current = libxl__fd_poll_recheck(egc, efd->fd, efd->events);
+
+    DBG("ev_fd=%p occurs fd=%d events=%x revents_ign=%x revents_current=%x",
+        efd, efd->fd, efd->events, revents_ign, revents_current);
+
+    if (revents_current)
+        efd->func(egc, efd, efd->fd, efd->events, revents_current);
+}
+
 static void afterpoll_internal(libxl__egc *egc, libxl__poller *poller,
                                int nfds, const struct pollfd *fds,
                                struct timeval now)
@@ -1172,10 +1194,7 @@ static void afterpoll_internal(libxl__egc *egc, libxl__poller *poller,
         break;
 
     found_fd_event:
-        DBG("ev_fd=%p occurs fd=%d events=%x revents=%x",
-            efd, efd->fd, efd->events, revents);
-
-        efd->func(egc, efd, efd->fd, efd->events, revents);
+        fd_occurs(egc, efd, revents);
     }
 
     if (afterpoll_check_fd(poller,fds,nfds, poller->wakeup_pipe[0],POLLIN)) {
@@ -1239,24 +1258,7 @@ void libxl_osevent_occurred_fd(libxl_ctx *ctx, void *for_libxl,
     if (!ev) goto out;
     if (ev->fd != fd) goto out;
 
-    struct pollfd check;
-    for (;;) {
-        check.fd = fd;
-        check.events = ev->events;
-        int r = poll(&check, 1, 0);
-        if (!r)
-            goto out;
-        if (r==1)
-            break;
-        assert(r<0);
-        if (errno != EINTR) {
-            LIBXL__EVENT_DISASTER(egc, "failed poll to check for fd", errno, 0);
-            goto out;
-        }
-    }
-
-    if (check.revents)
-        ev->func(egc, ev, fd, ev->events, check.revents);
+    fd_occurs(egc, ev, revents_ign);
 
  out:
     CTX_UNLOCK;

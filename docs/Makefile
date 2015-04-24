@@ -16,20 +16,26 @@ MARKDOWNSRC-y := $(sort $(wildcard misc/*.markdown))
 
 TXTSRC-y := $(sort $(wildcard misc/*.txt))
 
+PANDOCSRC-y := $(sort $(wildcard specs/*.pandoc))
 
+# Documentation targets
 DOC_MAN1 := $(patsubst man/%.pod.1,man1/%.1,$(MAN1SRC-y))
 DOC_MAN5 := $(patsubst man/%.pod.5,man5/%.5,$(MAN5SRC-y))
 DOC_HTML := $(patsubst %.markdown,html/%.html,$(MARKDOWNSRC-y)) \
+            $(patsubst %.pandoc,html/%.html,$(PANDOCSRC-y)) \
             $(patsubst man/%.pod.1,html/man/%.1.html,$(MAN1SRC-y)) \
             $(patsubst man/%.pod.5,html/man/%.5.html,$(MAN5SRC-y)) \
             $(patsubst %.txt,html/%.txt,$(TXTSRC-y)) \
             $(patsubst %,html/hypercall/%/index.html,$(DOC_ARCHES))
 DOC_TXT  := $(patsubst %.txt,txt/%.txt,$(TXTSRC-y)) \
             $(patsubst %.markdown,txt/%.txt,$(MARKDOWNSRC-y)) \
+            $(patsubst %.pandoc,txt/%.txt,$(PANDOCSRC-y)) \
             $(patsubst man/%.pod.1,txt/man/%.1.txt,$(MAN1SRC-y)) \
             $(patsubst man/%.pod.5,txt/man/%.5.txt,$(MAN5SRC-y))
-DOC_PDF  := $(patsubst %.markdown,pdf/%.pdf,$(MARKDOWNSRC-y))
+DOC_PDF  := $(patsubst %.markdown,pdf/%.pdf,$(MARKDOWNSRC-y)) \
+            $(patsubst %.pandoc,pdf/%.pdf,$(PANDOCSRC-y))
 
+# Top level build targets
 .PHONY: all
 all: build
 
@@ -40,51 +46,26 @@ build: html txt pdf man-pages figs
 html: $(DOC_HTML) html/index.html
 
 .PHONY: txt
-txt:
-ifdef POD2TEXT
-	$(MAKE) $(DOC_TXT)
-else
-	@echo "pod2text not installed; skipping text outputs."
-endif
+txt: $(DOC_TXT)
 
 .PHONY: figs
 figs:
-ifdef FIG2DEV
+ifneq ($(FIG2DEV),)
 	set -x; $(MAKE) -C figs
 else
 	@echo "fig2dev (transfig) not installed; skipping figs."
 endif
 
 .PHONY: man-pages
-man-pages:
-ifdef POD2MAN
-	$(MAKE) $(DOC_MAN1) $(DOC_MAN5)
-else
-	@echo "pod2man not installed; skipping man-pages."
-endif
+man-pages: $(DOC_MAN1) $(DOC_MAN5)
 
 .PHONY: pdf
-pdf:
-ifdef PANDOC
-	$(MAKE) $(DOC_PDF)
-else
-	@echo "pandoc not installed; skipping pdfs."
-endif
-
-man1/%.1: man/%.pod.1 Makefile
-	$(INSTALL_DIR) $(@D)
-	$(POD2MAN) --release=$(VERSION) --name=`echo $@ | sed 's/^man1.//'| \
-		sed 's/.1//'` -s 1 -c "Xen" $< $@
-
-man5/%.5: man/%.pod.5 Makefile
-	$(INSTALL_DIR) $(@D)
-	$(POD2MAN) --release=$(VERSION) --name=`echo $@ | sed 's/^man5.//'| \
-		sed 's/.5//'` -s 5 -c "Xen" $< $@
+pdf: $(DOC_PDF)
 
 .PHONY: clean
 clean:
 	$(MAKE) -C figs clean
-	rm -rf .word_count *.aux *.dvi *.bbl *.blg *.glo *.idx *~ 
+	rm -rf .word_count *.aux *.dvi *.bbl *.blg *.glo *.idx *~
 	rm -rf *.ilg *.log *.ind *.toc *.bak *.tmp core
 	rm -rf html txt pdf
 	rm -rf man5
@@ -95,6 +76,7 @@ distclean: clean
 	rm -rf $(XEN_ROOT)/config/Docs.mk config.log config.status config.cache \
 		autom4te.cache
 
+# Top level install targets
 .PHONY: install-man-pages
 install-man-pages: man-pages
 	$(INSTALL_DIR) $(DESTDIR)$(MANDIR)
@@ -109,39 +91,52 @@ install-html: html txt figs
 .PHONY: install
 install: install-man-pages install-html
 
+# Individual file build targets
+man1/%.1: man/%.pod.1 Makefile
+ifneq ($(POD2MAN),)
+	@$(INSTALL_DIR) $(@D)
+	$(POD2MAN) --release=$(VERSION) --name=$* -s 1 -c "Xen" $< $@
+else
+	@echo "pod2man not installed; skipping $@"
+endif
+
+man5/%.5: man/%.pod.5 Makefile
+ifneq ($(POD2MAN),)
+	@$(INSTALL_DIR) $(@D)
+	$(POD2MAN) --release=$(VERSION) --name=$* -s 5 -c "Xen" $< $@
+else
+	@echo "pod2man not installed; skipping $@"
+endif
+
 html/index.html: $(DOC_HTML) $(CURDIR)/gen-html-index INDEX
 	$(PERL) -w -- $(CURDIR)/gen-html-index -i INDEX html $(DOC_HTML)
 
 html/%.html: %.markdown
-	$(INSTALL_DIR) $(@D)
-ifdef MARKDOWN
-	@echo "Running markdown to generate $*.html ... "
-	$(MARKDOWN) $< > $@.tmp ; \
-	$(call move-if-changed,$@.tmp,$@)
+ifneq ($(MARKDOWN),)
+	@$(INSTALL_DIR) $(@D)
+	$(MARKDOWN) $< > $@
 else
-	@echo "markdown not installed; skipping $*.html."
+	@echo "markdown not installed; skipping $@"
 endif
 
 html/%.txt: %.txt
-	$(INSTALL_DIR) $(@D)
+	@$(INSTALL_DIR) $(@D)
 	$(INSTALL_DATA) $< $@
 
 html/man/%.1.html: man/%.pod.1 Makefile
-	$(INSTALL_DIR) $(@D)
-ifdef POD2HTML
-	$(POD2HTML) --infile=$< --outfile=$@.tmp
-	$(call move-if-changed,$@.tmp,$@)
+ifneq ($(POD2HTML),)
+	@$(INSTALL_DIR) $(@D)
+	$(POD2HTML) --infile=$< --outfile=$@
 else
-	@echo "pod2html not installed; skipping $<."
+	@echo "pod2html not installed; skipping $@"
 endif
 
 html/man/%.5.html: man/%.pod.5 Makefile
-	$(INSTALL_DIR) $(@D)
-ifdef POD2HTML
-	$(POD2HTML) --infile=$< --outfile=$@.tmp
-	$(call move-if-changed,$@.tmp,$@)
+ifneq ($(POD2HTML),)
+	@$(INSTALL_DIR) $(@D)
+	$(POD2HTML) --infile=$< --outfile=$@
 else
-	@echo "pod2html not installed; skipping $<."
+	@echo "pod2html not installed; skipping $@"
 endif
 
 # For non-x86 arches exclude the subarch whole x86 arch.
@@ -160,36 +155,44 @@ html/hypercall/%/index.html: $(CURDIR)/xen-headers Makefile
 -include $(wildcard html/hypercall/*/.deps)
 
 txt/%.txt: %.txt
-	$(INSTALL_DIR) $(@D)
-	cp $< $@.tmp
-	$(call move-if-changed,$@.tmp,$@)
+	@$(INSTALL_DIR) $(@D)
+	$(INSTALL_DATA) $< $@
 
 txt/%.txt: %.markdown
-	$(INSTALL_DIR) $(@D)
-	cp $< $@.tmp
-	$(call move-if-changed,$@.tmp,$@)
+	@$(INSTALL_DIR) $(@D)
+	$(INSTALL_DATA) $< $@
 
 txt/man/%.1.txt: man/%.pod.1 Makefile
-	$(INSTALL_DIR) $(@D)
-ifdef POD2TEXT
-	$(POD2TEXT) $< $@.tmp
-	$(call move-if-changed,$@.tmp,$@)
+ifneq ($(POD2TEXT),)
+	@$(INSTALL_DIR) $(@D)
+	$(POD2TEXT) $< $@
 else
-	@echo "pod2text not installed; skipping $<."
+	@echo "pod2text not installed; skipping $@"
 endif
 
 txt/man/%.5.txt: man/%.pod.5 Makefile
-	$(INSTALL_DIR) $(@D)
-ifdef POD2TEXT
-	$(POD2TEXT) $< $@.tmp
-	$(call move-if-changed,$@.tmp,$@)
+ifneq ($(POD2TEXT),)
+	@$(INSTALL_DIR) $(@D)
+	$(POD2TEXT) $< $@
 else
-	@echo "pod2text not installed; skipping $<."
+	@echo "pod2text not installed; skipping $@"
 endif
 
 pdf/%.pdf: %.markdown
-	$(INSTALL_DIR) $(@D)
-	pandoc -N --toc --standalone $< --output $@
+ifneq ($(PANDOC),)
+	@$(INSTALL_DIR) $(@D)
+	$(PANDOC) --number-sections --toc --standalone $< --output $@
+else
+	@echo "pandoc not installed; skipping $@"
+endif
+
+pdf/%.pdf txt/%.txt html/%.html: %.pandoc
+ifneq ($(PANDOC),)
+	@$(INSTALL_DIR) $(@D)
+	$(PANDOC) --number-sections --toc --standalone $< --output $@
+else
+	@echo "pandoc not installed; skipping $@"
+endif
 
 ifeq (,$(findstring clean,$(MAKECMDGOALS)))
 $(XEN_ROOT)/config/Docs.mk:
