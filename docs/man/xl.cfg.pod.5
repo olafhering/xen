@@ -516,7 +516,7 @@ Specifies the PVSCSI devices to be provided to the guest. PVSCSI passes
 SCSI devices from the backend domain to the guest.
 
 Each VSCSI_SPEC_STRING consists of "pdev,vdev[,options]".
-'pdev' describes the physical device, preferable in a persistant format.
+'pdev' describes the physical device, preferable in a persistant format such as /dev/disk/by-*/*.
 'vdev' is the domU device in vHOST:CHANNEL:TARGET:LUN notation, all integers.
 'option' lists additional flags which a backend may recognize.
 
