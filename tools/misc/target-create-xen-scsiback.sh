@@ -18,6 +18,24 @@ target_path=$configfs/target
 num_luns=4
 num_hosts=4
 
+case "$1" in
+	-p)
+	backend="pvops"
+	;;
+	-x)
+	backend="xenlinux"
+	;;
+	*)
+	: "usage: $0 [-p|-x]"
+	if grep -qw xenfs$ /proc/filesystems
+	then
+		backend="pvops"
+	else
+		backend="xenlinux"
+	fi
+	;;
+esac
+
 get_wwn() {
 	sed '
 	s@-@@g
@@ -31,7 +49,10 @@ then
 	mount -vt configfs configfs $configfs
 	modprobe -v target_core_mod
 fi
-modprobe -v xen-scsiback
+if test "${backend}" = "pvops"
+then
+	modprobe -v xen-scsiback
+fi
 
 host=0
 while test $host -lt $num_hosts
@@ -41,7 +62,10 @@ do
 	loopback_wwn="naa.`get_wwn`"
 	pvscsi_wwn="naa.`get_wwn`"
 	targetcli /loopback create ${loopback_wwn}
-	targetcli /xen-pvscsi create ${pvscsi_wwn}
+	if test "${backend}" = "pvops"
+	then
+		targetcli /xen-pvscsi create ${pvscsi_wwn}
+	fi
 	while test $lun -lt $num_luns
 	do
 		: h $host l $lun
@@ -99,8 +123,11 @@ do
 		fi
 
 		targetcli /backstores/pscsi create "dev=${f_link}" "${pscsi_name}"
-		targetcli /xen-pvscsi/${pvscsi_wwn}/tpg1/luns create "/backstores/pscsi/${pscsi_name}" $lun
-		targetcli /xen-pvscsi/${pvscsi_wwn}/tpg1  set parameter alias=${f_alias%:*}
+		if test "${backend}" = "pvops"
+		then
+			targetcli /xen-pvscsi/${pvscsi_wwn}/tpg1/luns create "/backstores/pscsi/${pscsi_name}" $lun
+			targetcli /xen-pvscsi/${pvscsi_wwn}/tpg1  set parameter alias=${f_alias%:*}
+		fi
 
 		lun=$(( $lun + 1 ))
 	done

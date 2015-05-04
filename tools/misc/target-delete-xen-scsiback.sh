@@ -10,11 +10,13 @@ configfs=/sys/kernel/config
 target_path=$configfs/target
 
 cd "${target_path}"
-cd xen-pvscsi
-for wwn in `ls -d naa.*`
-do
-	targetcli /xen-pvscsi delete $wwn
-done
+if cd xen-pvscsi
+then
+	for wwn in `ls -d naa.*`
+	do
+		targetcli /xen-pvscsi delete $wwn
+	done
+fi
 cd "${target_path}"
 cd core
 for name in `ls -d pscsi_*/*/wwn`
