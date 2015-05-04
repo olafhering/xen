@@ -546,7 +546,8 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
-            if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
+            if (tmp->vscsi_devs[i].vscsi_dev_id != -1 &&
+                tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
                 LOG(cfg, "vdev '%u:%u:%u:%u' is already used.\n",
@@ -615,7 +616,8 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         for (d = 0; d < vh->num_vscsi_devs; d++) {
             vd = vh->vscsi_devs + d;
 #define CMP(member) (vd->vdev.member == v_dev.vdev.member)
-            if (!found && CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
+            if (!found && vd->vscsi_dev_id != -1 &&
+                CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 vd->remove = true;
                 libxl_device_vscsi_remove(ctx, domid, vh, NULL);
                 found = 1;
