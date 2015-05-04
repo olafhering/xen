@@ -6762,7 +6762,9 @@ int main_vscsilist(int argc, char **argv)
         }
         for (h = 0; h < num_hosts; ++h) {
             for (d = 0; d < vscsi_hosts[h].num_vscsi_devs; d++) {
-                if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
+                if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h],
+                                                &vscsi_hosts[h].vscsi_devs[d],
+                                                &vscsiinfo)) {
                     char pdev[64], vdev[64];
                     switch (vscsiinfo.pdev.type) {
                         case LIBXL_VSCSI_PDEV_TYPE_HCTL:
@@ -6781,7 +6783,10 @@ int main_vscsilist(int argc, char **argv)
                             break;
                     }
                     snprintf(vdev, sizeof(vdev), "%u:%u:%u:%u",
-                             vscsiinfo.vdev.hst, vscsiinfo.vdev.chn, vscsiinfo.vdev.tgt, vscsiinfo.vdev.lun);
+                             vscsiinfo.vdev.hst,
+                             vscsiinfo.vdev.chn,
+                             vscsiinfo.vdev.tgt,
+                             vscsiinfo.vdev.lun);
                     /*      Idx  BE  state Sta */
                     printf("%-3d %-3d %-5d %-5d %-10s %-10s %d\n",
                            vscsiinfo.devid,
