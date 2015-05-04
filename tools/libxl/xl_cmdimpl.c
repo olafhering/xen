@@ -6763,7 +6763,23 @@ int main_vscsilist(int argc, char **argv)
         for (h = 0; h < num_hosts; ++h) {
             for (d = 0; d < vscsi_hosts[h].num_vscsi_devs; d++) {
                 if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h], &vscsi_hosts[h].vscsi_devs[d], &vscsiinfo)) {
-                    char vdev[64];
+                    char pdev[64], vdev[64];
+                    switch (vscsiinfo.pdev.type) {
+                        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+                            snprintf(pdev, sizeof(pdev), "%u:%u:%u:%u",
+                                     vscsiinfo.pdev.u.hctl.m.hst,
+                                     vscsiinfo.pdev.u.hctl.m.chn,
+                                     vscsiinfo.pdev.u.hctl.m.tgt,
+                                     vscsiinfo.pdev.u.hctl.m.lun);
+                            break;
+                        case LIBXL_VSCSI_PDEV_TYPE_WWN:
+                            snprintf(pdev, sizeof(pdev), "%s",
+                                     vscsiinfo.pdev.u.wwn.m);
+                            break;
+                        default:
+                            pdev[0] = '\0';
+                            break;
+                    }
                     snprintf(vdev, sizeof(vdev), "%u:%u:%u:%u",
                              vscsiinfo.vdev.hst, vscsiinfo.vdev.chn, vscsiinfo.vdev.tgt, vscsiinfo.vdev.lun);
                     /*      Idx  BE  state Sta */
@@ -6772,7 +6788,7 @@ int main_vscsilist(int argc, char **argv)
                            vscsiinfo.backend_id,
                            vscsiinfo.vscsi_host_state,
                            vscsiinfo.backend_id,
-                           vscsiinfo.pdev.p_devname, vdev,
+                           pdev, vdev,
                            vscsiinfo.vscsi_dev_state);
 
                     libxl_vscsiinfo_dispose(&vscsiinfo);
