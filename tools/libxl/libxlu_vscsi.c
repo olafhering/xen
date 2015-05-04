@@ -482,8 +482,8 @@ out:
 }
 
 
-int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
-                                   libxl_vscsi_dev *dev)
+static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
+                                libxl_vscsi_dev *dev)
 {
     int rc;
     libxl_vscsi_dev *devs;
@@ -706,13 +706,6 @@ out:
     return rc;
 }
 #else /* ! __linux__ */
-int xlu_vscsi_append_dev(libxl_ctx *ctx,
-                         libxl_device_vscsi *hst,
-                         libxl_vscsi_dev *dev)
-{
-    return ERROR_INVAL;
-}
-
 int xlu_vscsi_get_host(XLU_Config *config,
                        libxl_ctx *ctx,
                        uint32_t domid,

@@ -114,9 +114,6 @@ int xlu_pci_parse_bdf(XLU_Config *cfg, libxl_device_pci *pcidev, const char *str
 int xlu_vif_parse_rate(XLU_Config *cfg, const char *rate,
                        libxl_device_nic *nic);
 
-/* Append a vscsi device to a vscsi host */
-int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
-                         libxl_vscsi_dev *dev);
 /* Fill vscsi_host with device described in str (pdev,vdev[,options]) */
 int xlu_vscsi_get_host(XLU_Config *config,
                        libxl_ctx *ctx,
