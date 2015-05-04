@@ -2099,7 +2099,7 @@ static int libxl__device_vscsi_new_backend(libxl__egc *egc,
     flexarray_append_pair(back, "online", "1");
     flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append_pair(back, "feature-host",
-                          libxl_defbool_val(vscsi->feature_host) ?
+                          libxl_defbool_val(vscsi->scsi_raw_cmds) ?
                           "1" : "0");
 
     flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));

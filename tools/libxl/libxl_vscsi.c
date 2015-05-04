@@ -186,7 +186,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
                                  fe_path, *dir));
         /* FIXME what if xenstore is broken? */
         if (!be_path) {
-            libxl_defbool_set(&v_hst->feature_host, false);
+            libxl_defbool_set(&v_hst->scsi_raw_cmds, false);
             continue;
         }
 
@@ -194,7 +194,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
         tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/feature-host", be_path));
         if (tmp)
             parsed_ok = atoi(tmp) != 0;
-        libxl_defbool_set(&v_hst->feature_host, parsed_ok);
+        libxl_defbool_set(&v_hst->scsi_raw_cmds, parsed_ok);
 
         devs_path = GCSPRINTF("%s/vscsi-devs", be_path);
         dev_dirs = libxl__xs_directory(gc, XBT_NULL, devs_path, &ndev_dirs);

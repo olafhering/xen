@@ -589,7 +589,7 @@ libxl_device_vscsi = Struct("device_vscsi", [
     ("v_hst",            uint32),
     ("vscsi_devs",       Array(libxl_vscsi_dev, "num_vscsi_devs")),
     ("next_vscsi_dev_id", libxl_devid),
-    ("feature_host",     libxl_defbool),
+    ("scsi_raw_cmds",     libxl_defbool),
     ])
 
 libxl_domain_config = Struct("domain_config", [
@@ -645,7 +645,7 @@ libxl_vscsiinfo = Struct("vscsiinfo", [
     ("pdev", libxl_vscsi_pdev),
     ("vdev", libxl_vscsi_hctl),
     ("vscsi_dev_id", libxl_devid),
-    ("feature_host", bool),
+    ("scsi_raw_cmds", bool),
     ("vscsi_host_state", integer),
     ("vscsi_dev_state", integer),
     ("evtch", integer),
