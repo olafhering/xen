@@ -6791,8 +6791,8 @@ int main_vscsilist(int argc, char **argv)
                            pdev, vdev,
                            vscsiinfo.vscsi_dev_state);
 
-                    libxl_vscsiinfo_dispose(&vscsiinfo);
                 }
+                libxl_vscsiinfo_dispose(&vscsiinfo);
             }
             libxl_device_vscsi_dispose(&vscsi_hosts[h]);
         }
