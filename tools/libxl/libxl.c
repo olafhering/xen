@@ -2286,7 +2286,6 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
 
     libxl_domain_config_init(&d_config);
 
-    /* In case of vscsi the copy remains identical to the provided input */
     libxl_device_vscsi_init(&vscsi_saved);
     libxl_device_vscsi_copy(CTX, &vscsi_saved, vscsi);
 
