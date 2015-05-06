@@ -2154,7 +2154,7 @@ static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
                                            libxl__ao_device *aodev,
                                            libxl_device_vscsi *vscsi,
                                            libxl_domain_config *d_config,
-                                           char *be_path,
+                                           const char *be_path,
                                            int *dev_wait)
 {
     STATE_AO_GC(aodev->ao);
