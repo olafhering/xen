@@ -2254,7 +2254,6 @@ static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
     rc = 0;
 
 out:
-    LOG(ERROR, "%u: rc %d", __LINE__, rc);
     libxl__xs_transaction_abort(gc, &t);
     return rc;
 }
