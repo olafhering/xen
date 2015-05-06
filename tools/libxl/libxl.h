@@ -750,6 +750,13 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
 #define LIBXL_HAVE_PSR_MBM 1
 #endif
 
+/*
+ * LIBXL_HAVE_VSCSI
+ *
+ * If this is defined, the PV SCSI feature is supported.
+ */
+#define LIBXL_HAVE_VSCSI 1
+
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
 int libxl_string_list_length(const libxl_string_list *sl);
@@ -1267,6 +1274,26 @@ libxl_device_channel *libxl_device_channel_list(libxl_ctx *ctx,
 int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
                                  libxl_device_channel *channel,
                                  libxl_channelinfo *channelinfo);
+
+/* Virtual SCSI */
+int libxl_device_vscsi_add(libxl_ctx *ctx, uint32_t domid,
+                           libxl_device_vscsi *vscsi,
+                           const libxl_asyncop_how *ao_how)
+                           LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_device_vscsi_remove(libxl_ctx *ctx, uint32_t domid,
+                              libxl_device_vscsi *vscsi,
+                              const libxl_asyncop_how *ao_how)
+                              LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_device_vscsi_destroy(libxl_ctx *ctx, uint32_t domid,
+                               libxl_device_vscsi *vscsi,
+                               const libxl_asyncop_how *ao_how)
+                               LIBXL_EXTERNAL_CALLERS_ONLY;
+
+libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid, int *num);
+int libxl_device_vscsi_getinfo(libxl_ctx *ctx, uint32_t domid,
+                               libxl_device_vscsi *vscsi_host,
+                               libxl_vscsi_dev *vscsi_dev,
+                               libxl_vscsiinfo *vscsiinfo);
 
 /* Virtual TPMs */
 int libxl_device_vtpm_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vtpm *vtpm,

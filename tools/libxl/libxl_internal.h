@@ -2420,6 +2420,10 @@ _hidden void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_nic *nic,
                                    libxl__ao_device *aodev);
 
+_hidden void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
+                                     libxl_device_vscsi *vscsi,
+                                     libxl__ao_device *aodev);
+
 _hidden void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_vtpm *vtpm,
                                    libxl__ao_device *aodev);
@@ -3045,6 +3049,10 @@ _hidden void libxl__add_nics(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
                              libxl__multidev *multidev);
 
+_hidden void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+                               libxl_domain_config *d_config,
+                               libxl__multidev *multidev);
+
 _hidden void libxl__add_vtpms(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
                              libxl__multidev *multidev);
@@ -3616,6 +3624,13 @@ static inline void libxl__update_config_nic(libxl__gc *gc,
     libxl_mac_copy(CTX, &dst->mac, &src->mac);
 }
 
+static inline void libxl__update_config_vscsi(libxl__gc *gc,
+                                             libxl_device_vscsi *dst,
+                                             libxl_device_vscsi *src)
+{
+    dst->devid = src->devid;
+}
+
 static inline void libxl__update_config_vtpm(libxl__gc *gc,
                                              libxl_device_vtpm *dst,
                                              libxl_device_vtpm *src)
@@ -3628,6 +3643,7 @@ static inline void libxl__update_config_vtpm(libxl__gc *gc,
  * devices have same identifier. */
 #define COMPARE_DEVID(a, b) ((a)->devid == (b)->devid)
 #define COMPARE_DISK(a, b) (!strcmp((a)->vdev, (b)->vdev))
+#define COMPARE_VSCSI(a, b) ((a)->v_hst == (b)->v_hst)
 #define COMPARE_PCI(a, b) ((a)->func == (b)->func &&    \
                            (a)->bus == (b)->bus &&      \
                            (a)->dev == (b)->dev)
