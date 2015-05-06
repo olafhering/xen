@@ -109,8 +109,8 @@
  * ===========================
  * 
  * The backend driver uses a single_host:many_devices notation to manage domU
- * devices. Everything is stored in /local/domain/0/backend/vscsi/. The
- * xenstore layout looks like this:
+ * devices. Everything is stored in /local/domain/<backend_domid>/backend/vscsi/.
+ * The xenstore layout looks like this (dom0 is assumed to be the backend_domid):
  * 
  *     <domid>/<vhost>/feature-host = "0"
  *     <domid>/<vhost>/frontend = "/local/domain/<domid>/device/vscsi/0"
