@@ -2021,22 +2021,18 @@ static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
                                               const char *be_path,
                                               int dev_wait)
 {
-    char *path, *val;
+    char *dir, *path, *val;
 
-    path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
+    dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
+    path = GCSPRINTF("%s/state", dir);
     val = libxl__xs_read(gc, t, path);
     LOG(DEBUG, "%s is %s", path, val);
     if (val && strcmp(val, GCSPRINTF("%d", dev_wait)) == 0) {
-        path = GCSPRINTF("%s/vscsi-devs/dev-%u/state", be_path, v->vscsi_dev_id);
-        xs_rm(CTX->xsh, t, path);
-        path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-devname", be_path, v->vscsi_dev_id);
-        xs_rm(CTX->xsh, t, path);
-        path = GCSPRINTF("%s/vscsi-devs/dev-%u/p-dev", be_path, v->vscsi_dev_id);
-        xs_rm(CTX->xsh, t, path);
-        path = GCSPRINTF("%s/vscsi-devs/dev-%u/v-dev", be_path, v->vscsi_dev_id);
-        xs_rm(CTX->xsh, t, path);
-        path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
-        xs_rm(CTX->xsh, t, path);
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/state", dir));
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/p-devname", dir));
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/p-dev", dir));
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/v-dev", dir));
+        xs_rm(CTX->xsh, t, dir);
     } else {
         LOG(ERROR, "%s has %s, expected %d", path, val, dev_wait);
     }
