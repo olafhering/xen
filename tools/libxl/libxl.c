@@ -2043,18 +2043,20 @@ static int libxl__device_vscsi_dev_backend_set(libxl__gc *gc,
                                                flexarray_t *back)
 {
     int rc;
+    char *dir;
     libxl_vscsi_hctl *hctl;
 
+    dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsi_dev_id);
     switch (v->pdev.type) {
         case LIBXL_VSCSI_PDEV_TYPE_WWN:
             flexarray_append_pair(back,
-                                  GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
+                                  GCSPRINTF("%s/p-dev", dir),
                                   v->pdev.u.wwn.m);
             break;
         case LIBXL_VSCSI_PDEV_TYPE_HCTL:
             hctl = &v->pdev.u.hctl.m;
             flexarray_append_pair(back,
-                                  GCSPRINTF("vscsi-devs/dev-%u/p-dev", v->vscsi_dev_id),
+                                  GCSPRINTF("%s/p-dev", dir),
                                   GCSPRINTF("%u:%u:%u:%u", hctl->hst, hctl->chn, hctl->tgt, hctl->lun));
             break;
         case LIBXL_VSCSI_PDEV_TYPE_INVALID:
@@ -2062,11 +2064,14 @@ static int libxl__device_vscsi_dev_backend_set(libxl__gc *gc,
             rc = ERROR_FAIL;
             goto out;
     }
-    flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/p-devname", v->vscsi_dev_id),
+    flexarray_append_pair(back,
+                          GCSPRINTF("%s/p-devname", dir),
                           v->pdev.p_devname);
-    flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/v-dev", v->vscsi_dev_id),
+    flexarray_append_pair(back,
+                          GCSPRINTF("%s/v-dev", dir),
                           GCSPRINTF("%u:%u:%u:%u", v->vdev.hst, v->vdev.chn, v->vdev.tgt, v->vdev.lun));
-    flexarray_append_pair(back, GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id),
+    flexarray_append_pair(back,
+                          GCSPRINTF("%s/state", dir),
                           GCSPRINTF("%d", XenbusStateInitialising));
     rc = 0;
 out:
