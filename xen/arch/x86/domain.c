@@ -339,7 +339,7 @@ static int setup_compat_l4(struct vcpu *v)
 
     l4tab = __map_domain_page(pg);
     clear_page(l4tab);
-    init_guest_l4_table(l4tab, v->domain);
+    init_guest_l4_table(l4tab, v->domain, 1);
     unmap_domain_page(l4tab);
 
     v->arch.guest_table = pagetable_from_page(pg);
@@ -971,7 +971,11 @@ int arch_set_info_guest(
         case -EINTR:
             rc = -ERESTART;
         case -ERESTART:
+            break;
         case 0:
+            if ( !compat && !VM_ASSIST(d, m2p_strict) &&
+                 !paging_mode_refcounts(d) )
+                fill_ro_mpt(cr3_gfn);
             break;
         default:
             if ( cr3_page == current->arch.old_guest_table )
@@ -1006,7 +1010,10 @@ int arch_set_info_guest(
                 default:
                     if ( cr3_page == current->arch.old_guest_table )
                         cr3_page = NULL;
+                    break;
                 case 0:
+                    if ( VM_ASSIST(d, m2p_strict) )
+                        zap_ro_mpt(cr3_gfn);
                     break;
                 }
             }
@@ -1444,8 +1451,6 @@ static void __context_switch(void)
     {
         memcpy(&p->arch.user_regs, stack_regs, CTXT_SWITCH_STACK_BYTES);
         vcpu_save_fpu(p);
-        if ( psr_cmt_enabled() )
-            psr_assoc_rmid(0);
         p->arch.ctxt_switch_from(p);
     }
 
@@ -1470,10 +1475,9 @@ static void __context_switch(void)
         }
         vcpu_restore_fpu_eager(n);
         n->arch.ctxt_switch_to(n);
-
-        if ( psr_cmt_enabled() && n->domain->arch.psr_rmid > 0 )
-            psr_assoc_rmid(n->domain->arch.psr_rmid);
     }
+
+    psr_ctxt_switch_to(n->domain);
 
     gdt = !is_pv_32on64_vcpu(n) ? per_cpu(gdt_table, cpu) :
                                   per_cpu(compat_gdt_table, cpu);

@@ -2511,7 +2511,7 @@ void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
     flexarray_append(back, "online");
     flexarray_append(back, "1");
     flexarray_append(back, "state");
-    flexarray_append(back, GCSPRINTF("%d", 1));
+    flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append(back, "handle");
     flexarray_append(back, GCSPRINTF("%d", vtpm->devid));
 
@@ -2523,7 +2523,7 @@ void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
     flexarray_append(front, "backend-id");
     flexarray_append(front, GCSPRINTF("%d", vtpm->backend_domid));
     flexarray_append(front, "state");
-    flexarray_append(front, GCSPRINTF("%d", 1));
+    flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append(front, "handle");
     flexarray_append(front, GCSPRINTF("%d", vtpm->devid));
 
@@ -2955,7 +2955,7 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
         flexarray_append(back, "bootable");
         flexarray_append(back, libxl__sprintf(gc, "%d", 1));
         flexarray_append(back, "state");
-        flexarray_append(back, libxl__sprintf(gc, "%d", 1));
+        flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
         flexarray_append(back, "dev");
         flexarray_append(back, disk->vdev);
         flexarray_append(back, "type");
@@ -2975,7 +2975,7 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
         flexarray_append(front, "backend-id");
         flexarray_append(front, libxl__sprintf(gc, "%d", disk->backend_domid));
         flexarray_append(front, "state");
-        flexarray_append(front, libxl__sprintf(gc, "%d", 1));
+        flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
         flexarray_append(front, "virtual-device");
         flexarray_append(front, libxl__sprintf(gc, "%d", device->devid));
         flexarray_append(front, "device-type");
@@ -3579,7 +3579,7 @@ static void local_device_attach_cb(libxl__egc *egc, libxl__ao_device *aodev)
     if (rc < 0)
         goto out;
     be_path = libxl__device_backend_path(gc, &device);
-    rc = libxl__wait_for_backend(gc, be_path, "4");
+    rc = libxl__wait_for_backend(gc, be_path, GCSPRINTF("%d", XenbusStateConnected));
     if (rc < 0)
         goto out;
 
@@ -3789,7 +3789,7 @@ void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
     flexarray_append(back, "online");
     flexarray_append(back, "1");
     flexarray_append(back, "state");
-    flexarray_append(back, libxl__sprintf(gc, "%d", 1));
+    flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
     if (nic->script)
         flexarray_append_pair(back, "script",
                               libxl__abs_path(gc, nic->script,
@@ -3830,7 +3830,7 @@ void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
     flexarray_append(front, "backend-id");
     flexarray_append(front, libxl__sprintf(gc, "%d", nic->backend_domid));
     flexarray_append(front, "state");
-    flexarray_append(front, libxl__sprintf(gc, "%d", 1));
+    flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append(front, "handle");
     flexarray_append(front, libxl__sprintf(gc, "%d", nic->devid));
     flexarray_append(front, "mac");
@@ -4116,7 +4116,7 @@ int libxl__device_console_add(libxl__gc *gc, uint32_t domid,
     flexarray_append(back, "online");
     flexarray_append(back, "1");
     flexarray_append(back, "state");
-    flexarray_append(back, libxl__sprintf(gc, "%d", 1));
+    flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append(back, "protocol");
     flexarray_append(back, LIBXL_XENCONSOLE_PROTOCOL);
 
@@ -4155,7 +4155,7 @@ int libxl__device_console_add(libxl__gc *gc, uint32_t domid,
         flexarray_append(ro_front, libxl__sprintf(gc, "%lu", state->console_mfn));
     } else {
         flexarray_append(front, "state");
-        flexarray_append(front, libxl__sprintf(gc, "%d", 1));
+        flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
         flexarray_append(front, "protocol");
         flexarray_append(front, LIBXL_XENCONSOLE_PROTOCOL);
     }
@@ -4452,12 +4452,12 @@ int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
     flexarray_append(back, "online");
     flexarray_append(back, "1");
     flexarray_append(back, "state");
-    flexarray_append(back, libxl__sprintf(gc, "%d", 1));
+    flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
 
     flexarray_append(front, "backend-id");
     flexarray_append(front, libxl__sprintf(gc, "%d", vkb->backend_domid));
     flexarray_append(front, "state");
-    flexarray_append(front, libxl__sprintf(gc, "%d", 1));
+    flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
 
     libxl__device_generic_add(gc, XBT_NULL, &device,
                               libxl__xs_kvs_of_flexarray(gc, back, back->count),
@@ -4548,7 +4548,7 @@ int libxl__device_vfb_add(libxl__gc *gc, uint32_t domid, libxl_device_vfb *vfb)
 
     flexarray_append_pair(back, "frontend-id", libxl__sprintf(gc, "%d", domid));
     flexarray_append_pair(back, "online", "1");
-    flexarray_append_pair(back, "state", libxl__sprintf(gc, "%d", 1));
+    flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append_pair(back, "vnc",
                           libxl_defbool_val(vfb->vnc.enable) ? "1" : "0");
     flexarray_append_pair(back, "vnclisten", vfb->vnc.listen);
@@ -4570,7 +4570,7 @@ int libxl__device_vfb_add(libxl__gc *gc, uint32_t domid, libxl_device_vfb *vfb)
 
     flexarray_append_pair(front, "backend-id",
                           libxl__sprintf(gc, "%d", vfb->backend_domid));
-    flexarray_append_pair(front, "state", libxl__sprintf(gc, "%d", 1));
+    flexarray_append_pair(front, "state", GCSPRINTF("%d", XenbusStateInitialising));
 
     libxl__device_generic_add(gc, XBT_NULL, &device,
                               libxl__xs_kvs_of_flexarray(gc, back, back->count),

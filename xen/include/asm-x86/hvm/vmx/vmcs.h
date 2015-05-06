@@ -62,7 +62,8 @@ struct ept_data {
     struct {
             u64 ept_mt :3,
                 ept_wl :3,
-                rsvd   :6,
+                ept_ad :1,  /* bit 6 - enable EPT A/D bits */
+                rsvd   :5,
                 asr    :52;
         };
         u64 eptp;
@@ -70,8 +71,12 @@ struct ept_data {
     cpumask_var_t synced_mask;
 };
 
+#define _VMX_DOMAIN_PML_ENABLED    0
+#define VMX_DOMAIN_PML_ENABLED     (1ul << _VMX_DOMAIN_PML_ENABLED)
 struct vmx_domain {
     unsigned long apic_access_mfn;
+    /* VMX_DOMAIN_* */
+    unsigned int status;
 };
 
 struct pi_desc {
@@ -84,6 +89,8 @@ struct pi_desc {
 #define ept_get_asr(ept)  ((ept)->asr)
 #define ept_get_eptp(ept) ((ept)->eptp)
 #define ept_get_synced_mask(ept) ((ept)->synced_mask)
+
+#define NR_PML_ENTRIES   512
 
 struct arch_vmx_struct {
     /* Virtual address of VMCS. */
@@ -142,6 +149,8 @@ struct arch_vmx_struct {
     /* Bitmap to control vmexit policy for Non-root VMREAD/VMWRITE */
     struct page_info     *vmread_bitmap;
     struct page_info     *vmwrite_bitmap;
+
+    struct page_info     *pml_pg;
 };
 
 int vmx_create_vmcs(struct vcpu *v);
@@ -215,6 +224,7 @@ extern u32 vmx_vmentry_control;
 #define SECONDARY_EXEC_ENABLE_INVPCID           0x00001000
 #define SECONDARY_EXEC_ENABLE_VMFUNC            0x00002000
 #define SECONDARY_EXEC_ENABLE_VMCS_SHADOWING    0x00004000
+#define SECONDARY_EXEC_ENABLE_PML               0x00020000
 extern u32 vmx_secondary_exec_control;
 
 #define VMX_EPT_EXEC_ONLY_SUPPORTED             0x00000001
@@ -226,6 +236,7 @@ extern u32 vmx_secondary_exec_control;
 #define VMX_EPT_INVEPT_INSTRUCTION              0x00100000
 #define VMX_EPT_INVEPT_SINGLE_CONTEXT           0x02000000
 #define VMX_EPT_INVEPT_ALL_CONTEXT              0x04000000
+#define VMX_EPT_AD_BIT                          0x00200000
 
 #define VMX_MISC_VMWRITE_ALL                    0x20000000
 
@@ -274,6 +285,8 @@ extern u32 vmx_secondary_exec_control;
     (vmx_pin_based_exec_control & PIN_BASED_POSTED_INTERRUPT)
 #define cpu_has_vmx_vmcs_shadowing \
     (vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_VMCS_SHADOWING)
+#define cpu_has_vmx_pml \
+    (vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_PML)
 
 #define VMCS_RID_TYPE_MASK              0x80000000
 
@@ -318,6 +331,7 @@ enum vmcs_field {
     GUEST_LDTR_SELECTOR             = 0x0000080c,
     GUEST_TR_SELECTOR               = 0x0000080e,
     GUEST_INTR_STATUS               = 0x00000810,
+    GUEST_PML_INDEX                 = 0x00000812,
     HOST_ES_SELECTOR                = 0x00000c00,
     HOST_CS_SELECTOR                = 0x00000c02,
     HOST_SS_SELECTOR                = 0x00000c04,
@@ -331,6 +345,7 @@ enum vmcs_field {
     VM_EXIT_MSR_STORE_ADDR          = 0x00002006,
     VM_EXIT_MSR_LOAD_ADDR           = 0x00002008,
     VM_ENTRY_MSR_LOAD_ADDR          = 0x0000200a,
+    PML_ADDRESS                     = 0x0000200e,
     TSC_OFFSET                      = 0x00002010,
     VIRTUAL_APIC_PAGE_ADDR          = 0x00002012,
     APIC_ACCESS_ADDR                = 0x00002014,
@@ -484,6 +499,15 @@ static inline int vmx_add_host_load_msr(u32 msr)
 }
 
 DECLARE_PER_CPU(bool_t, vmxon);
+
+bool_t vmx_vcpu_pml_enabled(const struct vcpu *v);
+int vmx_vcpu_enable_pml(struct vcpu *v);
+void vmx_vcpu_disable_pml(struct vcpu *v);
+void vmx_vcpu_flush_pml_buffer(struct vcpu *v);
+bool_t vmx_domain_pml_enabled(const struct domain *d);
+int vmx_domain_enable_pml(struct domain *d);
+void vmx_domain_disable_pml(struct domain *d);
+void vmx_domain_flush_pml_buffers(struct domain *d);
 
 #endif /* ASM_X86_HVM_VMX_VMCS_H__ */
 

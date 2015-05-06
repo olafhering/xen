@@ -116,6 +116,29 @@ static int vmx_vcpu_initialise(struct vcpu *v)
         return rc;
     }
 
+    /*
+     * It's rare but still possible that domain has already been in log-dirty
+     * mode when vcpu is being created (commented by Tim), in which case we
+     * should enable PML for this vcpu if PML has been enabled for the domain,
+     * and failure to enable results in failure of creating this vcpu.
+     *
+     * Note even there's no vcpu created for the domain, vmx_domain_enable_pml
+     * will return successful in which case vmx_domain_pml_enabled will also
+     * return true. And even this is the first vcpu to be created with
+     * vmx_domain_pml_enabled being true, failure of enabling PML still results
+     * in failure of creating vcpu, to avoid complicated logic to revert PML
+     * style EPT table to non-PML style EPT table.
+     */
+    if ( vmx_domain_pml_enabled(v->domain) )
+    {
+        if ( (rc = vmx_vcpu_enable_pml(v)) != 0 )
+        {
+            dprintk(XENLOG_ERR, "%pv: Failed to enable PML.\n", v);
+            vmx_destroy_vmcs(v);
+            return rc;
+        }
+    }
+
     vpmu_initialise(v);
 
     vmx_install_vlapic_mapping(v);
@@ -129,6 +152,14 @@ static int vmx_vcpu_initialise(struct vcpu *v)
 
 static void vmx_vcpu_destroy(struct vcpu *v)
 {
+    /*
+     * There are cases that domain still remains in log-dirty mode when it is
+     * about to be destroyed (ex, user types 'xl destroy <dom>'), in which case
+     * we should disable PML manually here. Note that vmx_vcpu_destroy is called
+     * prior to vmx_domain_destroy so we need to disable PML for each vcpu
+     * separately here.
+     */
+    vmx_vcpu_disable_pml(v);
     vmx_destroy_vmcs(v);
     vpmu_destroy(v);
     passive_domain_destroy(v);
@@ -3176,6 +3207,10 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
 
     case EXIT_REASON_APIC_WRITE:
         vmx_handle_apic_write();
+        break;
+
+    case EXIT_REASON_PML_FULL:
+        vmx_vcpu_flush_pml_buffer(v);
         break;
 
     case EXIT_REASON_ACCESS_GDTR_OR_IDTR:

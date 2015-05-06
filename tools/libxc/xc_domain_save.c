@@ -894,6 +894,12 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom, uint32_t max_iter
 
     int completed = 0;
 
+    if ( getenv("XG_MIGRATION_V2") )
+    {
+        return xc_domain_save2(xch, io_fd, dom, max_iters,
+                               max_factor, flags, callbacks, hvm);
+    }
+
     DPRINTF("%s: starting save of domid %u", __func__, dom);
 
     if ( hvm && !callbacks->switch_qemu_logdirty )
@@ -1131,7 +1137,8 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom, uint32_t max_iter
                  "Saving memory: iter %d (last sent %u skipped %u)",
                  iter, sent_this_iter, skip_this_iter);
 
-        xc_report_progress_start(xch, reportbuf, dinfo->p2m_size);
+        xc_set_progress_prefix(xch, reportbuf);
+        xc_report_progress_step(xch, 0, dinfo->p2m_size);
 
         iter++;
         sent_this_iter = 0;

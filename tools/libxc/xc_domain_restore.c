@@ -1502,6 +1502,14 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
     struct restore_ctx *ctx = &_ctx;
     struct domain_info_context *dinfo = &ctx->dinfo;
 
+    if ( getenv("XG_MIGRATION_V2") )
+    {
+        return xc_domain_restore2(
+            xch, io_fd, dom, store_evtchn, store_mfn,
+            store_domid, console_evtchn, console_mfn, console_domid,
+            hvm,  pae,  superpages, checkpointed_stream, callbacks);
+    }
+
     DPRINTF("%s: starting restore of new domid %u", __func__, dom);
 
     pagebuf_init(&pagebuf);
@@ -1622,7 +1630,8 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
         goto out;
     }
 
-    xc_report_progress_start(xch, "Reloading memory pages", dinfo->p2m_size);
+    xc_set_progress_prefix(xch, "Reloading memory pages");
+    xc_report_progress_step(xch, 0, dinfo->p2m_size);
 
     /*
      * Now simply read each saved frame into its new machine frame.
@@ -2328,7 +2337,10 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
                                     HVM_PARAM_PAE_ENABLED, pae))
          || (frc = xc_hvm_param_set(xch, dom,
                                     HVM_PARAM_STORE_EVTCHN,
-                                    store_evtchn)) )
+                                    store_evtchn))
+         || (frc = xc_hvm_param_set(xch, dom,
+                                    HVM_PARAM_CONSOLE_EVTCHN,
+                                    console_evtchn)) )
     {
         PERROR("error setting HVM params: %i", frc);
         goto out;

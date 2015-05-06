@@ -160,6 +160,7 @@ static paddr_t __p2m_lookup(struct domain *d, paddr_t paddr, p2m_type_t *t)
     p2m_type_t _t;
     unsigned int level, root_table;
 
+    ASSERT(spin_is_locked(&p2m->lock));
     BUILD_BUG_ON(THIRD_MASK != PAGE_MASK);
 
     /* Allow t to be NULL */
@@ -947,6 +948,7 @@ static int apply_p2m_changes(struct domain *d,
     const unsigned long sgfn = paddr_to_pfn(start_gpaddr),
                         egfn = paddr_to_pfn(end_gpaddr);
     const unsigned int preempt_count_limit = (op == MEMACCESS) ? 1 : 0x2000;
+    const bool_t preempt = !is_idle_vcpu(current);
     bool_t flush = false;
     bool_t flush_pt;
 
@@ -979,7 +981,8 @@ static int apply_p2m_changes(struct domain *d,
          * always make at least one pass as long as preempt_count_limit is
          * initialized with a value >= 1.
          */
-        if ( count >= preempt_count_limit && hypercall_preempt_check() )
+        if ( preempt && count >= preempt_count_limit
+             && hypercall_preempt_check() )
         {
             switch ( op )
             {

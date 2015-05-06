@@ -64,6 +64,36 @@ integer_param("ple_gap", ple_gap);
 static unsigned int __read_mostly ple_window = 4096;
 integer_param("ple_window", ple_window);
 
+static bool_t __read_mostly opt_pml_enabled = 0;
+
+/*
+ * The 'ept' parameter controls functionalities that depend on, or impact the
+ * EPT mechanism. Optional comma separated value may contain:
+ *
+ *  pml                 Enable PML
+ */
+static void __init parse_ept_param(char *s)
+{
+    char *ss;
+
+    do {
+        bool_t val = !!strncmp(s, "no-", 3);
+
+        if ( !val )
+            s += 3;
+
+        ss = strchr(s, ',');
+        if ( ss )
+            *ss = '\0';
+
+        if ( !strcmp(s, "pml") )
+            opt_pml_enabled = val;
+
+        s = ss + 1;
+    } while ( ss );
+}
+custom_param("ept", parse_ept_param);
+
 /* Dynamic (run-time adjusted) execution control flags. */
 u32 vmx_pin_based_exec_control __read_mostly;
 u32 vmx_cpu_based_exec_control __read_mostly;
@@ -110,6 +140,7 @@ static void __init vmx_display_features(void)
     P(cpu_has_vmx_virtual_intr_delivery, "Virtual Interrupt Delivery");
     P(cpu_has_vmx_posted_intr_processing, "Posted Interrupt Processing");
     P(cpu_has_vmx_vmcs_shadowing, "VMCS shadowing");
+    P(cpu_has_vmx_pml, "Page Modification Logging");
 #undef P
 
     if ( !printed )
@@ -207,6 +238,8 @@ static int vmx_init_vmcs_config(void)
             opt |= SECONDARY_EXEC_ENABLE_VPID;
         if ( opt_unrestricted_guest_enabled )
             opt |= SECONDARY_EXEC_UNRESTRICTED_GUEST;
+        if ( opt_pml_enabled )
+            opt |= SECONDARY_EXEC_ENABLE_PML;
 
         /*
          * "APIC Register Virtualization" and "Virtual Interrupt Delivery"
@@ -253,6 +286,10 @@ static int vmx_init_vmcs_config(void)
          */
         if ( !(_vmx_ept_vpid_cap & VMX_VPID_INVVPID_ALL_CONTEXT) )
             _vmx_secondary_exec_control &= ~SECONDARY_EXEC_ENABLE_VPID;
+
+        /* EPT A/D bits is required for PML */
+        if ( !(_vmx_ept_vpid_cap & VMX_EPT_AD_BIT) )
+            _vmx_secondary_exec_control &= ~SECONDARY_EXEC_ENABLE_PML;
     }
 
     if ( _vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_EPT )
@@ -272,6 +309,14 @@ static int vmx_init_vmcs_config(void)
                 ~(SECONDARY_EXEC_ENABLE_EPT |
                   SECONDARY_EXEC_UNRESTRICTED_GUEST);
     }
+
+    /* PML cannot be supported if EPT is not used */
+    if ( !(_vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_EPT) )
+        _vmx_secondary_exec_control &= ~SECONDARY_EXEC_ENABLE_PML;
+
+    /* Turn off opt_pml_enabled if PML feature is not present */
+    if ( !(_vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_PML) )
+        opt_pml_enabled = 0;
 
     if ( (_vmx_secondary_exec_control & SECONDARY_EXEC_PAUSE_LOOP_EXITING) &&
           ple_gap == 0 )
@@ -1009,6 +1054,9 @@ static int construct_vmcs(struct vcpu *v)
         __vmwrite(POSTED_INTR_NOTIFICATION_VECTOR, posted_intr_vector);
     }
 
+    /* Disable PML anyway here as it will only be enabled in log dirty mode */
+    v->arch.hvm_vmx.secondary_exec_control &= ~SECONDARY_EXEC_ENABLE_PML;
+
     /* Host data selectors. */
     __vmwrite(HOST_SS_SELECTOR, __HYPERVISOR_DS);
     __vmwrite(HOST_DS_SELECTOR, __HYPERVISOR_DS);
@@ -1274,6 +1322,185 @@ void vmx_clear_eoi_exit_bitmap(struct vcpu *v, u8 vector)
     if ( test_and_clear_bit(vector, v->arch.hvm_vmx.eoi_exit_bitmap) )
         set_bit(vector / BITS_PER_LONG,
                 &v->arch.hvm_vmx.eoi_exitmap_changed);
+}
+
+bool_t vmx_vcpu_pml_enabled(const struct vcpu *v)
+{
+    return !!(v->arch.hvm_vmx.secondary_exec_control &
+              SECONDARY_EXEC_ENABLE_PML);
+}
+
+int vmx_vcpu_enable_pml(struct vcpu *v)
+{
+    if ( vmx_vcpu_pml_enabled(v) )
+        return 0;
+
+    v->arch.hvm_vmx.pml_pg = v->domain->arch.paging.alloc_page(v->domain);
+    if ( !v->arch.hvm_vmx.pml_pg )
+        return -ENOMEM;
+
+    vmx_vmcs_enter(v);
+
+    __vmwrite(PML_ADDRESS, page_to_mfn(v->arch.hvm_vmx.pml_pg) << PAGE_SHIFT);
+    __vmwrite(GUEST_PML_INDEX, NR_PML_ENTRIES - 1);
+
+    v->arch.hvm_vmx.secondary_exec_control |= SECONDARY_EXEC_ENABLE_PML;
+
+    __vmwrite(SECONDARY_VM_EXEC_CONTROL,
+              v->arch.hvm_vmx.secondary_exec_control);
+
+    vmx_vmcs_exit(v);
+
+    return 0;
+}
+
+void vmx_vcpu_disable_pml(struct vcpu *v)
+{
+    if ( !vmx_vcpu_pml_enabled(v) )
+        return;
+
+    /* Make sure we don't lose any logged GPAs. */
+    vmx_vcpu_flush_pml_buffer(v);
+
+    vmx_vmcs_enter(v);
+
+    v->arch.hvm_vmx.secondary_exec_control &= ~SECONDARY_EXEC_ENABLE_PML;
+    __vmwrite(SECONDARY_VM_EXEC_CONTROL,
+              v->arch.hvm_vmx.secondary_exec_control);
+
+    vmx_vmcs_exit(v);
+
+    v->domain->arch.paging.free_page(v->domain, v->arch.hvm_vmx.pml_pg);
+    v->arch.hvm_vmx.pml_pg = NULL;
+}
+
+void vmx_vcpu_flush_pml_buffer(struct vcpu *v)
+{
+    uint64_t *pml_buf;
+    unsigned long pml_idx;
+
+    ASSERT((v == current) || (!vcpu_runnable(v) && !v->is_running));
+    ASSERT(vmx_vcpu_pml_enabled(v));
+
+    vmx_vmcs_enter(v);
+
+    __vmread(GUEST_PML_INDEX, &pml_idx);
+
+    /* Do nothing if PML buffer is empty. */
+    if ( pml_idx == (NR_PML_ENTRIES - 1) )
+        goto out;
+
+    pml_buf = __map_domain_page(v->arch.hvm_vmx.pml_pg);
+
+    /*
+     * PML index can be either 2^16-1 (buffer is full), or 0 ~ NR_PML_ENTRIES-1
+     * (buffer is not full), and in latter case PML index always points to next
+     * available entity.
+     */
+    if ( pml_idx >= NR_PML_ENTRIES )
+        pml_idx = 0;
+    else
+        pml_idx++;
+
+    for ( ; pml_idx < NR_PML_ENTRIES; pml_idx++ )
+    {
+        unsigned long gfn = pml_buf[pml_idx] >> PAGE_SHIFT;
+
+        /*
+         * Need to change type from log-dirty to normal memory for logged GFN.
+         * hap_track_dirty_vram depends on it to work. And we mark all logged
+         * GFNs to be dirty, as we cannot be sure whether it's safe to ignore
+         * GFNs on which p2m_change_type_one returns failure. The failure cases
+         * are very rare, and additional cost is negligible, but a missing mark
+         * is extremely difficult to debug.
+         */
+        p2m_change_type_one(v->domain, gfn, p2m_ram_logdirty, p2m_ram_rw);
+        paging_mark_gfn_dirty(v->domain, gfn);
+    }
+
+    unmap_domain_page(pml_buf);
+
+    /* Reset PML index */
+    __vmwrite(GUEST_PML_INDEX, NR_PML_ENTRIES - 1);
+
+ out:
+    vmx_vmcs_exit(v);
+}
+
+bool_t vmx_domain_pml_enabled(const struct domain *d)
+{
+    return !!(d->arch.hvm_domain.vmx.status & VMX_DOMAIN_PML_ENABLED);
+}
+
+/*
+ * This function enables PML for particular domain. It should be called when
+ * domain is paused.
+ *
+ * PML needs to be enabled globally for all vcpus of the domain, as PML buffer
+ * and PML index are pre-vcpu, but EPT table is shared by vcpus, therefore
+ * enabling PML on partial vcpus won't work.
+ */
+int vmx_domain_enable_pml(struct domain *d)
+{
+    struct vcpu *v;
+    int rc;
+
+    ASSERT(atomic_read(&d->pause_count));
+
+    if ( vmx_domain_pml_enabled(d) )
+        return 0;
+
+    for_each_vcpu( d, v )
+        if ( (rc = vmx_vcpu_enable_pml(v)) != 0 )
+            goto error;
+
+    d->arch.hvm_domain.vmx.status |= VMX_DOMAIN_PML_ENABLED;
+
+    return 0;
+
+ error:
+    for_each_vcpu( d, v )
+        if ( vmx_vcpu_pml_enabled(v) )
+            vmx_vcpu_disable_pml(v);
+    return rc;
+}
+
+/*
+ * Disable PML for particular domain. Called when domain is paused.
+ *
+ * The same as enabling PML for domain, disabling PML should be done for all
+ * vcpus at once.
+ */
+void vmx_domain_disable_pml(struct domain *d)
+{
+    struct vcpu *v;
+
+    ASSERT(atomic_read(&d->pause_count));
+
+    if ( !vmx_domain_pml_enabled(d) )
+        return;
+
+    for_each_vcpu( d, v )
+        vmx_vcpu_disable_pml(v);
+
+    d->arch.hvm_domain.vmx.status &= ~VMX_DOMAIN_PML_ENABLED;
+}
+
+/*
+ * Flush PML buffer of all vcpus, and update the logged dirty pages to log-dirty
+ * radix tree. Called when domain is paused.
+ */
+void vmx_domain_flush_pml_buffers(struct domain *d)
+{
+    struct vcpu *v;
+
+    ASSERT(atomic_read(&d->pause_count));
+
+    if ( !vmx_domain_pml_enabled(d) )
+        return;
+
+    for_each_vcpu( d, v )
+        vmx_vcpu_flush_pml_buffer(v);
 }
 
 int vmx_create_vmcs(struct vcpu *v)

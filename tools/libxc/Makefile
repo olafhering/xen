@@ -54,7 +54,18 @@ GUEST_SRCS-y :=
 GUEST_SRCS-y += xg_private.c xc_suspend.c
 ifeq ($(CONFIG_MIGRATE),y)
 GUEST_SRCS-y += xc_domain_restore.c xc_domain_save.c
+GUEST_SRCS-y += xc_sr_common.c
+GUEST_SRCS-$(CONFIG_X86) += xc_sr_common_x86.c
+GUEST_SRCS-$(CONFIG_X86) += xc_sr_common_x86_pv.c
+GUEST_SRCS-$(CONFIG_X86) += xc_sr_restore_x86_pv.c
+GUEST_SRCS-$(CONFIG_X86) += xc_sr_restore_x86_hvm.c
+GUEST_SRCS-$(CONFIG_X86) += xc_sr_save_x86_pv.c
+GUEST_SRCS-$(CONFIG_X86) += xc_sr_save_x86_hvm.c
+GUEST_SRCS-y += xc_sr_restore.c
+GUEST_SRCS-y += xc_sr_save.c
 GUEST_SRCS-y += xc_offline_page.c xc_compression.c
+$(patsubst %.c,%.o,$(GUEST_SRCS-y)): CFLAGS += -DXG_LIBXL_HVM_COMPAT
+$(patsubst %.c,%.opic,$(GUEST_SRCS-y)): CFLAGS += -DXG_LIBXL_HVM_COMPAT
 else
 GUEST_SRCS-y += xc_nomigrate.c
 endif
