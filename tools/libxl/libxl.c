@@ -2217,8 +2217,8 @@ static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
 
         /* Append new device or trigger removal */
         for (i = 0; i < vscsi->num_vscsi_devs; i++) {
-            v = vscsi->vscsi_devs + i;
             unsigned int nb = 0;
+            v = vscsi->vscsi_devs + i;
             dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
             /* Preserve existing device */
             if (libxl__xs_directory(gc, XBT_NULL, dev_path, &nb) && nb) {
