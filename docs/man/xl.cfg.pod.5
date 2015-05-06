@@ -550,7 +550,7 @@ No options recognized.
 
 The dom0 device in either /dev/scsidev or pHOST:CHANNEL:TARGET:LUN notation.
 
-Its recommended to use persistent names "/dev/disk/by-*/*" to refer to a "pdev".
+It's recommended to use persistent names "/dev/disk/by-*/*" to refer to a "pdev".
 The toolstack will translate this internally to "h:c:t:l" notation, which is how
 the backend driver will access the device. Using the "h:c:t:l" notation for
 "pdev" in domU.cfg is discouraged because this value will change across reboots,
