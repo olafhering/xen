@@ -15,6 +15,8 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 #include "libxl_internal.h"
 
+#define XLU_WWN_LEN 16
+
 static int vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
     unsigned int hst, chn, tgt, lun;
@@ -34,7 +36,7 @@ static bool vscsi_wwn_valid(const char *p)
     bool ret = true;
     int i = 0;
 
-    for (i = 0; i < 16; i++, p++) {
+    for (i = 0; i < XLU_WWN_LEN; i++, p++) {
         if (*p >= '0' && *p <= '9')
             continue;
         if (*p >= 'a' && *p <= 'f')
@@ -53,7 +55,7 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_vscsi_dev *v_dev,
 {
     libxl_vscsi_hctl hctl;
     unsigned int lun;
-    char wwn[16 + 1];
+    char wwn[XLU_WWN_LEN + 1];
     bool parsed_ok = false;
 
     libxl_vscsi_hctl_init(&hctl);
