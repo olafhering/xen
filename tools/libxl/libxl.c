@@ -2426,6 +2426,7 @@ int libxl_device_vscsi_remove(libxl_ctx *ctx, uint32_t domid,
     aodev->dev = device;
     aodev->callback = device_addrm_aocomplete;
     aodev->force = 0;
+    aodev->update_json = true;
 
     for (i = 0; i < vscsi->num_vscsi_devs; i++) {
         if (vscsi->vscsi_devs[i].remove)
