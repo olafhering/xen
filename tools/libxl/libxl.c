@@ -2018,7 +2018,7 @@ static int libxl__resolve_domid(libxl__gc *gc, const char *name,
 static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
                                               libxl_vscsi_dev *v,
                                               xs_transaction_t t,
-                                              char *be_path,
+                                              const char *be_path,
                                               int dev_wait)
 {
     char *path, *val;
