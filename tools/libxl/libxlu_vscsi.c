@@ -485,8 +485,15 @@ out:
 static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
                                 libxl_vscsi_dev *dev)
 {
-    int rc;
-    libxl_vscsi_dev *devs;
+    int rc, num;
+    libxl_vscsi_dev *devs, *tmp;
+    libxl_devid next_vscsi_dev_id = 0;
+
+    for (num = 0; num < hst->num_vscsi_devs; num++) {
+        tmp = hst->vscsi_devs + num;
+        if (next_vscsi_dev_id <= tmp->vscsi_dev_id)
+            next_vscsi_dev_id = tmp->vscsi_dev_id + 1;
+    }
 
     devs = realloc(hst->vscsi_devs, sizeof(*dev) * (hst->num_vscsi_devs + 1));
     if (!devs) {
@@ -496,10 +503,9 @@ static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
 
     hst->vscsi_devs = devs;
     libxl_vscsi_dev_init(hst->vscsi_devs + hst->num_vscsi_devs);
-    dev->vscsi_dev_id = hst->next_vscsi_dev_id;
+    dev->vscsi_dev_id = next_vscsi_dev_id;
     libxl_vscsi_dev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
     hst->num_vscsi_devs++;
-    hst->next_vscsi_dev_id++;
     rc = 0;
 out:
     return rc;
@@ -539,7 +545,6 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
     if (found_host == -1) {
         /* Not found, create new host */
-        new_host->next_vscsi_dev_id = 0;
         tmp = new_host;
     } else {
         tmp = vscsi_hosts + found_host;
@@ -689,7 +694,6 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
         libxl_device_vscsi_init(tmp);
 
         v_hst.devid = *num_vscsis;
-        v_hst.next_vscsi_dev_id = 0;
         libxl_device_vscsi_copy(ctx, tmp, &v_hst);
 
         rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);

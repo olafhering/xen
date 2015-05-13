@@ -140,9 +140,6 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
         /* Indication for caller that this v_dev is usable */
         if (parsed_ok) {
             v_dev->vscsi_dev_id = vscsi_dev_id;
-            if (vscsi_dev_id >= v_hst->next_vscsi_dev_id ||
-                v_hst->next_vscsi_dev_id == -1)
-                v_hst->next_vscsi_dev_id = vscsi_dev_id + 1;
             v_hst->v_hst = v_dev->vdev.hst;
         }
 

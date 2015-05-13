@@ -589,7 +589,6 @@ libxl_device_vscsi = Struct("device_vscsi", [
     ("devid",            libxl_devid),
     ("v_hst",            uint32),
     ("vscsi_devs",       Array(libxl_vscsi_dev, "num_vscsi_devs")),
-    ("next_vscsi_dev_id", libxl_devid),
     ("scsi_raw_cmds",     libxl_defbool),
     ])
 
