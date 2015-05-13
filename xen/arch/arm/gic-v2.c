@@ -616,20 +616,7 @@ static int gicv2_make_dt_node(const struct domain *d,
         return -FDT_ERR_XEN(ENOENT);
     }
 
-    res = fdt_begin_node(fdt, "interrupt-controller");
-    if ( res )
-        return res;
-
     res = fdt_property(fdt, "compatible", compatible, len);
-    if ( res )
-        return res;
-
-    res = fdt_property_cell(fdt, "#interrupt-cells", 3);
-    if ( res )
-        return res;
-
-    res = fdt_property(fdt, "interrupt-controller", NULL, 0);
-
     if ( res )
         return res;
 

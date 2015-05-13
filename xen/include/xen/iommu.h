@@ -65,6 +65,8 @@ int arch_iommu_domain_init(struct domain *d);
 int arch_iommu_populate_page_table(struct domain *d);
 void arch_iommu_check_autotranslated_hwdom(struct domain *d);
 
+int iommu_construct(struct domain *d);
+
 /* Function used internally, use iommu_domain_destroy */
 void iommu_teardown(struct domain *d);
 
@@ -115,7 +117,10 @@ void iommu_read_msi_from_ire(struct msi_desc *msi_desc, struct msi_msg *msg);
 int iommu_assign_dt_device(struct domain *d, struct dt_device_node *dev);
 int iommu_deassign_dt_device(struct domain *d, struct dt_device_node *dev);
 int iommu_dt_domain_init(struct domain *d);
-void iommu_dt_domain_destroy(struct domain *d);
+int iommu_release_dt_devices(struct domain *d);
+
+int iommu_do_dt_domctl(struct xen_domctl *, struct domain *,
+                       XEN_GUEST_HANDLE_PARAM(xen_domctl_t));
 
 #endif /* HAS_DEVICE_TREE */
 

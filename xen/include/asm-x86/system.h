@@ -41,25 +41,25 @@ static always_inline unsigned long __xchg(
     case 1:
         asm volatile ( "xchgb %b0,%1"
                        : "=q" (x)
-                       : "m" (*__xg((volatile void *)ptr)), "0" (x)
+                       : "m" (*__xg(ptr)), "0" (x)
                        : "memory" );
         break;
     case 2:
         asm volatile ( "xchgw %w0,%1"
                        : "=r" (x)
-                       : "m" (*__xg((volatile void *)ptr)), "0" (x)
+                       : "m" (*__xg(ptr)), "0" (x)
                        : "memory" );
         break;
     case 4:
         asm volatile ( "xchgl %k0,%1"
                        : "=r" (x)
-                       : "m" (*__xg((volatile void *)ptr)), "0" (x)
+                       : "m" (*__xg(ptr)), "0" (x)
                        : "memory" );
         break;
     case 8:
         asm volatile ( "xchgq %0,%1"
                        : "=r" (x)
-                       : "m" (*__xg((volatile void *)ptr)), "0" (x)
+                       : "m" (*__xg(ptr)), "0" (x)
                        : "memory" );
         break;
     }
@@ -81,28 +81,28 @@ static always_inline unsigned long __cmpxchg(
     case 1:
         asm volatile ( "lock; cmpxchgb %b1,%2"
                        : "=a" (prev)
-                       : "q" (new), "m" (*__xg((volatile void *)ptr)),
+                       : "q" (new), "m" (*__xg(ptr)),
                        "0" (old)
                        : "memory" );
         return prev;
     case 2:
         asm volatile ( "lock; cmpxchgw %w1,%2"
                        : "=a" (prev)
-                       : "r" (new), "m" (*__xg((volatile void *)ptr)),
+                       : "r" (new), "m" (*__xg(ptr)),
                        "0" (old)
                        : "memory" );
         return prev;
     case 4:
         asm volatile ( "lock; cmpxchgl %k1,%2"
                        : "=a" (prev)
-                       : "r" (new), "m" (*__xg((volatile void *)ptr)),
+                       : "r" (new), "m" (*__xg(ptr)),
                        "0" (old)
                        : "memory" );
         return prev;
     case 8:
         asm volatile ( "lock; cmpxchgq %1,%2"
                        : "=a" (prev)
-                       : "r" (new), "m" (*__xg((volatile void *)ptr)),
+                       : "r" (new), "m" (*__xg(ptr)),
                        "0" (old)
                        : "memory" );
         return prev;
@@ -116,6 +116,52 @@ static always_inline unsigned long __cmpxchg(
     ((__typeof__(*(ptr)))__cmpxchg((ptr),(unsigned long)__o,            \
                                    (unsigned long)__n,sizeof(*(ptr)))); \
 })
+
+/*
+ * Undefined symbol to cause link failure if a wrong size is used with
+ * arch_fetch_and_add().
+ */
+extern unsigned long __bad_fetch_and_add_size(void);
+
+static always_inline unsigned long __xadd(
+    volatile void *ptr, unsigned long v, int size)
+{
+    switch ( size )
+    {
+    case 1:
+        asm volatile ( "lock; xaddb %b0,%1"
+                       : "+r" (v), "+m" (*__xg(ptr))
+                       :: "memory");
+        return v;
+    case 2:
+        asm volatile ( "lock; xaddw %w0,%1"
+                       : "+r" (v), "+m" (*__xg(ptr))
+                       :: "memory");
+        return v;
+    case 4:
+        asm volatile ( "lock; xaddl %k0,%1"
+                       : "+r" (v), "+m" (*__xg(ptr))
+                       :: "memory");
+        return v;
+    case 8:
+        asm volatile ( "lock; xaddq %q0,%1"
+                       : "+r" (v), "+m" (*__xg(ptr))
+                       :: "memory");
+
+        return v;
+    default:
+        return __bad_fetch_and_add_size();
+    }
+}
+
+/*
+ * Atomically add @v to the 1, 2, 4, or 8 byte value at @ptr.  Returns
+ * the previous value.
+ *
+ * This is a full memory barrier.
+ */
+#define arch_fetch_and_add(ptr, v) \
+    ((typeof(*(ptr)))__xadd(ptr, (typeof(*(ptr)))(v), sizeof(*(ptr))))
 
 /*
  * Both Intel and AMD agree that, from a programmer's viewpoint:

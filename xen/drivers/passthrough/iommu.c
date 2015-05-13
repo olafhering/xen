@@ -187,6 +187,32 @@ void iommu_teardown(struct domain *d)
     tasklet_schedule(&iommu_pt_cleanup_tasklet);
 }
 
+int iommu_construct(struct domain *d)
+{
+    if ( need_iommu(d) > 0 )
+        return 0;
+
+    if ( !iommu_use_hap_pt(d) )
+    {
+        int rc;
+
+        rc = arch_iommu_populate_page_table(d);
+        if ( rc )
+            return rc;
+    }
+
+    d->need_iommu = 1;
+    /*
+     * There may be dirty cache lines when a device is assigned
+     * and before need_iommu(d) becoming true, this will cause
+     * memory_type_changed lose effect if memory type changes.
+     * Call memory_type_changed here to amend this.
+     */
+    memory_type_changed(d);
+
+    return 0;
+}
+
 void iommu_domain_destroy(struct domain *d)
 {
     struct hvm_iommu *hd = domain_hvm_iommu(d);
@@ -309,13 +335,18 @@ int iommu_do_domctl(
     struct xen_domctl *domctl, struct domain *d,
     XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
-    int ret = -ENOSYS;
+    int ret = -ENODEV;
 
     if ( !iommu_enabled )
         return -ENOSYS;
 
 #ifdef HAS_PCI
     ret = iommu_do_pci_domctl(domctl, d, u_domctl);
+#endif
+
+#ifdef HAS_DEVICE_TREE
+    if ( ret == -ENODEV )
+        ret = iommu_do_dt_domctl(domctl, d, u_domctl);
 #endif
 
     return ret;

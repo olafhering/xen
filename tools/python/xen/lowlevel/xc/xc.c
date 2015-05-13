@@ -1220,30 +1220,26 @@ static PyObject *pyxc_getcpuinfo(XcObject *self, PyObject *args, PyObject *kwds)
 
 static PyObject *pyxc_topologyinfo(XcObject *self)
 {
-    xc_cputopoinfo_t tinfo = { 0 };
-    unsigned i;
+    xc_cputopo_t *cputopo = NULL;
+    unsigned i, num_cpus;
     PyObject *ret_obj = NULL;
     PyObject *cpu_to_core_obj, *cpu_to_socket_obj, *cpu_to_node_obj;
-    DECLARE_HYPERCALL_BUFFER(xen_sysctl_cputopo_t, cputopo);
 
-    set_xen_guest_handle(tinfo.cputopo, HYPERCALL_BUFFER_NULL);
-    if ( xc_cputopoinfo(self->xc_handle, &tinfo) != 0 )
+    if ( xc_cputopoinfo(self->xc_handle, &num_cpus, NULL) != 0 )
         goto out;
 
-    cputopo = xc_hypercall_buffer_alloc(self->xc_handle, cputopo,
-                                        sizeof(*cputopo) * tinfo.num_cpus);
+    cputopo = calloc(num_cpus, sizeof(*cputopo));
     if ( cputopo == NULL )
     	goto out;
 
-    set_xen_guest_handle(tinfo.cputopo, cputopo);
-    if ( xc_cputopoinfo(self->xc_handle, &tinfo) != 0 )
+    if ( xc_cputopoinfo(self->xc_handle, &num_cpus, cputopo) != 0 )
         goto out;
 
     /* Construct cpu-to-* lists. */
     cpu_to_core_obj = PyList_New(0);
     cpu_to_socket_obj = PyList_New(0);
     cpu_to_node_obj = PyList_New(0);
-    for ( i = 0; i < tinfo.num_cpus; i++ )
+    for ( i = 0; i < num_cpus; i++ )
     {
         if ( cputopo[i].core == XEN_INVALID_CORE_ID )
         {
@@ -1279,7 +1275,7 @@ static PyObject *pyxc_topologyinfo(XcObject *self)
         }
     }
 
-    ret_obj = Py_BuildValue("{s:i}", "max_cpu_index", tinfo.num_cpus + 1);
+    ret_obj = Py_BuildValue("{s:i}", "max_cpu_index", num_cpus + 1);
 
     PyDict_SetItemString(ret_obj, "cpu_to_core", cpu_to_core_obj);
     Py_DECREF(cpu_to_core_obj);
@@ -1291,39 +1287,29 @@ static PyObject *pyxc_topologyinfo(XcObject *self)
     Py_DECREF(cpu_to_node_obj);
 
 out:
-    xc_hypercall_buffer_free(self->xc_handle, cputopo);
+    free(cputopo);
     return ret_obj ? ret_obj : pyxc_error_to_exception(self->xc_handle);
 }
 
 static PyObject *pyxc_numainfo(XcObject *self)
 {
-    xc_numainfo_t ninfo = { 0 };
-    unsigned i, j;
+    unsigned i, j, num_nodes;
     uint64_t free_heap;
     PyObject *ret_obj = NULL, *node_to_node_dist_list_obj;
     PyObject *node_to_memsize_obj, *node_to_memfree_obj;
     PyObject *node_to_dma32_mem_obj, *node_to_node_dist_obj;
-    DECLARE_HYPERCALL_BUFFER(xen_sysctl_meminfo_t, meminfo);
-    DECLARE_HYPERCALL_BUFFER(uint32_t, distance);
+    xc_meminfo_t *meminfo = NULL;
+    uint32_t *distance = NULL;
 
-    set_xen_guest_handle(ninfo.meminfo, HYPERCALL_BUFFER_NULL);
-    set_xen_guest_handle(ninfo.distance, HYPERCALL_BUFFER_NULL);
-    if ( xc_numainfo(self->xc_handle, &ninfo) != 0 )
+    if ( xc_numainfo(self->xc_handle, &num_nodes, NULL, NULL) != 0 )
         goto out;
 
-    meminfo = xc_hypercall_buffer_alloc(self->xc_handle, meminfo,
-                                        sizeof(*meminfo) * ninfo.num_nodes);
-    if ( meminfo == NULL )
-        goto out;
-    distance = xc_hypercall_buffer_alloc(self->xc_handle, distance,
-                                         sizeof(*distance) *
-                                         ninfo.num_nodes * ninfo.num_nodes);
-    if ( distance == NULL )
+    meminfo = calloc(num_nodes, sizeof(*meminfo));
+    distance = calloc(num_nodes * num_nodes, sizeof(*distance));
+    if ( (meminfo == NULL) || (distance == NULL) )
         goto out;
 
-    set_xen_guest_handle(ninfo.meminfo, meminfo);
-    set_xen_guest_handle(ninfo.distance, distance);
-    if ( xc_numainfo(self->xc_handle, &ninfo) != 0 )
+    if ( xc_numainfo(self->xc_handle, &num_nodes, meminfo, distance) != 0 )
         goto out;
 
     /* Construct node-to-* lists. */
@@ -1331,7 +1317,7 @@ static PyObject *pyxc_numainfo(XcObject *self)
     node_to_memfree_obj = PyList_New(0);
     node_to_dma32_mem_obj = PyList_New(0);
     node_to_node_dist_list_obj = PyList_New(0);
-    for ( i = 0; i < ninfo.num_nodes; i++ )
+    for ( i = 0; i < num_nodes; i++ )
     {
         PyObject *pyint;
         unsigned invalid_node;
@@ -1355,9 +1341,9 @@ static PyObject *pyxc_numainfo(XcObject *self)
         /* Node to Node Distance */
         node_to_node_dist_obj = PyList_New(0);
         invalid_node = (meminfo[i].memsize == XEN_INVALID_MEM_SZ);
-        for ( j = 0; j < ninfo.num_nodes; j++ )
+        for ( j = 0; j < num_nodes; j++ )
         {
-            uint32_t dist = distance[i * ninfo.num_nodes + j];
+            uint32_t dist = distance[i * num_nodes + j];
             if ( invalid_node || (dist == XEN_INVALID_NODE_DIST) )
             {
                 PyList_Append(node_to_node_dist_obj, Py_None);
@@ -1373,7 +1359,7 @@ static PyObject *pyxc_numainfo(XcObject *self)
         Py_DECREF(node_to_node_dist_obj);
     }
 
-    ret_obj = Py_BuildValue("{s:i}", "max_node_index", ninfo.num_nodes + 1);
+    ret_obj = Py_BuildValue("{s:i}", "max_node_index", num_nodes + 1);
 
     PyDict_SetItemString(ret_obj, "node_memsize", node_to_memsize_obj);
     Py_DECREF(node_to_memsize_obj);
@@ -1389,8 +1375,8 @@ static PyObject *pyxc_numainfo(XcObject *self)
     Py_DECREF(node_to_node_dist_list_obj);
 
 out:
-    xc_hypercall_buffer_free(self->xc_handle, meminfo);
-    xc_hypercall_buffer_free(self->xc_handle, distance);
+    free(meminfo);
+    free(distance);
     return ret_obj ? ret_obj : pyxc_error_to_exception(self->xc_handle);
 }
 

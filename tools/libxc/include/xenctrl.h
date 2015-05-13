@@ -270,7 +270,7 @@ typedef struct xc_hypercall_buffer xc_hypercall_buffer_t;
  * transparently converted to the hypercall buffer as necessary.
  */
 #define DECLARE_HYPERCALL_BUFFER(_type, _name)                 \
-    _type *_name = NULL;                                       \
+    _type *(_name) = NULL;                                     \
     xc_hypercall_buffer_t XC__HYPERCALL_BUFFER_NAME(_name) = { \
         .hbuf = NULL,                                          \
         .param_shadow = NULL,                                  \
@@ -288,10 +288,10 @@ typedef struct xc_hypercall_buffer xc_hypercall_buffer_t;
  * required.
  */
 #define DECLARE_HYPERCALL_BUFFER_SHADOW(_type, _name, _hbuf)   \
-    _type *_name = _hbuf->hbuf;                                \
+    _type *(_name) = (_hbuf)->hbuf;                            \
     xc_hypercall_buffer_t XC__HYPERCALL_BUFFER_NAME(_name) = { \
         .hbuf = (void *)-1,                                    \
-        .param_shadow = _hbuf,                                 \
+        .param_shadow = (_hbuf),                               \
         HYPERCALL_BUFFER_INIT_NO_BOUNCE                        \
     }
 
@@ -302,7 +302,7 @@ typedef struct xc_hypercall_buffer xc_hypercall_buffer_t;
 #define DECLARE_HYPERCALL_BUFFER_ARGUMENT(_name)               \
     xc_hypercall_buffer_t XC__HYPERCALL_BUFFER_NAME(_name) = { \
         .hbuf = (void *)-1,                                    \
-        .param_shadow = _name,                                 \
+        .param_shadow = (_name),                               \
         HYPERCALL_BUFFER_INIT_NO_BOUNCE                        \
     }
 
@@ -322,15 +322,23 @@ typedef struct xc_hypercall_buffer xc_hypercall_buffer_t;
  * Set a xen_guest_handle in a type safe manner, ensuring that the
  * data pointer has been correctly allocated.
  */
-#undef set_xen_guest_handle
-#define set_xen_guest_handle(_hnd, _val)                        \
+#define set_xen_guest_handle_impl(_hnd, _val, _byte_off)        \
     do {                                                        \
         xc_hypercall_buffer_t _hcbuf_hnd1;                      \
         typeof(XC__HYPERCALL_BUFFER_NAME(_val)) *_hcbuf_hnd2 =  \
                 HYPERCALL_BUFFER(_val);                         \
         (void) (&_hcbuf_hnd1 == _hcbuf_hnd2);                   \
-        set_xen_guest_handle_raw(_hnd, (_hcbuf_hnd2)->hbuf);    \
+        set_xen_guest_handle_raw(_hnd,                          \
+                (_hcbuf_hnd2)->hbuf + (_byte_off));             \
     } while (0)
+
+#undef set_xen_guest_handle
+#define set_xen_guest_handle(_hnd, _val)                        \
+    set_xen_guest_handle_impl(_hnd, _val, 0)
+
+#define set_xen_guest_handle_offset(_hnd, _val, _off)           \
+    set_xen_guest_handle_impl(_hnd, _val,                       \
+            ((sizeof(*_val)*(_off))))
 
 /* Use with set_xen_guest_handle in place of NULL */
 extern xc_hypercall_buffer_t XC__HYPERCALL_BUFFER_NAME(HYPERCALL_BUFFER_NULL);
@@ -394,6 +402,15 @@ int xc_get_cpumap_size(xc_interface *xch);
 
 /* allocate a cpumap */
 xc_cpumap_t xc_cpumap_alloc(xc_interface *xch);
+
+/* clear an CPU from the cpumap. */
+void xc_cpumap_clearcpu(int cpu, xc_cpumap_t map);
+
+/* set an CPU in the cpumap. */
+void xc_cpumap_setcpu(int cpu, xc_cpumap_t map);
+
+/* Test whether the CPU in cpumap is set. */
+int xc_cpumap_testcpu(int cpu, xc_cpumap_t map);
 
 /*
  * NODEMAP handling
@@ -1229,8 +1246,10 @@ int xc_readconsolering(xc_interface *xch,
 int xc_send_debug_keys(xc_interface *xch, char *keys);
 
 typedef xen_sysctl_physinfo_t xc_physinfo_t;
-typedef xen_sysctl_cputopoinfo_t xc_cputopoinfo_t;
+typedef xen_sysctl_cputopo_t xc_cputopo_t;
 typedef xen_sysctl_numainfo_t xc_numainfo_t;
+typedef xen_sysctl_meminfo_t xc_meminfo_t;
+typedef xen_sysctl_pcitopoinfo_t xc_pcitopoinfo_t;
 
 typedef uint32_t xc_cpu_to_node_t;
 typedef uint32_t xc_cpu_to_socket_t;
@@ -1240,8 +1259,12 @@ typedef uint64_t xc_node_to_memfree_t;
 typedef uint32_t xc_node_to_node_dist_t;
 
 int xc_physinfo(xc_interface *xch, xc_physinfo_t *info);
-int xc_cputopoinfo(xc_interface *xch, xc_cputopoinfo_t *info);
-int xc_numainfo(xc_interface *xch, xc_numainfo_t *info);
+int xc_cputopoinfo(xc_interface *xch, unsigned *max_cpus,
+                   xc_cputopo_t *cputopo);
+int xc_numainfo(xc_interface *xch, unsigned *max_nodes,
+                xc_meminfo_t *meminfo, uint32_t *distance);
+int xc_pcitopoinfo(xc_interface *xch, unsigned num_devs,
+                   physdev_pci_device_t *devs, uint32_t *nodes);
 
 int xc_sched_id(xc_interface *xch,
                 int *sched_id);
@@ -1579,7 +1602,7 @@ int xc_tbuf_set_size(xc_interface *xch, unsigned long size);
  */
 int xc_tbuf_get_size(xc_interface *xch, unsigned long *size);
 
-int xc_tbuf_set_cpu_mask(xc_interface *xch, uint32_t mask);
+int xc_tbuf_set_cpu_mask(xc_interface *xch, xc_cpumap_t mask);
 
 int xc_tbuf_set_evt_mask(xc_interface *xch, uint32_t mask);
 
@@ -2058,6 +2081,16 @@ int xc_deassign_device(xc_interface *xch,
                      uint32_t domid,
                      uint32_t machine_sbdf);
 
+int xc_assign_dt_device(xc_interface *xch,
+                        uint32_t domid,
+                        char *path);
+int xc_test_assign_dt_device(xc_interface *xch,
+                             uint32_t domid,
+                             char *path);
+int xc_deassign_dt_device(xc_interface *xch,
+                          uint32_t domid,
+                          char *path);
+
 int xc_domain_memory_mapping(xc_interface *xch,
                              uint32_t domid,
                              unsigned long first_gfn,
@@ -2114,6 +2147,16 @@ int xc_domain_bind_pt_pci_irq(xc_interface *xch,
 int xc_domain_bind_pt_isa_irq(xc_interface *xch,
                               uint32_t domid,
                               uint8_t machine_irq);
+
+int xc_domain_bind_pt_spi_irq(xc_interface *xch,
+                              uint32_t domid,
+                              uint16_t vspi,
+                              uint16_t spi);
+
+int xc_domain_unbind_pt_spi_irq(xc_interface *xch,
+                                uint32_t domid,
+                                uint16_t vspi,
+                                uint16_t spi);
 
 int xc_domain_set_machine_address_size(xc_interface *xch,
 				       uint32_t domid,

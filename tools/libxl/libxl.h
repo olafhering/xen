@@ -535,6 +535,16 @@ typedef struct libxl__ctx libxl_ctx;
 #define LIBXL_HAVE_DOMINFO_OUTSTANDING_MEMKB 1
 
 /*
+ * LIBXL_HAVE_QXL
+ *
+ * If defined, then the libxl_vga_interface_type will contain another value:
+ * "QXL". This value define if qxl vga is supported.
+ *
+ * If this is not defined, the qxl vga support is missed.
+ */
+#define LIBXL_HAVE_QXL 1
+
+/*
  * LIBXL_HAVE_SPICE_VDAGENT
  *
  * If defined, then the libxl_spice_info structure will contain a boolean type:
@@ -749,6 +759,14 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  */
 #define LIBXL_HAVE_PSR_MBM 1
 #endif
+
+/*
+ * LIBXL_HAVE_PCITOPOLOGY
+ *
+ * If this is defined, then interface to query hypervisor about PCI device
+ * topology is available.
+ */
+#define LIBXL_HAVE_PCITOPOLOGY 1
 
 /*
  * LIBXL_HAVE_VSCSI
@@ -1148,6 +1166,10 @@ void libxl_vminfo_list_free(libxl_vminfo *list, int nb_vm);
 #define LIBXL_CPUTOPOLOGY_INVALID_ENTRY (~(uint32_t)0)
 libxl_cputopology *libxl_get_cpu_topology(libxl_ctx *ctx, int *nb_cpu_out);
 void libxl_cputopology_list_free(libxl_cputopology *, int nb_cpu);
+
+#define LIBXL_PCITOPOLOGY_INVALID_ENTRY (~(uint32_t)0)
+libxl_pcitopology *libxl_get_pci_topology(libxl_ctx *ctx, int *num_devs);
+void libxl_pcitopology_list_free(libxl_pcitopology *, int num_devs);
 
 #define LIBXL_NUMAINFO_INVALID_ENTRY (~(uint32_t)0)
 libxl_numainfo *libxl_get_numainfo(libxl_ctx *ctx, int *nr);

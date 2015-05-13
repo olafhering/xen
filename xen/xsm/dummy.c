@@ -81,6 +81,8 @@ void xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, map_domain_irq);
     set_to_dummy_if_null(ops, unmap_domain_pirq);
     set_to_dummy_if_null(ops, unmap_domain_irq);
+    set_to_dummy_if_null(ops, bind_pt_irq);
+    set_to_dummy_if_null(ops, unbind_pt_irq);
     set_to_dummy_if_null(ops, irq_permission);
     set_to_dummy_if_null(ops, iomem_permission);
     set_to_dummy_if_null(ops, iomem_mapping);
@@ -92,6 +94,12 @@ void xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, test_assign_device);
     set_to_dummy_if_null(ops, assign_device);
     set_to_dummy_if_null(ops, deassign_device);
+#endif
+
+#if defined(HAS_PASSTHROUGH) && defined(HAS_DEVICE_TREE)
+    set_to_dummy_if_null(ops, test_assign_dtdevice);
+    set_to_dummy_if_null(ops, assign_dtdevice);
+    set_to_dummy_if_null(ops, deassign_dtdevice);
 #endif
 
     set_to_dummy_if_null(ops, resource_plug_core);
@@ -149,8 +157,6 @@ void xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, mmuext_op);
     set_to_dummy_if_null(ops, update_va_mapping);
     set_to_dummy_if_null(ops, priv_mapping);
-    set_to_dummy_if_null(ops, bind_pt_irq);
-    set_to_dummy_if_null(ops, unbind_pt_irq);
     set_to_dummy_if_null(ops, ioport_permission);
     set_to_dummy_if_null(ops, ioport_mapping);
 #endif

@@ -248,6 +248,10 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
                 if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
                     b_info->video_memkb = 0;
                 break;
+            case LIBXL_VGA_INTERFACE_TYPE_QXL:
+                LOG(ERROR,"qemu upstream required for qxl vga");
+                return ERROR_INVAL;
+                break;
             case LIBXL_VGA_INTERFACE_TYPE_STD:
                 if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
                     b_info->video_memkb = 8 * 1024;
@@ -271,6 +275,15 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
             case LIBXL_VGA_INTERFACE_TYPE_NONE:
                 if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
                     b_info->video_memkb = 0;
+                break;
+            case LIBXL_VGA_INTERFACE_TYPE_QXL:
+                if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT) {
+                    b_info->video_memkb = (128 * 1024);
+                } else if (b_info->video_memkb < (128 * 1024)) {
+                    LOG(ERROR,
+                        "128 Mib videoram is the minimum for qxl default");
+                    return ERROR_INVAL;
+                }
                 break;
             case LIBXL_VGA_INTERFACE_TYPE_STD:
                 if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
@@ -1206,11 +1219,9 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
 
         LOG(DEBUG, "dom%d irq %d", domid, irq);
 
-        ret = irq >= 0 ? xc_physdev_map_pirq(CTX->xch, domid, irq, &irq)
+        ret = irq >= 0 ? libxl__arch_domain_map_irq(gc, domid, irq)
                        : -EOVERFLOW;
-        if (!ret)
-            ret = xc_domain_irq_permission(CTX->xch, domid, irq, 1);
-        if (ret < 0) {
+        if (ret) {
             LOGE(ERROR, "failed give dom%d access to irq %d", domid, irq);
             ret = ERROR_FAIL;
             goto error_out;

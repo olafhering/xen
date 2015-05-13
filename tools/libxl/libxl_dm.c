@@ -256,6 +256,8 @@ static int libxl__build_device_model_args_old(libxl__gc *gc,
         case LIBXL_VGA_INTERFACE_TYPE_NONE:
             flexarray_append_pair(dm_args, "-vga", "none");
             break;
+        case LIBXL_VGA_INTERFACE_TYPE_QXL:
+            break;
         }
 
         if (b_info->u.hvm.boot) {
@@ -638,6 +640,12 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                 libxl__sizekb_to_mb(b_info->video_memkb)));
             break;
         case LIBXL_VGA_INTERFACE_TYPE_NONE:
+            break;
+        case LIBXL_VGA_INTERFACE_TYPE_QXL:
+            /* QXL have 2 ram regions, ram and vram */
+            flexarray_append_pair(dm_args, "-device",
+                GCSPRINTF("qxl-vga,vram_size_mb=%"PRIu64",ram_size_mb=%"PRIu64,
+                (b_info->video_memkb/2/1024), (b_info->video_memkb/2/1024) ) );
             break;
         }
 
@@ -1515,7 +1523,6 @@ retry_transaction:
     }
 
     spawn->what = GCSPRINTF("domain %d device model", domid);
-    spawn->xspath = GCSPRINTF("/local/domain/0/device-model/%d/state", domid);
     spawn->xspath = libxl__device_model_xs_path(gc, LIBXL_TOOLSTACK_DOMID,
                                                 domid, "/state");
     spawn->timeout_ms = LIBXL_DEVICE_MODEL_START_TIMEOUT * 1000;

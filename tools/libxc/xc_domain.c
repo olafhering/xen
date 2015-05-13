@@ -67,6 +67,7 @@ int xc_domain_create(xc_interface *xch,
     /* No arch-specific configuration for now */
 #elif defined (__arm__) || defined(__aarch64__)
     config.gic_version = XEN_DOMCTL_CONFIG_GIC_DEFAULT;
+    config.nr_spis = 0;
 #else
     errno = ENOSYS;
     return -1;
@@ -1673,7 +1674,8 @@ int xc_assign_device(
 
     domctl.cmd = XEN_DOMCTL_assign_device;
     domctl.domain = domid;
-    domctl.u.assign_device.machine_sbdf = machine_sbdf;
+    domctl.u.assign_device.dev = XEN_DOMCTL_DEV_PCI;
+    domctl.u.assign_device.u.pci.machine_sbdf = machine_sbdf;
 
     return do_domctl(xch, &domctl);
 }
@@ -1722,7 +1724,8 @@ int xc_test_assign_device(
 
     domctl.cmd = XEN_DOMCTL_test_assign_device;
     domctl.domain = domid;
-    domctl.u.assign_device.machine_sbdf = machine_sbdf;
+    domctl.u.assign_device.dev = XEN_DOMCTL_DEV_PCI;
+    domctl.u.assign_device.u.pci.machine_sbdf = machine_sbdf;
 
     return do_domctl(xch, &domctl);
 }
@@ -1736,10 +1739,95 @@ int xc_deassign_device(
 
     domctl.cmd = XEN_DOMCTL_deassign_device;
     domctl.domain = domid;
-    domctl.u.assign_device.machine_sbdf = machine_sbdf;
- 
+    domctl.u.assign_device.dev = XEN_DOMCTL_DEV_PCI;
+    domctl.u.assign_device.u.pci.machine_sbdf = machine_sbdf;
+
     return do_domctl(xch, &domctl);
 }
+
+int xc_assign_dt_device(
+    xc_interface *xch,
+    uint32_t domid,
+    char *path)
+{
+    int rc;
+    size_t size = strlen(path);
+    DECLARE_DOMCTL;
+    DECLARE_HYPERCALL_BOUNCE(path, size, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+
+    if ( xc_hypercall_bounce_pre(xch, path) )
+        return -1;
+
+    domctl.cmd = XEN_DOMCTL_assign_device;
+    domctl.domain = (domid_t)domid;
+
+    domctl.u.assign_device.dev = XEN_DOMCTL_DEV_DT;
+    domctl.u.assign_device.u.dt.size = size;
+    set_xen_guest_handle(domctl.u.assign_device.u.dt.path, path);
+
+    rc = do_domctl(xch, &domctl);
+
+    xc_hypercall_bounce_post(xch, path);
+
+    return rc;
+}
+
+int xc_test_assign_dt_device(
+    xc_interface *xch,
+    uint32_t domid,
+    char *path)
+{
+    int rc;
+    size_t size = strlen(path);
+    DECLARE_DOMCTL;
+    DECLARE_HYPERCALL_BOUNCE(path, size, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+
+    if ( xc_hypercall_bounce_pre(xch, path) )
+        return -1;
+
+    domctl.cmd = XEN_DOMCTL_test_assign_device;
+    domctl.domain = (domid_t)domid;
+
+    domctl.u.assign_device.dev = XEN_DOMCTL_DEV_DT;
+    domctl.u.assign_device.u.dt.size = size;
+    set_xen_guest_handle(domctl.u.assign_device.u.dt.path, path);
+
+    rc = do_domctl(xch, &domctl);
+
+    xc_hypercall_bounce_post(xch, path);
+
+    return rc;
+}
+
+int xc_deassign_dt_device(
+    xc_interface *xch,
+    uint32_t domid,
+    char *path)
+{
+    int rc;
+    size_t size = strlen(path);
+    DECLARE_DOMCTL;
+    DECLARE_HYPERCALL_BOUNCE(path, size, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+
+    if ( xc_hypercall_bounce_pre(xch, path) )
+        return -1;
+
+    domctl.cmd = XEN_DOMCTL_deassign_device;
+    domctl.domain = (domid_t)domid;
+
+    domctl.u.assign_device.dev = XEN_DOMCTL_DEV_DT;
+    domctl.u.assign_device.u.dt.size = size;
+    set_xen_guest_handle(domctl.u.assign_device.u.dt.path, path);
+
+    rc = do_domctl(xch, &domctl);
+
+    xc_hypercall_bounce_post(xch, path);
+
+    return rc;
+}
+
+
+
 
 int xc_domain_update_msi_irq(
     xc_interface *xch,
@@ -1796,7 +1884,7 @@ int xc_domain_unbind_msi_irq(
 }
 
 /* Pass-through: binds machine irq to guests irq */
-int xc_domain_bind_pt_irq(
+static int xc_domain_bind_pt_irq_int(
     xc_interface *xch,
     uint32_t domid,
     uint8_t machine_irq,
@@ -1804,7 +1892,8 @@ int xc_domain_bind_pt_irq(
     uint8_t bus,
     uint8_t device,
     uint8_t intx,
-    uint8_t isa_irq)
+    uint8_t isa_irq,
+    uint16_t spi)
 {
     int rc;
     xen_domctl_bind_pt_irq_t * bind;
@@ -1828,6 +1917,9 @@ int xc_domain_bind_pt_irq(
     case PT_IRQ_TYPE_ISA:
         bind->u.isa.isa_irq = isa_irq;
         break;
+    case PT_IRQ_TYPE_SPI:
+        bind->u.spi.spi = spi;
+        break;
     default:
         errno = EINVAL;
         return -1;
@@ -1837,7 +1929,7 @@ int xc_domain_bind_pt_irq(
     return rc;
 }
 
-int xc_domain_unbind_pt_irq(
+int xc_domain_bind_pt_irq(
     xc_interface *xch,
     uint32_t domid,
     uint8_t machine_irq,
@@ -1846,6 +1938,21 @@ int xc_domain_unbind_pt_irq(
     uint8_t device,
     uint8_t intx,
     uint8_t isa_irq)
+{
+    return xc_domain_bind_pt_irq_int(xch, domid, machine_irq, irq_type,
+                                     bus, device, intx, isa_irq, 0);
+}
+
+static int xc_domain_unbind_pt_irq_int(
+    xc_interface *xch,
+    uint32_t domid,
+    uint8_t machine_irq,
+    uint8_t irq_type,
+    uint8_t bus,
+    uint8_t device,
+    uint8_t intx,
+    uint8_t isa_irq,
+    uint8_t spi)
 {
     int rc;
     xen_domctl_bind_pt_irq_t * bind;
@@ -1869,6 +1976,9 @@ int xc_domain_unbind_pt_irq(
     case PT_IRQ_TYPE_ISA:
         bind->u.isa.isa_irq = isa_irq;
         break;
+    case PT_IRQ_TYPE_SPI:
+        bind->u.spi.spi = spi;
+        break;
     default:
         errno = EINVAL;
         return -1;
@@ -1876,6 +1986,20 @@ int xc_domain_unbind_pt_irq(
 
     rc = do_domctl(xch, &domctl);
     return rc;
+}
+
+int xc_domain_unbind_pt_irq(
+    xc_interface *xch,
+    uint32_t domid,
+    uint8_t machine_irq,
+    uint8_t irq_type,
+    uint8_t bus,
+    uint8_t device,
+    uint8_t intx,
+    uint8_t isa_irq)
+{
+    return xc_domain_unbind_pt_irq_int(xch, domid, machine_irq, irq_type,
+                                       bus, device, intx, isa_irq, 0);
 }
 
 int xc_domain_bind_pt_pci_irq(
@@ -1899,6 +2023,25 @@ int xc_domain_bind_pt_isa_irq(
 
     return (xc_domain_bind_pt_irq(xch, domid, machine_irq,
                                   PT_IRQ_TYPE_ISA, 0, 0, 0, machine_irq));
+}
+
+int xc_domain_bind_pt_spi_irq(
+    xc_interface *xch,
+    uint32_t domid,
+    uint16_t vspi,
+    uint16_t spi)
+{
+    return (xc_domain_bind_pt_irq_int(xch, domid, vspi,
+                                      PT_IRQ_TYPE_SPI, 0, 0, 0, 0, spi));
+}
+
+int xc_domain_unbind_pt_spi_irq(xc_interface *xch,
+                                uint32_t domid,
+                                uint16_t vspi,
+                                uint16_t spi)
+{
+    return (xc_domain_unbind_pt_irq_int(xch, domid, vspi,
+                                        PT_IRQ_TYPE_SPI, 0, 0, 0, 0, spi));
 }
 
 int xc_unmap_domain_meminfo(xc_interface *xch, struct xc_domain_meminfo *minfo)

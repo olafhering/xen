@@ -83,16 +83,22 @@
 #define DBGBVR1         p14,0,c0,c1,4   /* Breakpoint Value 1 */
 #define DBGBCR1         p14,0,c0,c1,5   /* Breakpoint Control 1 */
 #define DBGOSLAR        p14,0,c1,c0,4   /* OS Lock Access */
+#define DBGOSLSR        p14,0,c1,c1,4   /* OS Lock Status Register */
 #define DBGOSDLR        p14,0,c1,c3,4   /* OS Double Lock */
+#define DBGPRCR         p14,0,c1,c4,4   /* Debug Power Control Register */
 
 /* CP14 CR0: */
 #define TEECR           p14,6,c0,c0,0   /* ThumbEE Configuration Register */
 
 /* CP14 CR1: */
+#define DBGDRAR64       p14,0,c1        /* Debug ROM Address Register (64-bit access) */
+#define DBGDRAR         p14,0,c1,c0,0   /* Debug ROM Address Register (32-bit access) */
 #define TEEHBR          p14,6,c1,c0,0   /* ThumbEE Handler Base Register */
 #define JOSCR           p14,7,c1,c0,0   /* Jazelle OS Control Register */
 
 /* CP14 CR2: */
+#define DBGDSAR64       p14,0,c2        /* Debug Self Address Offset Register (64-bit access) */
+#define DBGDSAR         p14,0,c2,c0,0   /* Debug Self Address Offset Register (32-bit access) */
 #define JMCR            p14,7,c2,c0,0   /* Jazelle Main Configuration Register */
 
 

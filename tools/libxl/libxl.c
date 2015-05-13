@@ -5540,37 +5540,28 @@ int libxl_get_physinfo(libxl_ctx *ctx, libxl_physinfo *physinfo)
 libxl_cputopology *libxl_get_cpu_topology(libxl_ctx *ctx, int *nb_cpu_out)
 {
     GC_INIT(ctx);
-    xc_cputopoinfo_t tinfo;
-    DECLARE_HYPERCALL_BUFFER(xen_sysctl_cputopo_t, cputopo);
+    xc_cputopo_t *cputopo;
     libxl_cputopology *ret = NULL;
     int i;
+    unsigned num_cpus;
 
-    /* Setting buffer to NULL makes the hypercall return number of CPUs */
-    set_xen_guest_handle(tinfo.cputopo, HYPERCALL_BUFFER_NULL);
-    if (xc_cputopoinfo(ctx->xch, &tinfo) != 0)
+    /* Setting buffer to NULL makes the call return number of CPUs */
+    if (xc_cputopoinfo(ctx->xch, &num_cpus, NULL))
     {
-        LIBXL__LOG(ctx, XTL_ERROR, "Unable to determine number of CPUS");
-        ret = NULL;
+        LOGE(ERROR, "Unable to determine number of CPUS");
         goto out;
     }
 
-    cputopo = xc_hypercall_buffer_alloc(ctx->xch, cputopo,
-                                        sizeof(*cputopo) * tinfo.num_cpus);
-    if (cputopo == NULL) {
-        LIBXL__LOG_ERRNOVAL(ctx, XTL_ERROR, ENOMEM,
-                            "Unable to allocate hypercall arguments");
-        goto fail;
-    }
-    set_xen_guest_handle(tinfo.cputopo, cputopo);
+    cputopo = libxl__zalloc(gc, sizeof(*cputopo) * num_cpus);
 
-    if (xc_cputopoinfo(ctx->xch, &tinfo) != 0) {
-        LIBXL__LOG_ERRNO(ctx, XTL_ERROR, "CPU topology info hypercall failed");
-        goto fail;
+    if (xc_cputopoinfo(ctx->xch, &num_cpus, cputopo)) {
+        LOGE(ERROR, "CPU topology info hypercall failed");
+        goto out;
     }
 
-    ret = libxl__zalloc(NOGC, sizeof(libxl_cputopology) * tinfo.num_cpus);
+    ret = libxl__zalloc(NOGC, sizeof(libxl_cputopology) * num_cpus);
 
-    for (i = 0; i < tinfo.num_cpus; i++) {
+    for (i = 0; i < num_cpus; i++) {
 #define V(map, i, invalid) ( cputopo[i].map == invalid) ? \
    LIBXL_CPUTOPOLOGY_INVALID_ENTRY : cputopo[i].map
         ret[i].core = V(core, i, XEN_INVALID_CORE_ID);
@@ -5579,11 +5570,52 @@ libxl_cputopology *libxl_get_cpu_topology(libxl_ctx *ctx, int *nb_cpu_out)
 #undef V
     }
 
-fail:
-    xc_hypercall_buffer_free(ctx->xch, cputopo);
+    *nb_cpu_out = num_cpus;
 
-    if (ret)
-        *nb_cpu_out = tinfo.num_cpus;
+ out:
+    GC_FREE;
+    return ret;
+}
+
+libxl_pcitopology *libxl_get_pci_topology(libxl_ctx *ctx, int *num_devs)
+{
+    GC_INIT(ctx);
+    physdev_pci_device_t *devs;
+    uint32_t *nodes;
+    libxl_pcitopology *ret = NULL;
+    int i, rc;
+
+    *num_devs = libxl__pci_numdevs(gc);
+    if (*num_devs < 0) {
+        LOG(ERROR, "Unable to determine number of PCI devices, rc %d",
+            *num_devs);
+        goto out;
+    }
+
+    devs = libxl__zalloc(gc, sizeof(*devs) * *num_devs);
+    nodes = libxl__zalloc(gc, sizeof(*nodes) * *num_devs);
+
+    rc = libxl__pci_topology_init(gc, devs, *num_devs);
+    if (rc) {
+        LOG(ERROR, "Cannot initialize PCI hypercall structure, rc %d", rc);
+        goto out;
+    }
+
+    if (xc_pcitopoinfo(ctx->xch, *num_devs, devs, nodes) != 0) {
+        LOGE(ERROR, "PCI topology info hypercall failed");
+        goto out;
+    }
+
+    ret = libxl__zalloc(NOGC, sizeof(libxl_pcitopology) * *num_devs);
+
+    for (i = 0; i < *num_devs; i++) {
+        ret[i].seg = devs[i].seg;
+        ret[i].bus = devs[i].bus;
+        ret[i].devfn = devs[i].devfn;
+        ret[i].node = ((nodes[i] == XEN_INVALID_NODE_ID) ||
+                       (nodes[i] == XEN_INVALID_DEV)) ?
+            LIBXL_PCITOPOLOGY_INVALID_ENTRY : nodes[i];
+    }
 
  out:
     GC_FREE;
@@ -5593,60 +5625,43 @@ fail:
 libxl_numainfo *libxl_get_numainfo(libxl_ctx *ctx, int *nr)
 {
     GC_INIT(ctx);
-    xc_numainfo_t ninfo;
-    DECLARE_HYPERCALL_BUFFER(xen_sysctl_meminfo_t, meminfo);
-    DECLARE_HYPERCALL_BUFFER(uint32_t, distance);
+    xc_meminfo_t *meminfo;
+    uint32_t *distance;
     libxl_numainfo *ret = NULL;
     int i, j;
+    unsigned num_nodes;
 
-    set_xen_guest_handle(ninfo.meminfo, HYPERCALL_BUFFER_NULL);
-    set_xen_guest_handle(ninfo.distance, HYPERCALL_BUFFER_NULL);
-    if (xc_numainfo(ctx->xch, &ninfo) != 0) {
-        LIBXL__LOG(ctx, XTL_ERROR, "Unable to determine number of NODES");
-        ret = NULL;
+    if (xc_numainfo(ctx->xch, &num_nodes, NULL, NULL)) {
+        LOGE(ERROR, "Unable to determine number of nodes");
         goto out;
     }
 
-    meminfo = xc_hypercall_buffer_alloc(ctx->xch, meminfo,
-                                        sizeof(*meminfo) * ninfo.num_nodes);
-    distance = xc_hypercall_buffer_alloc(ctx->xch, distance,
-                                         sizeof(*distance) *
-                                         ninfo.num_nodes * ninfo.num_nodes);
-    if ((meminfo == NULL) || (distance == NULL)) {
-        LIBXL__LOG_ERRNOVAL(ctx, XTL_ERROR, ENOMEM,
-                            "Unable to allocate hypercall arguments");
-        goto fail;
+    meminfo = libxl__zalloc(gc, sizeof(*meminfo) * num_nodes);
+    distance = libxl__zalloc(gc, sizeof(*distance) * num_nodes * num_nodes);
+
+    if (xc_numainfo(ctx->xch, &num_nodes, meminfo, distance)) {
+        LOGE(ERROR, "getting numainfo");
+        goto out;
     }
 
-    set_xen_guest_handle(ninfo.meminfo, meminfo);
-    set_xen_guest_handle(ninfo.distance, distance);
-    if (xc_numainfo(ctx->xch, &ninfo) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "getting numainfo");
-        goto fail;
-    }
+    *nr = num_nodes;
 
-    *nr = ninfo.num_nodes;
+    ret = libxl__zalloc(NOGC, sizeof(libxl_numainfo) * num_nodes);
+    for (i = 0; i < num_nodes; i++)
+        ret[i].dists = libxl__calloc(NOGC, num_nodes, sizeof(*distance));
 
-    ret = libxl__zalloc(NOGC, sizeof(libxl_numainfo) * ninfo.num_nodes);
-    for (i = 0; i < ninfo.num_nodes; i++)
-        ret[i].dists = libxl__calloc(NOGC, ninfo.num_nodes, sizeof(*distance));
-
-    for (i = 0; i < ninfo.num_nodes; i++) {
+    for (i = 0; i < num_nodes; i++) {
 #define V(val, invalid) (val == invalid) ? \
        LIBXL_NUMAINFO_INVALID_ENTRY : val
         ret[i].size = V(meminfo[i].memsize, XEN_INVALID_MEM_SZ);
         ret[i].free = V(meminfo[i].memfree, XEN_INVALID_MEM_SZ);
-        ret[i].num_dists = ninfo.num_nodes;
+        ret[i].num_dists = num_nodes;
         for (j = 0; j < ret[i].num_dists; j++) {
-            unsigned idx = i * ninfo.num_nodes + j;
+            unsigned idx = i * num_nodes + j;
             ret[i].dists[j] = V(distance[idx], XEN_INVALID_NODE_DIST);
         }
 #undef V
     }
-
- fail:
-    xc_hypercall_buffer_free(ctx->xch, meminfo);
-    xc_hypercall_buffer_free(ctx->xch, distance);
 
  out:
     GC_FREE;
