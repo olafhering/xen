@@ -344,53 +344,24 @@ static int suspend_domain(struct xc_sr_context *ctx)
 }
 
 /*
- * Send all pages in the guests p2m.  Used as the first iteration of the live
- * migration loop, and for a non-live save.
- */
-static int send_all_pages(struct xc_sr_context *ctx)
-{
-    xc_interface *xch = ctx->xch;
-    xen_pfn_t p;
-    int rc;
-
-    for ( p = 0; p < ctx->save.p2m_size; ++p )
-    {
-        rc = add_to_batch(ctx, p);
-        if ( rc )
-            return rc;
-
-        /* Update progress every 4MB worth of memory sent. */
-        if ( (p & ((1U << (22 - 12)) - 1)) == 0 )
-            xc_report_progress_step(xch, p, ctx->save.p2m_size);
-    }
-
-    rc = flush_batch(ctx);
-    if ( rc )
-        return rc;
-
-    xc_report_progress_step(xch, ctx->save.p2m_size,
-                            ctx->save.p2m_size);
-    return 0;
-}
-
-/*
- * Send a subset of pages in the guests p2m, according to the provided bitmap.
+ * Send a subset of pages in the guests p2m, according to the dirty bitmap.
  * Used for each subsequent iteration of the live migration loop.
  *
  * Bitmap is bounded by p2m_size.
  */
-static int send_some_pages(struct xc_sr_context *ctx,
-                           unsigned long *bitmap,
-                           unsigned long entries)
+static int send_dirty_pages(struct xc_sr_context *ctx,
+                            unsigned long entries)
 {
     xc_interface *xch = ctx->xch;
     xen_pfn_t p;
     unsigned long written;
     int rc;
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
 
     for ( p = 0, written = 0; p < ctx->save.p2m_size; ++p )
     {
-        if ( !test_bit(p, bitmap) )
+        if ( !test_bit(p, dirty_bitmap) )
             continue;
 
         rc = add_to_batch(ctx, p);
@@ -413,6 +384,20 @@ static int send_some_pages(struct xc_sr_context *ctx,
 
     xc_report_progress_step(xch, entries, entries);
     return 0;
+}
+
+/*
+ * Send all pages in the guests p2m.  Used as the first iteration of the live
+ * migration loop, and for a non-live save.
+ */
+static int send_all_pages(struct xc_sr_context *ctx)
+{
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    bitmap_set(dirty_bitmap, ctx->save.p2m_size);
+
+    return send_dirty_pages(ctx, ctx->save.p2m_size);
 }
 
 static int enable_logdirty(struct xc_sr_context *ctx)
@@ -475,24 +460,12 @@ static int update_progress_string(struct xc_sr_context *ctx,
 static int send_domain_memory_live(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    DECLARE_HYPERCALL_BUFFER(unsigned long, to_send);
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
     char *progress_str = NULL;
     unsigned x;
     int rc = -1;
-
-    to_send = xc_hypercall_buffer_alloc_pages(
-        xch, to_send, NRPAGES(bitmap_size(ctx->save.p2m_size)));
-
-    ctx->save.batch_pfns = malloc(MAX_BATCH_SIZE *
-                                  sizeof(*ctx->save.batch_pfns));
-    ctx->save.deferred_pages = calloc(1, bitmap_size(ctx->save.p2m_size));
-
-    if ( !ctx->save.batch_pfns || !to_send || !ctx->save.deferred_pages )
-    {
-        ERROR("Unable to allocate memory for to_{send,fix}/batch bitmaps");
-        goto out;
-    }
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
 
     rc = enable_logdirty(ctx);
     if ( rc )
@@ -512,7 +485,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     {
         if ( xc_shadow_control(
                  xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_CLEAN,
-                 HYPERCALL_BUFFER(to_send), ctx->save.p2m_size,
+                 HYPERCALL_BUFFER(dirty_bitmap), ctx->save.p2m_size,
                  NULL, 0, &stats) != ctx->save.p2m_size )
         {
             PERROR("Failed to retrieve logdirty bitmap");
@@ -527,7 +500,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
         if ( rc )
             goto out;
 
-        rc = send_some_pages(ctx, to_send, stats.dirty_count);
+        rc = send_dirty_pages(ctx, stats.dirty_count);
         if ( rc )
             goto out;
     }
@@ -538,7 +511,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
 
     if ( xc_shadow_control(
              xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_CLEAN,
-             HYPERCALL_BUFFER(to_send), ctx->save.p2m_size,
+             HYPERCALL_BUFFER(dirty_bitmap), ctx->save.p2m_size,
              NULL, 0, &stats) != ctx->save.p2m_size )
     {
         PERROR("Failed to retrieve logdirty bitmap");
@@ -550,10 +523,9 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    bitmap_or(to_send, ctx->save.deferred_pages, ctx->save.p2m_size);
+    bitmap_or(dirty_bitmap, ctx->save.deferred_pages, ctx->save.p2m_size);
 
-    rc = send_some_pages(ctx, to_send,
-                         stats.dirty_count + ctx->save.nr_deferred_pages);
+    rc = send_dirty_pages(ctx, stats.dirty_count + ctx->save.nr_deferred_pages);
     if ( rc )
         goto out;
 
@@ -578,7 +550,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
 
         if ( xc_shadow_control(
                  xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_PEEK,
-                 HYPERCALL_BUFFER(to_send), ctx->save.p2m_size,
+                 HYPERCALL_BUFFER(dirty_bitmap), ctx->save.p2m_size,
                  NULL, 0, &stats) != ctx->save.p2m_size )
         {
             PERROR("Failed to retrieve logdirty bitmap");
@@ -593,10 +565,6 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
   out:
     xc_set_progress_prefix(xch, NULL);
     free(progress_str);
-    xc_hypercall_buffer_free_pages(xch, to_send,
-                                   NRPAGES(bitmap_size(ctx->save.p2m_size)));
-    free(ctx->save.deferred_pages);
-    free(ctx->save.batch_pfns);
     return rc;
 }
 
@@ -609,17 +577,6 @@ static int send_domain_memory_nonlive(struct xc_sr_context *ctx)
     xc_interface *xch = ctx->xch;
     int rc = -1;
 
-    ctx->save.batch_pfns = malloc(MAX_BATCH_SIZE *
-                                  sizeof(*ctx->save.batch_pfns));
-    ctx->save.deferred_pages = calloc(1, bitmap_size(ctx->save.p2m_size));
-
-    if ( !ctx->save.batch_pfns || !ctx->save.deferred_pages )
-    {
-        PERROR("Failed to allocate memory for nonlive tracking structures");
-        errno = ENOMEM;
-        goto err;
-    }
-
     rc = suspend_domain(ctx);
     if ( rc )
         goto err;
@@ -631,10 +588,58 @@ static int send_domain_memory_nonlive(struct xc_sr_context *ctx)
         goto err;
 
  err:
+    return rc;
+}
+
+static int setup(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    int rc;
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    dirty_bitmap = xc_hypercall_buffer_alloc_pages(
+                   xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->save.p2m_size)));
+    ctx->save.batch_pfns = malloc(MAX_BATCH_SIZE *
+                                  sizeof(*ctx->save.batch_pfns));
+    ctx->save.deferred_pages = calloc(1, bitmap_size(ctx->save.p2m_size));
+
+    if ( !ctx->save.batch_pfns || !dirty_bitmap || !ctx->save.deferred_pages )
+    {
+        ERROR("Unable to allocate memory for dirty bitmaps, batch pfns and"
+              " deferred pages");
+        rc = -1;
+        errno = ENOMEM;
+        goto err;
+    }
+
+    rc = ctx->save.ops.setup(ctx);
+    if ( rc )
+        goto err;
+
+    rc = 0;
+
+ err:
+    return rc;
+}
+
+static void cleanup(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+
+    xc_shadow_control(xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_OFF,
+                      NULL, 0, NULL, 0, NULL);
+
+    if ( ctx->save.ops.cleanup(ctx) )
+        PERROR("Failed to clean up");
+
+    xc_hypercall_buffer_free_pages(xch, dirty_bitmap,
+                                   NRPAGES(bitmap_size(ctx->save.p2m_size)));
     free(ctx->save.deferred_pages);
     free(ctx->save.batch_pfns);
-
-    return rc;
 }
 
 /*
@@ -648,7 +653,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     IPRINTF("Saving domain %d, type %s",
             ctx->domid, dhdr_type_to_str(guest_type));
 
-    rc = ctx->save.ops.setup(ctx);
+    rc = setup(ctx);
     if ( rc )
         goto err;
 
@@ -659,6 +664,10 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
         goto err;
 
     rc = ctx->save.ops.start_of_stream(ctx);
+    if ( rc )
+        goto err;
+
+    rc = ctx->save.ops.start_of_checkpoint(ctx);
     if ( rc )
         goto err;
 
@@ -678,11 +687,11 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
         goto err;
     }
 
-    xc_report_progress_single(xch, "End of stream");
-
-    rc = ctx->save.ops.end_of_stream(ctx);
+    rc = ctx->save.ops.end_of_checkpoint(ctx);
     if ( rc )
         goto err;
+
+    xc_report_progress_single(xch, "End of stream");
 
     rc = write_end_record(ctx);
     if ( rc )
@@ -697,12 +706,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     PERROR("Save failed");
 
  done:
-    xc_shadow_control(xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_OFF,
-                      NULL, 0, NULL, 0, NULL);
-
-    rc = ctx->save.ops.cleanup(ctx);
-    if ( rc )
-        PERROR("Failed to clean up");
+    cleanup(ctx);
 
     if ( saved_rc )
     {
@@ -728,6 +732,7 @@ int xc_domain_save2(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.save.callbacks = callbacks;
     ctx.save.live  = !!(flags & XCFLAGS_LIVE);
     ctx.save.debug = !!(flags & XCFLAGS_DEBUG);
+    ctx.save.checkpointed = !!(flags & XCFLAGS_CHECKPOINTED);
 
     /*
      * TODO: Find some time to better tweak the live migration algorithm.
@@ -737,6 +742,12 @@ int xc_domain_save2(xc_interface *xch, int io_fd, uint32_t dom,
      */
     ctx.save.max_iterations = 5;
     ctx.save.dirty_threshold = 50;
+
+    /* Sanity checks for callbacks. */
+    if ( hvm )
+        assert(callbacks->switch_qemu_logdirty);
+    if ( ctx.save.checkpointed )
+        assert(callbacks->checkpoint && callbacks->postcopy);
 
     IPRINTF("In experimental %s", __func__);
     DPRINTF("fd %d, dom %u, max_iters %u, max_factor %u, flags %u, hvm %d",

@@ -468,16 +468,52 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     return rc;
 }
 
-/*
- * Restore a domain.
- */
-static int restore(struct xc_sr_context *ctx)
+static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 {
     xc_interface *xch = ctx->xch;
-    struct xc_sr_record rec;
-    int rc, saved_rc = 0, saved_errno = 0;
+    int rc = 0;
 
-    IPRINTF("Restoring domain");
+    switch ( rec->type )
+    {
+    case REC_TYPE_END:
+        break;
+
+    case REC_TYPE_PAGE_DATA:
+        rc = handle_page_data(ctx, rec);
+        break;
+
+    case REC_TYPE_VERIFY:
+        DPRINTF("Verify mode enabled");
+        ctx->restore.verify = true;
+        break;
+
+    default:
+        rc = ctx->restore.ops.process_record(ctx, rec);
+        break;
+    }
+
+    free(rec->data);
+
+    if ( rc == RECORD_NOT_PROCESSED )
+    {
+        if ( rec->type & REC_TYPE_OPTIONAL )
+            DPRINTF("Ignoring optional record %#x (%s)",
+                    rec->type, rec_type_to_str(rec->type));
+        else
+        {
+            ERROR("Mandatory record %#x (%s) not handled",
+                  rec->type, rec_type_to_str(rec->type));
+            rc = -1;
+        }
+    }
+
+    return rc;
+}
+
+static int setup(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    int rc;
 
     rc = ctx->restore.ops.setup(ctx);
     if ( rc )
@@ -489,8 +525,40 @@ static int restore(struct xc_sr_context *ctx)
     if ( !ctx->restore.populated_pfns )
     {
         ERROR("Unable to allocate memory for populated_pfns bitmap");
+        rc = -1;
         goto err;
     }
+
+ err:
+    return rc;
+}
+
+static void cleanup(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+
+    free(ctx->restore.populated_pfns);
+    if ( ctx->restore.ops.cleanup(ctx) )
+        PERROR("Failed to clean up");
+}
+
+#ifdef XG_LIBXL_HVM_COMPAT
+extern int read_qemu(struct xc_sr_context *ctx);
+#endif
+/*
+ * Restore a domain.
+ */
+static int restore(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_record rec;
+    int rc, saved_rc = 0, saved_errno = 0;
+
+    IPRINTF("Restoring domain");
+
+    rc = setup(ctx);
+    if ( rc )
+        goto err;
 
     do
     {
@@ -498,44 +566,20 @@ static int restore(struct xc_sr_context *ctx)
         if ( rc )
             goto err;
 
-        switch ( rec.type )
-        {
-        case REC_TYPE_END:
-            break;
-
-        case REC_TYPE_PAGE_DATA:
-            rc = handle_page_data(ctx, &rec);
-            break;
-
-        case REC_TYPE_VERIFY:
-            DPRINTF("Verify mode enabled");
-            ctx->restore.verify = true;
-            break;
-
-        default:
-            rc = ctx->restore.ops.process_record(ctx, &rec);
-            break;
-        }
-
-        free(rec.data);
-
-        if ( rc == RECORD_NOT_PROCESSED )
-        {
-            if ( rec.type & REC_TYPE_OPTIONAL )
-                DPRINTF("Ignoring optional record %#x (%s)",
-                        rec.type, rec_type_to_str(rec.type));
-            else
-            {
-                ERROR("Mandatory record %#x (%s) not handled",
-                      rec.type, rec_type_to_str(rec.type));
-                rc = -1;
-            }
-        }
-
+        rc = process_record(ctx, &rec);
         if ( rc )
             goto err;
 
     } while ( rec.type != REC_TYPE_END );
+
+#ifdef XG_LIBXL_HVM_COMPAT
+    if ( ctx->dominfo.hvm )
+    {
+        rc = read_qemu(ctx);
+        if ( rc )
+            goto err;
+    }
+#endif
 
     rc = ctx->restore.ops.stream_complete(ctx);
     if ( rc )
@@ -550,10 +594,7 @@ static int restore(struct xc_sr_context *ctx)
     PERROR("Restore failed");
 
  done:
-    free(ctx->restore.populated_pfns);
-    rc = ctx->restore.ops.cleanup(ctx);
-    if ( rc )
-        PERROR("Failed to clean up");
+    cleanup(ctx);
 
     if ( saved_rc )
     {
@@ -583,6 +624,7 @@ int xc_domain_restore2(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.restore.console_domid = console_domid;
     ctx.restore.xenstore_evtchn = store_evtchn;
     ctx.restore.xenstore_domid = store_domid;
+    ctx.restore.checkpointed = checkpointed_stream;
     ctx.restore.callbacks = callbacks;
 
     IPRINTF("In experimental %s", __func__);
