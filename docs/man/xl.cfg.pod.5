@@ -518,9 +518,9 @@ SCSI devices from the backend domain to the guest.
 Each VSCSI_SPEC_STRING consists of "pdev,vdev[,options]".
 'pdev' describes the physical device, preferable in a persistent format such as /dev/disk/by-*/*.
 'vdev' is the domU device in vHOST:CHANNEL:TARGET:LUN notation, all integers.
-'option' lists additional flags which a backend may recognize.
+'options' lists additional flags which a backend may recognize.
 
-The supported values for "pdev" and "option" depends on the used backend driver:
+The supported values for "pdev" and "options" depends on the used backend driver:
 
 =over 4
 
@@ -536,7 +536,7 @@ provided by this framework, such as a xen-scsiback aware targetcli. The "pdev"
 in domU.cfg has to refer to a config item in that framework instead of the raw
 device. Ususally this is a WWN in the form of "na.WWN:LUN".
 
-=item C<option>
+=item C<options>
 
 No options recognized.
 
@@ -556,7 +556,7 @@ the backend driver will access the device. Using the "h:c:t:l" notation for
 "pdev" in domU.cfg is discouraged because this value will change across reboots,
 depending on the detection order in the OS.
 
-=item C<option>
+=item C<options>
 
 Currently only the option value "feature-host" is recognized. SCSI command
 emulation in backend driver is bypassed when "feature-host" is specified.
