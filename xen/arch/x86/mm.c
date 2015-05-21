@@ -545,21 +545,17 @@ static void invalidate_shadow_ldt(struct vcpu *v, int flush)
 
 static int alloc_segdesc_page(struct page_info *page)
 {
-    struct desc_struct *descs;
-    int i;
-
-    descs = __map_domain_page(page);
+    const struct domain *owner = page_get_owner(page);
+    struct desc_struct *descs = __map_domain_page(page);
+    unsigned i;
 
     for ( i = 0; i < 512; i++ )
-        if ( unlikely(!check_descriptor(page_get_owner(page), &descs[i])) )
-            goto fail;
+        if ( unlikely(!check_descriptor(owner, &descs[i])) )
+            break;
 
     unmap_domain_page(descs);
-    return 0;
 
- fail:
-    unmap_domain_page(descs);
-    return -EINVAL;
+    return i == 512 ? 0 : -EINVAL;
 }
 
 
@@ -4382,7 +4378,7 @@ long set_gdt(struct vcpu *v,
     l1_pgentry_t *pl1e;
     /* NB. There are 512 8-byte entries per GDT page. */
     int i, nr_pages = (entries + 511) / 512;
-    unsigned long mfn, *pfns;
+    unsigned long *pfns;
 
     if ( entries > FIRST_RESERVED_GDT_ENTRY )
         return -EINVAL;
@@ -4404,7 +4400,7 @@ long set_gdt(struct vcpu *v,
             put_page(page);
             goto fail;
         }
-        mfn = frames[i] = page_to_mfn(page);
+        frames[i] = page_to_mfn(page);
     }
 
     /* Tear down the old GDT. */
@@ -5311,7 +5307,10 @@ static l3_pgentry_t *virt_to_xen_l3e(unsigned long v)
             spin_lock(&map_pgdir_lock);
         if ( !(l4e_get_flags(*pl4e) & _PAGE_PRESENT) )
         {
-            l4e_write(pl4e, l4e_from_paddr(__pa(pl3e), __PAGE_HYPERVISOR));
+            l4_pgentry_t l4e = l4e_from_paddr(__pa(pl3e), __PAGE_HYPERVISOR);
+
+            l4e_write(pl4e, l4e);
+            efi_update_l4_pgtable(l4_table_offset(v), l4e);
             pl3e = NULL;
         }
         if ( locking )

@@ -262,6 +262,8 @@ void copy_page_sse2(void *, const void *);
 #define pfn_to_paddr(pfn)   __pfn_to_paddr(pfn)
 #define paddr_to_pfn(pa)    __paddr_to_pfn(pa)
 #define paddr_to_pdx(pa)    pfn_to_pdx(paddr_to_pfn(pa))
+#define vmap_to_mfn(va)     l1e_get_pfn(*virt_to_xen_l1e((unsigned long)(va)))
+#define vmap_to_page(va)    mfn_to_page(vmap_to_mfn(va))
 
 #endif /* !defined(__ASSEMBLY__) */
 
@@ -286,6 +288,7 @@ extern l2_pgentry_t l2_identmap[4*L2_PAGETABLE_ENTRIES];
 extern l1_pgentry_t l1_identmap[L1_PAGETABLE_ENTRIES],
     l1_fixmap[L1_PAGETABLE_ENTRIES];
 void paging_init(void);
+void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
 #endif /* !defined(__ASSEMBLY__) */
 
 #define _PAGE_NONE     _AC(0x000,U)

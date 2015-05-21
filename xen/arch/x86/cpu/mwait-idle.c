@@ -196,31 +196,59 @@ static const struct cpuidle_state byt_cstates[] = {
 		.target_residency = 1,
 	},
 	{
-		.name = "C1E-BYT",
-		.flags = MWAIT2flg(0x01),
-		.exit_latency = 15,
-		.target_residency = 30,
-	},
-	{
 		.name = "C6N-BYT",
 		.flags = MWAIT2flg(0x58) | CPUIDLE_FLAG_TLB_FLUSHED,
-		.exit_latency = 40,
+		.exit_latency = 300,
 		.target_residency = 275,
 	},
 	{
 		.name = "C6S-BYT",
 		.flags = MWAIT2flg(0x52) | CPUIDLE_FLAG_TLB_FLUSHED,
-		.exit_latency = 140,
+		.exit_latency = 500,
 		.target_residency = 560,
 	},
 	{
 		.name = "C7-BYT",
 		.flags = MWAIT2flg(0x60) | CPUIDLE_FLAG_TLB_FLUSHED,
 		.exit_latency = 1200,
-		.target_residency = 1500,
+		.target_residency = 4000,
 	},
 	{
 		.name = "C7S-BYT",
+		.flags = MWAIT2flg(0x64) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 10000,
+		.target_residency = 20000,
+	},
+	{}
+};
+
+static const struct cpuidle_state cht_cstates[] = {
+	{
+		.name = "C1-CHT",
+		.flags = MWAIT2flg(0x00),
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C6N-CHT",
+		.flags = MWAIT2flg(0x58) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 80,
+		.target_residency = 275,
+	},
+	{
+		.name = "C6S-CHT",
+		.flags = MWAIT2flg(0x52) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 200,
+		.target_residency = 560,
+	},
+	{
+		.name = "C7-CHT",
+		.flags = MWAIT2flg(0x60) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 1200,
+		.target_residency = 4000,
+	},
+	{
+		.name = "C7S-CHT",
 		.flags = MWAIT2flg(0x64) | CPUIDLE_FLAG_TLB_FLUSHED,
 		.exit_latency = 10000,
 		.target_residency = 20000,
@@ -631,6 +659,12 @@ static const struct idle_cpu idle_cpu_byt = {
 	.byt_auto_demotion_disable_flag = 1,
 };
 
+static const struct idle_cpu idle_cpu_cht = {
+	.state_table = cht_cstates,
+	.disable_promotion_to_c1e = 1,
+	.byt_auto_demotion_disable_flag = 1,
+};
+
 static const struct idle_cpu idle_cpu_ivb = {
 	.state_table = ivb_cstates,
 	.disable_promotion_to_c1e = 1,
@@ -675,6 +709,7 @@ static struct intel_idle_id {
 	ICPU(0x2d, snb),
 	ICPU(0x36, atom),
 	ICPU(0x37, byt),
+	ICPU(0x4c, cht),
 	ICPU(0x3a, ivb),
 	ICPU(0x3e, ivt),
 	ICPU(0x3c, hsw),
@@ -683,6 +718,7 @@ static struct intel_idle_id {
 	ICPU(0x46, hsw),
 	ICPU(0x4d, avn),
 	ICPU(0x3d, bdw),
+	ICPU(0x47, bdw),
 	ICPU(0x4f, bdw),
 	ICPU(0x56, bdw),
 	{}
