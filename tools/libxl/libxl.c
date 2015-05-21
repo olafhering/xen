@@ -5164,7 +5164,8 @@ int libxl_set_memory_target(libxl_ctx *ctx, uint32_t domid,
 {
     GC_INIT(ctx);
     int rc = 1, abort_transaction = 0;
-    uint32_t memorykb = 0, videoram = 0;
+    uint64_t memorykb;
+    uint32_t videoram = 0;
     uint32_t current_target_memkb = 0, new_target_memkb = 0;
     uint32_t current_max_memkb = 0;
     char *memmax, *endptr, *videoram_s = NULL, *target = NULL;
@@ -5258,7 +5259,7 @@ retry_transaction:
         rc = xc_domain_setmaxmem(ctx->xch, domid, memorykb);
         if (rc != 0) {
             LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR,
-                    "xc_domain_setmaxmem domid=%d memkb=%d failed "
+                    "xc_domain_setmaxmem domid=%u memkb=%"PRIu64" failed "
                     "rc=%d\n", domid, memorykb, rc);
             abort_transaction = 1;
             goto out;
@@ -5543,7 +5544,7 @@ libxl_cputopology *libxl_get_cpu_topology(libxl_ctx *ctx, int *nb_cpu_out)
     xc_cputopo_t *cputopo;
     libxl_cputopology *ret = NULL;
     int i;
-    unsigned num_cpus;
+    unsigned num_cpus = 0;
 
     /* Setting buffer to NULL makes the call return number of CPUs */
     if (xc_cputopoinfo(ctx->xch, &num_cpus, NULL))
@@ -5629,7 +5630,7 @@ libxl_numainfo *libxl_get_numainfo(libxl_ctx *ctx, int *nr)
     uint32_t *distance;
     libxl_numainfo *ret = NULL;
     int i, j;
-    unsigned num_nodes;
+    unsigned num_nodes = 0;
 
     if (xc_numainfo(ctx->xch, &num_nodes, NULL, NULL)) {
         LOGE(ERROR, "Unable to determine number of nodes");

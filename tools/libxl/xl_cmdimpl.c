@@ -1379,6 +1379,7 @@ static void parse_config_data(const char *config_source,
 
     xlu_cfg_replace_string (config, "kernel", &b_info->kernel, 0);
     xlu_cfg_replace_string (config, "ramdisk", &b_info->ramdisk, 0);
+    xlu_cfg_replace_string (config, "device_tree", &b_info->device_tree, 0);
     b_info->cmdline = parse_cmdline(config);
 
     xlu_cfg_get_defbool(config, "driver_domain", &c_info->driver_domain, 0);
@@ -1951,6 +1952,26 @@ skip_vfb:
             libxl_defbool_set(&b_info->u.pv.e820_host, true);
     }
 
+    if (!xlu_cfg_get_list (config, "dtdev", &dtdevs, 0, 0)) {
+        d_config->num_dtdevs = 0;
+        d_config->dtdevs = NULL;
+        for (i = 0; (buf = xlu_cfg_get_listitem(dtdevs, i)) != NULL; i++) {
+            libxl_device_dtdev *dtdev;
+
+            d_config->dtdevs = xrealloc(d_config->dtdevs,
+                                        sizeof (libxl_device_dtdev) * (i + 1));
+            dtdev = d_config->dtdevs + d_config->num_dtdevs;
+            libxl_device_dtdev_init(dtdev);
+
+            dtdev->path = strdup(buf);
+            if (dtdev->path == NULL) {
+                fprintf(stderr, "unable to duplicate string for dtdevs\n");
+                exit(-1);
+            }
+            d_config->num_dtdevs++;
+        }
+    }
+
     switch (xlu_cfg_get_list(config, "cpuid", &cpuids, 0, 1)) {
     case 0:
         {
@@ -2314,7 +2335,7 @@ static int handle_domain_death(uint32_t *r_domid,
         char *corefile;
         int rc;
 
-        if (asprintf(&corefile, "/var/xen/dump/%s", d_config->c_info.name) < 0) {
+        if (asprintf(&corefile, XEN_DUMP_DIR "/%s", d_config->c_info.name) < 0) {
             LOG("failed to construct core dump path");
         } else {
             LOG("dumping core to %s", corefile);
@@ -4511,6 +4532,7 @@ int main_migrate(int argc, char **argv)
     int opt, daemonize = 1, monitor = 1, debug = 0;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
+        {"live", 0, 0, 0x200},
         COMMON_LONG_OPTS,
         {0, 0, 0, 0}
     };
@@ -4529,8 +4551,11 @@ int main_migrate(int argc, char **argv)
         daemonize = 0;
         monitor = 0;
         break;
-    case 0x100:
+    case 0x100: /* --debug */
         debug = 1;
+        break;
+    case 0x200: /* --live */
+        /* ignored for compatibility with xm */
         break;
     }
 
@@ -5434,7 +5459,7 @@ static void output_topologyinfo(void)
     libxl_cputopology *cpuinfo;
     int i, nr;
     libxl_pcitopology *pciinfo;
-    int valid_devs;
+    int valid_devs = 0;
 
 
     cpuinfo = libxl_get_cpu_topology(ctx, &nr);

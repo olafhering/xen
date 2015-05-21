@@ -660,7 +660,6 @@ pyconfig
 PYTHONPATH
 CHECKPOLICY
 XENSTORED
-AWK
 OCAMLFIND
 OCAMLBUILD
 OCAMLDOC
@@ -679,6 +678,7 @@ INSTALL_DATA
 INSTALL_SCRIPT
 INSTALL_PROGRAM
 SET_MAKE
+AWK
 IASL
 BCC
 LD86
@@ -711,6 +711,7 @@ ocamltools
 monitors
 githttp
 rpath
+XEN_DUMP_DIR
 XEN_PAGING_DIR
 XEN_LOCK_DIR
 XEN_SCRIPT_DIR
@@ -785,6 +786,7 @@ enable_option_checking
 enable_largefile
 with_initddir
 with_sysconfig_leaf_dir
+with_xen_dumpdir
 enable_rpath
 enable_githttp
 enable_monitors
@@ -830,6 +832,7 @@ AS86
 LD86
 BCC
 IASL
+AWK
 CPP
 PKG_CONFIG
 PKG_CONFIG_PATH
@@ -1486,6 +1489,8 @@ Optional Packages:
                           options for runlevel scripts and daemons such as
                           xenstored. This should be either "sysconfig" or
                           "default". [sysconfig]
+  --with-xen-dumpdir=DIR  Path to directory for domU crash dumps.
+                          [LOCALSTATEDIR/lib/xen/dump]
   --with-linux-backend-modules="mod1 mod2"
                           List of Linux backend module or modalias names to be
                           autoloaded on startup.
@@ -1545,6 +1550,7 @@ Some influential environment variables:
   LD86        Path to ld86 tool
   BCC         Path to bcc tool
   IASL        Path to iasl tool
+  AWK         Path to awk tool
   CPP         C preprocessor
   PKG_CONFIG  path to pkg-config utility
   PKG_CONFIG_PATH
@@ -1929,6 +1935,119 @@ fi
   as_fn_set_status $ac_retval
 
 } # ac_fn_c_try_link
+
+# ac_fn_c_check_func LINENO FUNC VAR
+# ----------------------------------
+# Tests whether FUNC exists, setting the cache variable VAR accordingly
+ac_fn_c_check_func ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
+$as_echo_n "checking for $2... " >&6; }
+if eval \${$3+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+/* Define $2 to an innocuous variant, in case <limits.h> declares $2.
+   For example, HP-UX 11i <limits.h> declares gettimeofday.  */
+#define $2 innocuous_$2
+
+/* System header to define __stub macros and hopefully few prototypes,
+    which can conflict with char $2 (); below.
+    Prefer <limits.h> to <assert.h> if __STDC__ is defined, since
+    <limits.h> exists even on freestanding compilers.  */
+
+#ifdef __STDC__
+# include <limits.h>
+#else
+# include <assert.h>
+#endif
+
+#undef $2
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char $2 ();
+/* The GNU C library defines this for functions which it implements
+    to always fail with ENOSYS.  Some functions are actually named
+    something starting with __ and the normal name is an alias.  */
+#if defined __stub_$2 || defined __stub___$2
+choke me
+#endif
+
+int
+main ()
+{
+return $2 ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  eval "$3=yes"
+else
+  eval "$3=no"
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+fi
+eval ac_res=\$$3
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} # ac_fn_c_check_func
+
+# ac_fn_c_check_decl LINENO SYMBOL VAR INCLUDES
+# ---------------------------------------------
+# Tests whether SYMBOL is declared in INCLUDES, setting cache variable VAR
+# accordingly.
+ac_fn_c_check_decl ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  as_decl_name=`echo $2|sed 's/ *(.*//'`
+  as_decl_use=`echo $2|sed -e 's/(/((/' -e 's/)/) 0&/' -e 's/,/) 0& (/g'`
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether $as_decl_name is declared" >&5
+$as_echo_n "checking whether $as_decl_name is declared... " >&6; }
+if eval \${$3+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$4
+int
+main ()
+{
+#ifndef $as_decl_name
+#ifdef __cplusplus
+  (void) $as_decl_use;
+#else
+  (void) $as_decl_name;
+#endif
+#endif
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  eval "$3=yes"
+else
+  eval "$3=no"
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+eval ac_res=\$$3
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} # ac_fn_c_check_decl
 cat >config.log <<_ACEOF
 This file contains any messages produced by compilers while
 running configure, to aid debugging if configure makes a mistake.
@@ -3768,6 +3887,15 @@ fi
 CONFIG_LEAF_DIR=$config_leaf_dir
 
 
+
+# Check whether --with-xen-dumpdir was given.
+if test "${with_xen_dumpdir+set}" = set; then :
+  withval=$with_xen_dumpdir; xen_dumpdir_path=$withval
+else
+  xen_dumpdir_path=$localstatedir/lib/xen/dump
+fi
+
+
 if test "$libexecdir" = '${exec_prefix}/libexec' ; then
     case "$host_os" in
          *netbsd*) ;;
@@ -3815,6 +3943,9 @@ esac
 
 
 XEN_PAGING_DIR=$localstatedir/lib/xen/xenpaging
+
+
+XEN_DUMP_DIR=$xen_dumpdir_path
 
 
 
@@ -4221,6 +4352,7 @@ do
 done
 CPPFLAGS="$PREPEND_CPPFLAGS $CPPFLAGS $APPEND_CPPFLAGS"
 LDFLAGS="$PREPEND_LDFLAGS $LDFLAGS $APPEND_LDFLAGS"
+
 
 
 
@@ -5023,6 +5155,51 @@ fi
 if test x"${PERL}" = x"no"
 then
     as_fn_error $? "Unable to find perl, please install perl" "$LINENO" 5
+fi
+# Extract the first word of "awk", so it can be a program name with args.
+set dummy awk; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_AWK+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $AWK in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_AWK="$AWK" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_AWK="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  test -z "$ac_cv_path_AWK" && ac_cv_path_AWK="no"
+  ;;
+esac
+fi
+AWK=$ac_cv_path_AWK
+if test -n "$AWK"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $AWK" >&5
+$as_echo "$AWK" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+if test x"${AWK}" = x"no"
+then
+    as_fn_error $? "Unable to find awk, please install awk" "$LINENO" 5
 fi
 
   # checking for ocamlc
@@ -8054,7 +8231,7 @@ fi
 
 
 
-if test "x$enable_blktap2" = "xyes"]; then :
+if test "x$enable_blktap2" = "xyes"; then :
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for io_setup in -laio" >&5
 $as_echo_n "checking for io_setup in -laio... " >&6; }
@@ -8620,6 +8797,68 @@ _ACEOF
 else
   as_fn_error $? "Could not find libfdt" "$LINENO" 5
 fi
+
+
+# Check for libfdt >= 1.4.0. If present enable passthrough
+# Note that libfdt doesn't provide versionning. So we need to rely on
+# function present in new version.
+# Use fdt_first_property_offset which has been correctly exported since v1.4.0
+ac_fn_c_check_func "$LINENO" "fdt_first_property_offset" "ac_cv_func_fdt_first_property_offset"
+if test "x$ac_cv_func_fdt_first_property_offset" = xyes; then :
+  partial_dt="y"
+else
+  partial_dt="n"
+fi
+
+
+if test "x$partial_dt" = "xy" ; then :
+
+$as_echo "#define ENABLE_PARTIAL_DEVICE_TREE 1" >>confdefs.h
+
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Disabling support for partial device tree in libxl.
+       Please install libfdt library - version 1.4.0 or higher" >&5
+$as_echo "$as_me: WARNING: Disabling support for partial device tree in libxl.
+       Please install libfdt library - version 1.4.0 or higher" >&2;}
+fi
+
+# The functions fdt_{first,next}_subnode may not be available because:
+#   * It has been introduced in 2013 => Doesn't work on Wheezy
+#   * The prototype exists but the functions are not exposed. Don't ask why...
+for ac_func in fdt_first_subnode fdt_next_subnode
+do :
+  as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
+ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
+if eval test \"x\$"$as_ac_var"\" = x"yes"; then :
+  cat >>confdefs.h <<_ACEOF
+#define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
+_ACEOF
+
+fi
+done
+
+ac_fn_c_check_decl "$LINENO" "fdt_first_subnode" "ac_cv_have_decl_fdt_first_subnode" "#include <libfdt.h>
+"
+if test "x$ac_cv_have_decl_fdt_first_subnode" = xyes; then :
+  ac_have_decl=1
+else
+  ac_have_decl=0
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_DECL_FDT_FIRST_SUBNODE $ac_have_decl
+_ACEOF
+ac_fn_c_check_decl "$LINENO" "fdt_next_subnode" "ac_cv_have_decl_fdt_next_subnode" "#include <libfdt.h>
+"
+if test "x$ac_cv_have_decl_fdt_next_subnode" = xyes; then :
+  ac_have_decl=1
+else
+  ac_have_decl=0
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_DECL_FDT_NEXT_SUBNODE $ac_have_decl
+_ACEOF
 
 esac
 

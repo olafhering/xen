@@ -413,6 +413,12 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("kernel",           string),
     ("cmdline",          string),
     ("ramdisk",          string),
+    # Given the complexity of verifying the validity of a device tree,
+    # libxl doesn't do any security check on it. It's the responsibility
+    # of the caller to provide only trusted device tree.
+    # Note that the partial device tree should avoid to use the phandle
+    # 65000 which is reserved by the toolstack.
+    ("device_tree",      string),
     ("u", KeyedUnion(None, libxl_domain_type, "type",
                 [("hvm", Struct(None, [("firmware",         string),
                                        ("bios",             libxl_bios_type),
@@ -535,6 +541,10 @@ libxl_device_pci = Struct("device_pci", [
     ("seize", bool),
     ])
 
+libxl_device_dtdev = Struct("device_dtdev", [
+    ("path", string),
+    ])
+
 libxl_device_vtpm = Struct("device_vtpm", [
     ("backend_domid",    libxl_domid),
     ("backend_domname",  string),
@@ -599,6 +609,7 @@ libxl_domain_config = Struct("domain_config", [
     ("disks", Array(libxl_device_disk, "num_disks")),
     ("nics", Array(libxl_device_nic, "num_nics")),
     ("pcidevs", Array(libxl_device_pci, "num_pcidevs")),
+    ("dtdevs", Array(libxl_device_dtdev, "num_dtdevs")),
     ("vfbs", Array(libxl_device_vfb, "num_vfbs")),
     ("vkbs", Array(libxl_device_vkb, "num_vkbs")),
     ("vscsis", Array(libxl_device_vscsi, "num_vscsis")),

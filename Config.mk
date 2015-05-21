@@ -75,8 +75,8 @@ EXTRA_LIB += $(EXTRA_PREFIX)/lib
 endif
 
 PYTHON      ?= python
-PYTHON_PREFIX_ARG ?= --prefix="$(PREFIX)"
-# The above requires that PREFIX contains *no spaces*. This variable is here
+PYTHON_PREFIX_ARG ?= --prefix="$(prefix)"
+# The above requires that prefix contains *no spaces*. This variable is here
 # to permit the user to set PYTHON_PREFIX_ARG to '' to workaround this bug:
 #  https://bugs.launchpad.net/ubuntu/+bug/362570
 
@@ -142,7 +142,7 @@ define as-insn-check-closure
 endef
 
 define buildmakevars2shellvars
-    export PREFIX="$(PREFIX)";                                            \
+    export PREFIX="$(prefix)";                                            \
     export XEN_SCRIPT_DIR="$(XEN_SCRIPT_DIR)";                            \
     export XEN_ROOT="$(XEN_ROOT)"
 endef
@@ -157,9 +157,9 @@ define move-if-changed
 	if ! cmp -s $(1) $(2); then mv -f $(1) $(2); else rm -f $(1); fi
 endef
 
-BUILD_MAKE_VARS := SBINDIR BINDIR LIBEXEC LIBEXEC_BIN LIBDIR SHAREDIR \
+BUILD_MAKE_VARS := sbindir bindir LIBEXEC LIBEXEC_BIN libdir SHAREDIR \
                    XENFIRMWAREDIR XEN_CONFIG_DIR XEN_SCRIPT_DIR XEN_LOCK_DIR \
-                   XEN_RUN_DIR XEN_PAGING_DIR
+                   XEN_RUN_DIR XEN_PAGING_DIR XEN_DUMP_DIR
 
 buildmakevars2file = $(eval $(call buildmakevars2file-closure,$(1)))
 define buildmakevars2file-closure
@@ -204,7 +204,7 @@ CFLAGS += $(foreach i, $(EXTRA_INCLUDES), -I$(i))
 LDFLAGS += $(foreach i, $(PREPEND_LIB), -L$(i))
 CFLAGS += $(foreach i, $(PREPEND_INCLUDES), -I$(i))
 ifeq ($(XEN_TOOLS_RPATH),y)
-LDFLAGS += -Wl,-rpath,$(LIBDIR)
+LDFLAGS += -Wl,-rpath,$(libdir)
 endif
 APPEND_LDFLAGS += $(foreach i, $(APPEND_LIB), -L$(i))
 APPEND_CFLAGS += $(foreach i, $(APPEND_INCLUDES), -I$(i))
