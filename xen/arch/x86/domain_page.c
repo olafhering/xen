@@ -32,20 +32,25 @@ static inline struct vcpu *mapcache_current_vcpu(void)
         return NULL;
 
     /*
+     * When using efi runtime page tables, we have the equivalent of the idle
+     * domain's page tables but current may point at another domain's VCPU.
+     * Return NULL as though current is not properly set up yet.
+     */
+    if ( efi_enabled && efi_rs_using_pgtables() )
+        return NULL;
+
+    /*
      * If guest_table is NULL, and we are running a paravirtualised guest,
      * then it means we are running on the idle domain's page table and must
      * therefore use its mapcache.
      */
     if ( unlikely(pagetable_is_null(v->arch.guest_table)) && is_pv_vcpu(v) )
     {
-        unsigned long cr3;
-
         /* If we really are idling, perform lazy context switch now. */
         if ( (v = idle_vcpu[smp_processor_id()]) == current )
             sync_local_execstate();
         /* We must now be running on the idle page table. */
-        ASSERT((cr3 = read_cr3()) == __pa(idle_pg_table) ||
-               (efi_enabled && cr3 == efi_rs_page_table()));
+        ASSERT(read_cr3() == __pa(idle_pg_table));
     }
 
     return v;
@@ -160,7 +165,7 @@ void *map_domain_page(unsigned long mfn)
 
     spin_unlock(&dcache->lock);
 
-    l1e_write(&MAPCACHE_L1ENT(idx), l1e_from_pfn(mfn, __PAGE_HYPERVISOR));
+    l1e_write(&MAPCACHE_L1ENT(idx), l1e_from_pfn(mfn, __PAGE_HYPERVISOR_RW));
 
  out:
     local_irq_restore(flags);
@@ -317,6 +322,7 @@ int mapcache_vcpu_init(struct vcpu *v)
 
 void *map_domain_page_global(unsigned long mfn)
 {
+    mfn_t m = _mfn(mfn);
     ASSERT(!in_irq() && local_irq_is_enabled());
 
 #ifdef NDEBUG
@@ -324,7 +330,7 @@ void *map_domain_page_global(unsigned long mfn)
         return mfn_to_virt(mfn);
 #endif
 
-    return vmap(&mfn, 1);
+    return vmap(&m, 1);
 }
 
 void unmap_domain_page_global(const void *ptr)

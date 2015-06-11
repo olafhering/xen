@@ -88,21 +88,13 @@ static int modules_init(struct xc_hvm_build_args *args,
     return 0;
 }
 
-static void build_hvm_info(void *hvm_info_page, uint64_t mem_size,
-                           uint64_t mmio_start, uint64_t mmio_size,
+static void build_hvm_info(void *hvm_info_page,
                            struct xc_hvm_build_args *args)
 {
     struct hvm_info_table *hvm_info = (struct hvm_info_table *)
         (((unsigned char *)hvm_info_page) + HVM_INFO_OFFSET);
-    uint64_t lowmem_end = mem_size, highmem_end = 0;
     uint8_t sum;
     int i;
-
-    if ( lowmem_end > mmio_start )
-    {
-        highmem_end = (1ull<<32) + (lowmem_end - mmio_start);
-        lowmem_end = mmio_start;
-    }
 
     memset(hvm_info_page, 0, PAGE_SIZE);
 
@@ -116,13 +108,9 @@ static void build_hvm_info(void *hvm_info_page, uint64_t mem_size,
     memset(hvm_info->vcpu_online, 0xff, sizeof(hvm_info->vcpu_online));
 
     /* Memory parameters. */
-    hvm_info->low_mem_pgend = lowmem_end >> PAGE_SHIFT;
-    hvm_info->high_mem_pgend = highmem_end >> PAGE_SHIFT;
+    hvm_info->low_mem_pgend = args->lowmem_end >> PAGE_SHIFT;
+    hvm_info->high_mem_pgend = args->highmem_end >> PAGE_SHIFT;
     hvm_info->reserved_mem_pgstart = ioreq_server_pfn(0);
-
-    args->lowmem_end = lowmem_end;
-    args->highmem_end = highmem_end;
-    args->mmio_start = mmio_start;
 
     /* Finish with the checksum. */
     for ( i = 0, sum = 0; i < hvm_info->length; i++ )
@@ -250,9 +238,8 @@ static int setup_guest(xc_interface *xch,
 {
     xen_pfn_t *page_array = NULL;
     unsigned long i, vmemid, nr_pages = args->mem_size >> PAGE_SHIFT;
+    unsigned long p2m_size;
     unsigned long target_pages = args->mem_target >> PAGE_SHIFT;
-    uint64_t mmio_start = (1ull << 32) - args->mmio_size;
-    uint64_t mmio_size = args->mmio_size;
     unsigned long entry_eip, cur_pages, cur_pfn;
     void *hvm_info_page;
     uint32_t *ident_pt;
@@ -268,12 +255,16 @@ static int setup_guest(xc_interface *xch,
     xen_pfn_t special_array[NR_SPECIAL_PAGES];
     xen_pfn_t ioreq_server_array[NR_IOREQ_SERVER_PAGES];
     uint64_t total_pages;
-    xen_vmemrange_t dummy_vmemrange;
-    unsigned int dummy_vnode_to_pnode;
+    xen_vmemrange_t dummy_vmemrange[2];
+    unsigned int dummy_vnode_to_pnode[1];
+    bool use_dummy = false;
 
     memset(&elf, 0, sizeof(elf));
     if ( elf_init(&elf, image, image_size) != 0 )
+    {
+        PERROR("Could not initialise ELF image");
         goto error_out;
+    }
 
     xc_elf_set_logfile(xch, &elf, 1);
 
@@ -286,17 +277,36 @@ static int setup_guest(xc_interface *xch,
 
     if ( args->nr_vmemranges == 0 )
     {
-        /* Build dummy vnode information */
-        dummy_vmemrange.start = 0;
-        dummy_vmemrange.end   = args->mem_size;
-        dummy_vmemrange.flags = 0;
-        dummy_vmemrange.nid   = 0;
-        args->nr_vmemranges = 1;
-        args->vmemranges = &dummy_vmemrange;
+        /* Build dummy vnode information
+         *
+         * Guest physical address space layout:
+         * [0, hole_start) [hole_start, 4G) [4G, highmem_end)
+         *
+         * Of course if there is no high memory, the second vmemrange
+         * has no effect on the actual result.
+         */
 
-        dummy_vnode_to_pnode = XC_NUMA_NO_NODE;
+        dummy_vmemrange[0].start = 0;
+        dummy_vmemrange[0].end   = args->lowmem_end;
+        dummy_vmemrange[0].flags = 0;
+        dummy_vmemrange[0].nid   = 0;
+        args->nr_vmemranges = 1;
+
+        if ( args->highmem_end > (1ULL << 32) )
+        {
+            dummy_vmemrange[1].start = 1ULL << 32;
+            dummy_vmemrange[1].end   = args->highmem_end;
+            dummy_vmemrange[1].flags = 0;
+            dummy_vmemrange[1].nid   = 0;
+
+            args->nr_vmemranges++;
+        }
+
+        dummy_vnode_to_pnode[0] = XC_NUMA_NO_NODE;
         args->nr_vnodes = 1;
-        args->vnode_to_pnode = &dummy_vnode_to_pnode;
+        args->vmemranges = dummy_vmemrange;
+        args->vnode_to_pnode = dummy_vnode_to_pnode;
+        use_dummy = true;
     }
     else
     {
@@ -308,9 +318,15 @@ static int setup_guest(xc_interface *xch,
     }
 
     total_pages = 0;
+    p2m_size = 0;
     for ( i = 0; i < args->nr_vmemranges; i++ )
+    {
         total_pages += ((args->vmemranges[i].end - args->vmemranges[i].start)
                         >> PAGE_SHIFT);
+        p2m_size = p2m_size > (args->vmemranges[i].end >> PAGE_SHIFT) ?
+            p2m_size : (args->vmemranges[i].end >> PAGE_SHIFT);
+    }
+
     if ( total_pages != (args->mem_size >> PAGE_SHIFT) )
     {
         PERROR("vNUMA memory pages mismatch (0x%"PRIx64" != 0x%"PRIx64")",
@@ -336,16 +352,23 @@ static int setup_guest(xc_interface *xch,
     DPRINTF("  TOTAL:    %016"PRIx64"->%016"PRIx64"\n", v_start, v_end);
     DPRINTF("  ENTRY:    %016"PRIx64"\n", elf_uval(&elf, elf.ehdr, e_entry));
 
-    if ( (page_array = malloc(nr_pages * sizeof(xen_pfn_t))) == NULL )
+    if ( (page_array = malloc(p2m_size * sizeof(xen_pfn_t))) == NULL )
     {
         PERROR("Could not allocate memory.");
         goto error_out;
     }
 
-    for ( i = 0; i < nr_pages; i++ )
-        page_array[i] = i;
-    for ( i = mmio_start >> PAGE_SHIFT; i < nr_pages; i++ )
-        page_array[i] += mmio_size >> PAGE_SHIFT;
+    for ( i = 0; i < p2m_size; i++ )
+        page_array[i] = ((xen_pfn_t)-1);
+    for ( vmemid = 0; vmemid < args->nr_vmemranges; vmemid++ )
+    {
+        uint64_t pfn;
+
+        for ( pfn = args->vmemranges[vmemid].start >> PAGE_SHIFT;
+              pfn < args->vmemranges[vmemid].end >> PAGE_SHIFT;
+              pfn++ )
+            page_array[pfn] = pfn;
+    }
 
     /*
      * Try to claim pages for early warning of insufficient memory available.
@@ -446,7 +469,7 @@ static int setup_guest(xc_interface *xch,
                   * range */
                  !check_mmio_hole(cur_pfn << PAGE_SHIFT,
                                   SUPERPAGE_1GB_NR_PFNS << PAGE_SHIFT,
-                                  mmio_start, mmio_size) )
+                                  args->mmio_start, args->mmio_size) )
             {
                 long done;
                 unsigned long nr_extents = count >> SUPERPAGE_1GB_SHIFT;
@@ -536,16 +559,25 @@ static int setup_guest(xc_interface *xch,
     DPRINTF("  1GB PAGES: 0x%016lx\n", stat_1gb_pages);
     
     if ( loadelfimage(xch, &elf, dom, page_array) != 0 )
+    {
+        PERROR("Could not load ELF image");
         goto error_out;
+    }
 
     if ( loadmodules(xch, args, m_start, m_end, dom, page_array) != 0 )
-        goto error_out;    
+    {
+        PERROR("Could not load ACPI modules");
+        goto error_out;
+    }
 
     if ( (hvm_info_page = xc_map_foreign_range(
               xch, dom, PAGE_SIZE, PROT_READ | PROT_WRITE,
               HVM_INFO_PFN)) == NULL )
+    {
+        PERROR("Could not map hvm info page");
         goto error_out;
-    build_hvm_info(hvm_info_page, v_end, mmio_start, mmio_size, args);
+    }
+    build_hvm_info(hvm_info_page, args);
     munmap(hvm_info_page, PAGE_SIZE);
 
     /* Allocate and clear special pages. */
@@ -561,7 +593,10 @@ static int setup_guest(xc_interface *xch,
     }
 
     if ( xc_clear_domain_pages(xch, dom, special_pfn(0), NR_SPECIAL_PAGES) )
-            goto error_out;
+    {
+        PERROR("Could not clear special pages");
+        goto error_out;
+    }
 
     xc_hvm_param_set(xch, dom, HVM_PARAM_STORE_PFN,
                      special_pfn(SPECIALPAGE_XENSTORE));
@@ -594,7 +629,10 @@ static int setup_guest(xc_interface *xch,
     }
 
     if ( xc_clear_domain_pages(xch, dom, ioreq_server_pfn(0), NR_IOREQ_SERVER_PAGES) )
-            goto error_out;
+    {
+        PERROR("Could not clear ioreq page");
+        goto error_out;
+    }
 
     /* Tell the domain where the pages are and how many there are */
     xc_hvm_param_set(xch, dom, HVM_PARAM_IOREQ_SERVER_PFN,
@@ -609,7 +647,10 @@ static int setup_guest(xc_interface *xch,
     if ( (ident_pt = xc_map_foreign_range(
               xch, dom, PAGE_SIZE, PROT_READ | PROT_WRITE,
               special_pfn(SPECIALPAGE_IDENT_PT))) == NULL )
+    {
+        PERROR("Could not map special page ident_pt");
         goto error_out;
+    }
     for ( i = 0; i < PAGE_SIZE / sizeof(*ident_pt); i++ )
         ident_pt[i] = ((i << 22) | _PAGE_PRESENT | _PAGE_RW | _PAGE_USER |
                        _PAGE_ACCESSED | _PAGE_DIRTY | _PAGE_PSE);
@@ -624,7 +665,10 @@ static int setup_guest(xc_interface *xch,
         char *page0 = xc_map_foreign_range(
             xch, dom, PAGE_SIZE, PROT_READ | PROT_WRITE, 0);
         if ( page0 == NULL )
+        {
+            PERROR("Could not map page0");
             goto error_out;
+        }
         page0[0] = 0xe9;
         *(uint32_t *)&page0[1] = entry_eip - 5;
         munmap(page0, PAGE_SIZE);
@@ -635,6 +679,12 @@ static int setup_guest(xc_interface *xch,
  error_out:
     rc = -1;
  out:
+    if ( use_dummy )
+    {
+        args->nr_vnodes = 0;
+        args->vmemranges = NULL;
+        args->vnode_to_pnode = NULL;
+    }
     if ( elf_check_broken(&elf) )
         ERROR("HVM ELF broken: %s", elf_check_broken(&elf));
 
@@ -661,12 +711,6 @@ int xc_hvm_build(xc_interface *xch, uint32_t domid,
     if ( args.image_file_name == NULL )
         return -1;
 
-    if ( args.mem_target == 0 )
-        args.mem_target = args.mem_size;
-
-    if ( args.mmio_size == 0 )
-        args.mmio_size = HVM_BELOW_4G_MMIO_LENGTH;
-
     /* An HVM guest must be initialised with at least 2MB memory. */
     if ( args.mem_size < (2ull << 20) || args.mem_target < (2ull << 20) )
         return -1;
@@ -684,9 +728,6 @@ int xc_hvm_build(xc_interface *xch, uint32_t domid,
             args.acpi_module.guest_addr_out;
         hvm_args->smbios_module.guest_addr_out = 
             args.smbios_module.guest_addr_out;
-        hvm_args->lowmem_end = args.lowmem_end;
-        hvm_args->highmem_end = args.highmem_end;
-        hvm_args->mmio_start = args.mmio_start;
     }
 
     free(image);

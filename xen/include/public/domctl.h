@@ -699,18 +699,13 @@ typedef struct xen_domctl_disable_migrate {
 
 /* XEN_DOMCTL_gettscinfo */
 /* XEN_DOMCTL_settscinfo */
-struct xen_guest_tsc_info {
+typedef struct xen_domctl_tsc_info {
+    /* IN/OUT */
     uint32_t tsc_mode;
     uint32_t gtsc_khz;
     uint32_t incarnation;
     uint32_t pad;
     uint64_aligned_t elapsed_nsec;
-};
-typedef struct xen_guest_tsc_info xen_guest_tsc_info_t;
-DEFINE_XEN_GUEST_HANDLE(xen_guest_tsc_info_t);
-typedef struct xen_domctl_tsc_info {
-    XEN_GUEST_HANDLE_64(xen_guest_tsc_info_t) out_info; /* OUT */
-    xen_guest_tsc_info_t info; /* IN */
 } xen_domctl_tsc_info_t;
 
 /* XEN_DOMCTL_gdbsx_guestmemio      guest mem io */
@@ -1013,12 +1008,10 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_psr_cmt_op_t);
 #define XEN_DOMCTL_MONITOR_OP_ENABLE   0
 #define XEN_DOMCTL_MONITOR_OP_DISABLE  1
 
-#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_CR0            0
-#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_CR3            1
-#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_CR4            2
-#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_MSR            3
-#define XEN_DOMCTL_MONITOR_EVENT_SINGLESTEP            4
-#define XEN_DOMCTL_MONITOR_EVENT_SOFTWARE_BREAKPOINT   5
+#define XEN_DOMCTL_MONITOR_EVENT_WRITE_CTRLREG         0
+#define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_MSR            1
+#define XEN_DOMCTL_MONITOR_EVENT_SINGLESTEP            2
+#define XEN_DOMCTL_MONITOR_EVENT_SOFTWARE_BREAKPOINT   3
 
 struct xen_domctl_monitor_op {
     uint32_t op; /* XEN_DOMCTL_MONITOR_OP_* */
@@ -1029,6 +1022,8 @@ struct xen_domctl_monitor_op {
      */
     union {
         struct {
+            /* Which control register */
+            uint8_t index;
             /* Pause vCPU until response */
             uint8_t sync;
             /* Send event only on a change of value */
@@ -1041,7 +1036,7 @@ struct xen_domctl_monitor_op {
         } mov_to_msr;
     } u;
 };
-typedef struct xen_domctl__op xen_domctl_monitor_op_t;
+typedef struct xen_domctl_monitor_op xen_domctl_monitor_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_monitor_op_t);
 
 struct xen_domctl {

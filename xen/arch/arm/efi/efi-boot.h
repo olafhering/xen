@@ -6,6 +6,7 @@
 #include <xen/device_tree.h>
 #include <xen/libfdt/libfdt.h>
 #include <asm/setup.h>
+#include <asm/smp.h>
 
 void noreturn efi_xen_start(void *fdt_ptr, uint32_t fdt_size);
 
@@ -131,9 +132,10 @@ static EFI_STATUS __init efi_process_memory_map_bootinfo(EFI_MEMORY_DESCRIPTOR *
 
     for ( Index = 0; Index < (mmap_size / desc_size); Index++ )
     {
-        if ( desc_ptr->Type == EfiConventionalMemory
-             || desc_ptr->Type == EfiBootServicesCode
-             || desc_ptr->Type == EfiBootServicesData )
+        if ( desc_ptr->Type == EfiConventionalMemory ||
+             (!map_bs &&
+              (desc_ptr->Type == EfiBootServicesCode ||
+               desc_ptr->Type == EfiBootServicesData)) )
         {
             if ( i >= NR_MEM_BANKS )
             {
@@ -370,16 +372,14 @@ static void __init efi_arch_cfg_file_late(EFI_FILE_HANDLE dir_handle, char *sect
 {
 }
 
-static void *__init efi_arch_allocate_mmap_buffer(UINTN *map_size)
+static void *__init efi_arch_allocate_mmap_buffer(UINTN map_size)
 {
     void *ptr;
     EFI_STATUS status;
-    UINTN map_size_alloc = *map_size + EFI_PAGE_SIZE;
 
-    status = efi_bs->AllocatePool(EfiLoaderData, map_size_alloc, &ptr);
+    status = efi_bs->AllocatePool(EfiLoaderData, map_size, &ptr);
     if ( status != EFI_SUCCESS )
         return NULL;
-    *map_size = map_size_alloc;
     return ptr;
 }
 
@@ -522,6 +522,11 @@ static void __init efi_arch_blexit(void)
         efi_bs->FreePages(dtbfile.addr, PFN_UP(dtbfile.size));
     if ( memmap )
         efi_bs->FreePool(memmap);
+}
+
+static void __init efi_arch_halt(void)
+{
+    stop_cpu();
 }
 
 static void __init efi_arch_load_addr_check(EFI_LOADED_IMAGE *loaded_image)

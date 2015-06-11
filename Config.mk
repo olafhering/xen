@@ -266,9 +266,9 @@ SEABIOS_UPSTREAM_REVISION ?= rel-1.8.0
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= 3b45fcf0c163b9cff4d8115f7b75b42918a9b1b5
-# Thu Apr 9 19:49:24 2015 +0100
-# qemu-trad: xenstore: use relative path for device-model node
+QEMU_TRADITIONAL_REVISION ?= 38609ae72b0a9e09b42be94f469fef928a1049fa
+# Tue Jun 9 16:13:11 2015 +0100
+# ... by default. Add a per-device "permissive" mode similar to pciback's
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

@@ -101,7 +101,7 @@ unsigned long __read_mostly xen_virt_end;
 
 DEFINE_PER_CPU(struct tss_struct, init_tss);
 
-char __attribute__ ((__section__(".bss.stack_aligned"))) cpu0_stack[STACK_SIZE];
+char __section(".bss.stack_aligned") cpu0_stack[STACK_SIZE];
 
 struct cpuinfo_x86 __read_mostly boot_cpu_data = { 0, 0, 0, 0, -1 };
 
@@ -507,12 +507,33 @@ static void __init kexec_reserve_area(struct e820map *e820)
 
 static void noinline init_done(void)
 {
+    system_state = SYS_STATE_active;
+
+    domain_unpause_by_systemcontroller(hardware_domain);
+
     /* Free (or page-protect) the init areas. */
     memset(__init_begin, 0xcc, __init_end - __init_begin); /* int3 poison */
     free_xen_data(__init_begin, __init_end);
     printk("Freed %ldkB init memory.\n", (long)(__init_end-__init_begin)>>10);
 
     startup_cpu_idle_loop();
+}
+
+/* Reinitalise all state referring to the old virtual address of the stack. */
+static void __init noreturn reinit_bsp_stack(void)
+{
+    unsigned long *stack = (void*)(get_stack_bottom() & ~(STACK_SIZE - 1));
+
+    /* Update TSS and ISTs */
+    load_system_tables();
+
+    /* Update SYSCALL trampolines */
+    percpu_traps_init();
+
+    stack_base[0] = stack;
+    memguard_guard_stack(stack);
+
+    reset_stack_and_jump(init_done);
 }
 
 static bool_t __init loader_is_grub2(const char *loader_name)
@@ -673,9 +694,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     /* Check that we have at least one Multiboot module. */
     if ( !(mbi->flags & MBI_MODULES) || (mbi->mods_count == 0) )
         panic("dom0 kernel not specified. Check bootloader configuration.");
-
-    if ( ((unsigned long)cpu0_stack & (STACK_SIZE-1)) != 0 )
-        panic("Misaligned CPU0 stack.");
 
     if ( efi_enabled )
     {
@@ -901,7 +919,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             /* The only data mappings to be relocated are in the Xen area. */
             pl2e = __va(__pa(l2_xenmap));
             *pl2e++ = l2e_from_pfn(xen_phys_start >> PAGE_SHIFT,
-                                   PAGE_HYPERVISOR | _PAGE_PSE);
+                                   PAGE_HYPERVISOR_RWX | _PAGE_PSE);
             for ( i = 1; i < L2_PAGETABLE_ENTRIES; i++, pl2e++ )
             {
                 if ( !(l2e_get_flags(*pl2e) & _PAGE_PRESENT) )
@@ -1088,7 +1106,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             /* This range must not be passed to the boot allocator and
              * must also not be mapped with _PAGE_GLOBAL. */
             map_pages_to_xen((unsigned long)__va(map_e), PFN_DOWN(map_e),
-                             PFN_DOWN(e - map_e), __PAGE_HYPERVISOR);
+                             PFN_DOWN(e - map_e), __PAGE_HYPERVISOR_RW);
         }
         if ( s < map_s )
         {
@@ -1213,9 +1231,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     tboot_probe();
 
-    /* Unmap the first page of CPU0's stack. */
-    memguard_guard_stack(cpu0_stack);
-
     open_softirq(NEW_TLBFLUSH_CLOCK_PERIOD_SOFTIRQ, new_tlbflush_clock_period);
 
     if ( opt_watchdog ) 
@@ -1270,6 +1285,10 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     timer_init();
 
     init_idle_domain();
+
+    this_cpu(stubs.addr) = alloc_stub_page(smp_processor_id(),
+                                           &this_cpu(stubs).mfn);
+    BUG_ON(!this_cpu(stubs.addr));
 
     trap_init();
 
@@ -1420,6 +1439,10 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     if ( cpu_has_smap )
         write_cr4(read_cr4() & ~X86_CR4_SMAP);
 
+    printk("%sNX (Execute Disable) protection %sactive\n",
+           cpu_has_nx ? XENLOG_INFO : XENLOG_WARNING "Warning: ",
+           cpu_has_nx ? "" : "not ");
+
     /*
      * We're going to setup domain0 using the module(s) that we stashed safely
      * above our heap. The second module, if present, is an initrd ramdisk.
@@ -1449,11 +1472,11 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     setup_io_bitmap(dom0);
 
-    system_state = SYS_STATE_active;
-
-    domain_unpause_by_systemcontroller(dom0);
-
-    reset_stack_and_jump(init_done);
+    /* Jump to the 1:1 virtual mappings of cpu0_stack. */
+    asm volatile ("mov %[stk], %%rsp; jmp %c[fn]" ::
+                  [stk] "g" (__va(__pa(get_stack_bottom()))),
+                  [fn] "i" (reinit_bsp_stack) : "memory");
+    unreachable();
 }
 
 void arch_get_xen_caps(xen_capabilities_info_t *info)

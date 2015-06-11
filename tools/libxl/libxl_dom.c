@@ -920,6 +920,7 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
     libxl_ctx *ctx = libxl__gc_owner(gc);
     struct xc_hvm_build_args args = {};
     int ret, rc = ERROR_FAIL;
+    uint64_t mmio_start, lowmem_end, highmem_end;
 
     memset(&args, 0, sizeof(struct xc_hvm_build_args));
     /* The params from the configuration file are in Mb, which are then
@@ -941,9 +942,34 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
         LOG(ERROR, "initializing domain firmware failed");
         goto out;
     }
+    if (args.mem_target == 0)
+        args.mem_target = args.mem_size;
+    if (args.mmio_size == 0)
+        args.mmio_size = HVM_BELOW_4G_MMIO_LENGTH;
+    lowmem_end = args.mem_size;
+    highmem_end = 0;
+    mmio_start = (1ull << 32) - args.mmio_size;
+    if (lowmem_end > mmio_start)
+    {
+        highmem_end = (1ull << 32) + (lowmem_end - mmio_start);
+        lowmem_end = mmio_start;
+    }
+    args.lowmem_end = lowmem_end;
+    args.highmem_end = highmem_end;
+    args.mmio_start = mmio_start;
 
     if (info->num_vnuma_nodes != 0) {
         int i;
+
+        ret = libxl__vnuma_build_vmemrange_hvm(gc, domid, info, state, &args);
+        if (ret) {
+            LOGEV(ERROR, ret, "hvm build vmemranges failed");
+            goto out;
+        }
+        ret = libxl__vnuma_config_check(gc, info, state);
+        if (ret) goto out;
+        ret = set_vnuma_info(gc, domid, info, state);
+        if (ret) goto out;
 
         args.nr_vmemranges = state->num_vmemranges;
         args.vmemranges = libxl__malloc(gc, sizeof(*args.vmemranges) *
@@ -955,17 +981,6 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
             args.vmemranges[i].flags = state->vmemranges[i].flags;
             args.vmemranges[i].nid   = state->vmemranges[i].nid;
         }
-
-        /* Consider video ram belongs to vmemrange 0 -- just shrink it
-         * by the size of video ram.
-         */
-        if (((args.vmemranges[0].end - args.vmemranges[0].start) >> 10)
-            < info->video_memkb) {
-            LOG(ERROR, "vmemrange 0 too small to contain video ram");
-            goto out;
-        }
-
-        args.vmemranges[0].end -= (info->video_memkb << 10);
 
         args.nr_vnodes = info->num_vnuma_nodes;
         args.vnode_to_pnode = libxl__malloc(gc, sizeof(*args.vnode_to_pnode) *
@@ -980,17 +995,6 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
         goto out;
     }
 
-    if (info->num_vnuma_nodes != 0) {
-        ret = libxl__vnuma_build_vmemrange_hvm(gc, domid, info, state, &args);
-        if (ret) {
-            LOGEV(ERROR, ret, "hvm build vmemranges failed");
-            goto out;
-        }
-        ret = libxl__vnuma_config_check(gc, info, state);
-        if (ret) goto out;
-        ret = set_vnuma_info(gc, domid, info, state);
-        if (ret) goto out;
-    }
     ret = hvm_build_set_params(ctx->xch, domid, info, state->store_port,
                                &state->store_mfn, state->console_port,
                                &state->console_mfn, state->store_domid,

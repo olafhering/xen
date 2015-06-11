@@ -126,8 +126,7 @@
 #include <asm/pci.h>
 
 /* Mapping of the fixmap space needed early. */
-l1_pgentry_t __attribute__ ((__section__ (".bss.page_aligned")))
-    l1_fixmap[L1_PAGETABLE_ENTRIES];
+l1_pgentry_t __section(".bss.page_aligned") l1_fixmap[L1_PAGETABLE_ENTRIES];
 
 #define MEM_LOG(_f, _a...) gdprintk(XENLOG_WARNING , _f "\n" , ## _a)
 
@@ -2009,14 +2008,16 @@ int get_page(struct page_info *page, struct domain *domain)
     if ( likely(owner == domain) )
         return 1;
 
-    if ( owner != NULL )
-        put_page(page);
-
     if ( !paging_mode_refcounts(domain) && !domain->is_dying )
         gprintk(XENLOG_INFO,
-                "Error pfn %lx: rd=%p, od=%p, caf=%08lx, taf=%" PRtype_info "\n",
-                page_to_mfn(page), domain, owner,
-                page->count_info, page->u.inuse.type_info);
+                "Error pfn %lx: rd=%d od=%d caf=%08lx taf=%" PRtype_info "\n",
+                page_to_mfn(page), domain->domain_id,
+                owner ? owner->domain_id : DOMID_INVALID,
+                page->count_info - !!owner, page->u.inuse.type_info);
+
+    if ( owner )
+        put_page(page);
+
     return 0;
 }
 
@@ -4151,9 +4152,11 @@ int replace_grant_host_mapping(
 int donate_page(
     struct domain *d, struct page_info *page, unsigned int memflags)
 {
+    const struct domain *owner = dom_xen;
+
     spin_lock(&d->page_alloc_lock);
 
-    if ( is_xen_heap_page(page) || (page_get_owner(page) != NULL) )
+    if ( is_xen_heap_page(page) || ((owner = page_get_owner(page)) != NULL) )
         goto fail;
 
     if ( d->is_dying )
@@ -4178,9 +4181,10 @@ int donate_page(
 
  fail:
     spin_unlock(&d->page_alloc_lock);
-    MEM_LOG("Bad donate %p: ed=%p(%u), sd=%p, caf=%08lx, taf=%" PRtype_info,
-            (void *)page_to_mfn(page), d, d->domain_id,
-            page_get_owner(page), page->count_info, page->u.inuse.type_info);
+    MEM_LOG("Bad donate %lx: ed=%d sd=%d caf=%08lx taf=%" PRtype_info,
+            page_to_mfn(page), d->domain_id,
+            owner ? owner->domain_id : DOMID_INVALID,
+            page->count_info, page->u.inuse.type_info);
     return -1;
 }
 
@@ -4189,10 +4193,11 @@ int steal_page(
 {
     unsigned long x, y;
     bool_t drop_dom_ref = 0;
+    const struct domain *owner = dom_xen;
 
     spin_lock(&d->page_alloc_lock);
 
-    if ( is_xen_heap_page(page) || (page_get_owner(page) != d) )
+    if ( is_xen_heap_page(page) || ((owner = page_get_owner(page)) != d) )
         goto fail;
 
     /*
@@ -4227,9 +4232,10 @@ int steal_page(
 
  fail:
     spin_unlock(&d->page_alloc_lock);
-    MEM_LOG("Bad page %p: ed=%p(%u), sd=%p, caf=%08lx, taf=%" PRtype_info,
-            (void *)page_to_mfn(page), d, d->domain_id,
-            page_get_owner(page), page->count_info, page->u.inuse.type_info);
+    MEM_LOG("Bad page %lx: ed=%d sd=%d caf=%08lx taf=%" PRtype_info,
+            page_to_mfn(page), d->domain_id,
+            owner ? owner->domain_id : DOMID_INVALID,
+            page->count_info, page->u.inuse.type_info);
     return -1;
 }
 
@@ -4412,7 +4418,7 @@ long set_gdt(struct vcpu *v,
     for ( i = 0; i < nr_pages; i++ )
     {
         v->arch.pv_vcpu.gdt_frames[i] = frames[i];
-        l1e_write(&pl1e[i], l1e_from_pfn(frames[i], __PAGE_HYPERVISOR));
+        l1e_write(&pl1e[i], l1e_from_pfn(frames[i], __PAGE_HYPERVISOR_RW));
     }
 
     xfree(pfns);
@@ -5883,10 +5889,10 @@ void *__init arch_vmap_virt_end(void)
 
 void __iomem *ioremap(paddr_t pa, size_t len)
 {
-    unsigned long pfn = PFN_DOWN(pa);
+    mfn_t mfn = _mfn(PFN_DOWN(pa));
     void *va;
 
-    WARN_ON(page_is_ram_type(pfn, RAM_TYPE_CONVENTIONAL));
+    WARN_ON(page_is_ram_type(mfn_x(mfn), RAM_TYPE_CONVENTIONAL));
 
     /* The low first Mb is always mapped. */
     if ( !((pa + len - 1) >> 20) )
@@ -5896,7 +5902,7 @@ void __iomem *ioremap(paddr_t pa, size_t len)
         unsigned int offs = pa & (PAGE_SIZE - 1);
         unsigned int nr = PFN_UP(offs + len);
 
-        va = __vmap(&pfn, nr, 1, 1, PAGE_HYPERVISOR_NOCACHE) + offs;
+        va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_NOCACHE) + offs;
     }
 
     return (void __force __iomem *)va;
@@ -6003,7 +6009,7 @@ int create_perdomain_mapping(struct domain *d, unsigned long va,
                 if ( !IS_NIL(ppg) )
                     *ppg++ = pg;
                 l1tab[l1_table_offset(va)] =
-                    l1e_from_page(pg, __PAGE_HYPERVISOR | _PAGE_AVAIL0);
+                    l1e_from_page(pg, __PAGE_HYPERVISOR_RW | _PAGE_AVAIL0);
                 l2e_add_flags(*pl2e, _PAGE_AVAIL0);
             }
             else
@@ -6132,7 +6138,7 @@ void memguard_init(void)
         (unsigned long)__va(start),
         start >> PAGE_SHIFT,
         (__pa(&_end) + PAGE_SIZE - 1 - start) >> PAGE_SHIFT,
-        __PAGE_HYPERVISOR|MAP_SMALL_PAGES);
+        __PAGE_HYPERVISOR_RW|MAP_SMALL_PAGES);
     BUG_ON(start != xen_phys_start);
     map_pages_to_xen(
         XEN_VIRT_START,
@@ -6145,7 +6151,7 @@ static void __memguard_change_range(void *p, unsigned long l, int guard)
 {
     unsigned long _p = (unsigned long)p;
     unsigned long _l = (unsigned long)l;
-    unsigned int flags = __PAGE_HYPERVISOR | MAP_SMALL_PAGES;
+    unsigned int flags = __PAGE_HYPERVISOR_RW | MAP_SMALL_PAGES;
 
     /* Ensure we are dealing with a page-aligned whole number of pages. */
     ASSERT((_p&~PAGE_MASK) == 0);
