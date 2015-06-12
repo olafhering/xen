@@ -1169,7 +1169,7 @@ static void parse_config_data(const char *config_source,
     long l, vcpus = 0;
     XLU_Config *config;
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsis;
-    XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian;
+    XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
     int pci_msitranslate = 0;
