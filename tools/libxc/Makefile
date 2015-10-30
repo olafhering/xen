@@ -112,7 +112,6 @@ CFLAGS   += -I. -I./include $(CFLAGS_xeninclude)
 CFLAGS-$(CONFIG_Linux) += -D_GNU_SOURCE
 
 CFLAGS	+= $(PTHREAD_CFLAGS)
-CFLAGS  += -O0 -g3
 
 CTRL_LIB_OBJS := $(patsubst %.c,%.o,$(CTRL_SRCS-y))
 CTRL_PIC_OBJS := $(patsubst %.c,%.opic,$(CTRL_SRCS-y))
