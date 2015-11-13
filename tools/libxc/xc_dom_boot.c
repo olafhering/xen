@@ -53,25 +53,12 @@ static int setup_hypercall_page(struct xc_dom_image *dom)
                   dom->parms.virt_hypercall, pfn);
     domctl.cmd = XEN_DOMCTL_hypercall_init;
     domctl.domain = dom->guest_domid;
-    domctl.u.hypercall_init.gmfn = xc_dom_p2m_guest(dom, pfn);
+    domctl.u.hypercall_init.gmfn = xc_dom_p2m(dom, pfn);
     rc = do_domctl(dom->xch, &domctl);
     if ( rc != 0 )
         xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
                      "%s: HYPERCALL_INIT failed: %d - %s)",
                      __FUNCTION__, errno, strerror(errno));
-    return rc;
-}
-
-static int launch_vm(xc_interface *xch, domid_t domid,
-                     vcpu_guest_context_any_t *ctxt)
-{
-    int rc;
-
-    xc_dom_printf(xch, "%s: called, ctxt=%p", __FUNCTION__, ctxt);
-    rc = xc_vcpu_setcontext(xch, domid, 0, ctxt);
-    if ( rc != 0 )
-        xc_dom_panic(xch, XC_INTERNAL_ERROR,
-                     "%s: SETVCPUCONTEXT failed (rc=%d)", __FUNCTION__, rc);
     return rc;
 }
 
@@ -83,7 +70,7 @@ static int clear_page(struct xc_dom_image *dom, xen_pfn_t pfn)
     if ( pfn == 0 )
         return 0;
 
-    dst = xc_dom_p2m_host(dom, pfn);
+    dst = xc_dom_p2m(dom, pfn);
     DOMPRINTF("%s: pfn 0x%" PRIpfn ", mfn 0x%" PRIpfn "",
               __FUNCTION__, pfn, dst);
     rc = xc_clear_domain_page(dom->xch, dom->guest_domid, dst);
@@ -146,7 +133,7 @@ int xc_dom_boot_mem_init(struct xc_dom_image *dom)
 
     DOMPRINTF_CALLED(dom->xch);
 
-    rc = arch_setup_meminit(dom);
+    rc = dom->arch_hooks->meminit(dom);
     if ( rc != 0 )
     {
         xc_dom_panic(dom->xch, XC_OUT_OF_MEMORY,
@@ -177,7 +164,7 @@ void *xc_dom_boot_domU_map(struct xc_dom_image *dom, xen_pfn_t pfn,
     }
 
     for ( i = 0; i < count; i++ )
-        entries[i].mfn = xc_dom_p2m_host(dom, pfn + i);
+        entries[i].mfn = xc_dom_p2m(dom, pfn + i);
 
     ptr = xc_map_foreign_ranges(dom->xch, dom->guest_domid,
                 count << page_shift, PROT_READ | PROT_WRITE, 1 << page_shift,
@@ -197,18 +184,13 @@ void *xc_dom_boot_domU_map(struct xc_dom_image *dom, xen_pfn_t pfn,
 
 int xc_dom_boot_image(struct xc_dom_image *dom)
 {
-    DECLARE_HYPERCALL_BUFFER(vcpu_guest_context_any_t, ctxt);
     xc_dominfo_t info;
     int rc;
-
-    ctxt = xc_hypercall_buffer_alloc(dom->xch, ctxt, sizeof(*ctxt));
-    if ( ctxt == NULL )
-        return -1;
 
     DOMPRINTF_CALLED(dom->xch);
 
     /* misc stuff*/
-    if ( (rc = arch_setup_bootearly(dom)) != 0 )
+    if ( (rc = dom->arch_hooks->bootearly(dom)) != 0 )
         return rc;
 
     /* collect some info */
@@ -255,17 +237,14 @@ int xc_dom_boot_image(struct xc_dom_image *dom)
     xc_dom_log_memory_footprint(dom);
 
     /* misc x86 stuff */
-    if ( (rc = arch_setup_bootlate(dom)) != 0 )
+    if ( (rc = dom->arch_hooks->bootlate(dom)) != 0 )
         return rc;
 
     /* let the vm run */
-    memset(ctxt, 0, sizeof(*ctxt));
-    if ( (rc = dom->arch_hooks->vcpu(dom, ctxt)) != 0 )
+    if ( (rc = dom->arch_hooks->vcpu(dom)) != 0 )
         return rc;
     xc_dom_unmap_all(dom);
-    rc = launch_vm(dom->xch, dom->guest_domid, ctxt);
 
-    xc_hypercall_buffer_free(dom->xch, ctxt);
     return rc;
 }
 
@@ -434,8 +413,8 @@ int xc_dom_gnttab_init(struct xc_dom_image *dom)
                                       dom->console_domid, dom->xenstore_domid);
     } else {
         return xc_dom_gnttab_seed(dom->xch, dom->guest_domid,
-                                  xc_dom_p2m_host(dom, dom->console_pfn),
-                                  xc_dom_p2m_host(dom, dom->xenstore_pfn),
+                                  xc_dom_p2m(dom, dom->console_pfn),
+                                  xc_dom_p2m(dom, dom->xenstore_pfn),
                                   dom->console_domid, dom->xenstore_domid);
     }
 }

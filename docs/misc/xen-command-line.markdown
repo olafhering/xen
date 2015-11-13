@@ -391,11 +391,12 @@ If set, force use of the performance counters for oprofile, rather than detectin
 available support.
 
 ### cpufreq
-> `= dom0-kernel | none | xen[,[powersave|performance|ondemand|userspace][,<maxfreq>][,[<minfreq>][,[verbose]]]]`
+> `= none | {{ <boolean> | xen } [:[powersave|performance|ondemand|userspace][,<maxfreq>][,[<minfreq>][,[verbose]]]]} | dom0-kernel`
 
 > Default: `xen`
 
-Indicate where the responsibility for driving power states lies.
+Indicate where the responsibility for driving power states lies.  Note that the
+choice of `dom0-kernel` is deprecated and not supported by all Dom0 kernels.
 
 * Default governor policy is ondemand.
 * `<maxfreq>` and `<minfreq>` are integers which represent max and min processor frequencies
@@ -705,19 +706,28 @@ virtualization, to allow the L1 hypervisor to use EPT even if the L0 hypervisor
 does not provide VM\_ENTRY\_LOAD\_GUEST\_PAT.
 
 ### ept (Intel)
-> `= List of ( pml<boolean> )`
+> `= List of ( {no-}pml | {no-}ad )`
+
+Controls EPT related features.
+
+> Sub-options:
+
+> `pml`
 
 > Default: `false`
 
-Controls EPT related features. Currently only Page Modification Logging (PML) is
-the controllable feature as boolean type.
+>> PML is a new hardware feature in Intel's Broadwell Server and further
+>> platforms which reduces hypervisor overhead of log-dirty mechanism by
+>> automatically recording GPAs (guest physical addresses) when guest memory
+>> gets dirty, and therefore significantly reducing number of EPT violation
+>> caused by write protection of guest memory, which is a necessity to
+>> implement log-dirty mechanism before PML.
 
-PML is a new hardware feature in Intel's Broadwell Server and further platforms
-which reduces hypervisor overhead of log-dirty mechanism by automatically
-recording GPAs (guest physical addresses) when guest memory gets dirty, and
-therefore significantly reducing number of EPT violation caused by write
-protection of guest memory, which is a necessity to implement log-dirty
-mechanism before PML.
+> `ad`
+
+> Default: Hardware dependent
+
+>> Have hardware keep accessed/dirty (A/D) bits updated.
 
 ### gdb
 > `= <baud>[/<clock_hz>][,DPS[,<io-base>[,<irq>[,<port-bdf>[,<bridge-bdf>]]]] | pci | amt ] `
@@ -1165,9 +1175,9 @@ This option can be specified more than once (up to 8 times at present).
 > `= <integer>`
 
 ### psr (Intel)
-> `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> )`
+> `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> | cdp:<boolean> )`
 
-> Default: `psr=cmt:0,rmid_max:255,cat:0,cos_max:255`
+> Default: `psr=cmt:0,rmid_max:255,cat:0,cos_max:255,cdp:0`
 
 Platform Shared Resource(PSR) Services.  Intel Haswell and later server
 platforms offer information about the sharing of resources.
@@ -1197,6 +1207,13 @@ The following resources are available:
   the cache allocation.
   * `cat` instructs Xen to enable/disable Cache Allocation Technology.
   * `cos_max` indicates the max value for COS ID.
+* Code and Data Prioritization Technology (Broadwell and later). Information
+  regarding the code cache and the data cache allocation. CDP is based on CAT.
+  * `cdp` instructs Xen to enable/disable Code and Data Prioritization. Note
+    that `cos_max` of CDP is a little different from `cos_max` of CAT. With
+    CDP, one COS will corespond two CBMs other than one with CAT, due to the
+    sum of CBMs is fixed, that means actual `cos_max` in use will automatically
+    reduce to half when CDP is enabled.
 
 ### reboot
 > `= t[riple] | k[bd] | a[cpi] | p[ci] | P[ower] | e[fi] | n[o] [, [w]arm | [c]old]`

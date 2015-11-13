@@ -206,6 +206,7 @@ struct hvm_function_table {
 
     void (*enable_msr_exit_interception)(struct domain *d);
     bool_t (*is_singlestep_supported)(void);
+    int (*set_mode)(struct vcpu *v, int mode);
 
     /* Alternate p2m */
     void (*altp2m_vcpu_update_p2m)(struct vcpu *v);
@@ -225,6 +226,7 @@ extern const struct hvm_function_table *start_vmx(void);
 int hvm_domain_initialise(struct domain *d);
 void hvm_domain_relinquish_resources(struct domain *d);
 void hvm_domain_destroy(struct domain *d);
+void hvm_domain_soft_reset(struct domain *d);
 
 int hvm_vcpu_initialise(struct vcpu *v);
 void hvm_vcpu_destroy(struct vcpu *v);
@@ -246,6 +248,7 @@ void hvm_set_guest_tsc_fixed(struct vcpu *v, u64 guest_tsc, u64 at_tsc);
 u64 hvm_get_guest_tsc_fixed(struct vcpu *v, u64 at_tsc);
 #define hvm_get_guest_tsc(v) hvm_get_guest_tsc_fixed(v, 0)
 
+int hvm_set_mode(struct vcpu *v, int mode);
 void hvm_init_guest_time(struct domain *d);
 void hvm_set_guest_time(struct vcpu *v, u64 guest_time);
 u64 hvm_get_guest_time_fixed(struct vcpu *v, u64 at_tsc);
@@ -275,10 +278,8 @@ int hvm_girq_dest_2_vcpu_id(struct domain *d, uint8_t dest, uint8_t dest_mode);
     (!!((v)->arch.hvm_vcpu.guest_efer & EFER_NX))
 
 /* Can we use superpages in the HAP p2m table? */
-#define hvm_hap_has_1gb(d) \
-    (hvm_funcs.hap_capabilities & HVM_HAP_SUPERPAGE_1GB)
-#define hvm_hap_has_2mb(d) \
-    (hvm_funcs.hap_capabilities & HVM_HAP_SUPERPAGE_2MB)
+#define hap_has_1gb (!!(hvm_funcs.hap_capabilities & HVM_HAP_SUPERPAGE_1GB))
+#define hap_has_2mb (!!(hvm_funcs.hap_capabilities & HVM_HAP_SUPERPAGE_2MB))
 
 /* Can the guest use 1GB superpages in its own pagetables? */
 #define hvm_pse1gb_supported(d) \
@@ -384,7 +385,10 @@ static inline int hvm_event_pending(struct vcpu *v)
     (X86_CR4_VMXE | X86_CR4_PAE | X86_CR4_MCE))
 
 /* These exceptions must always be intercepted. */
-#define HVM_TRAP_MASK ((1U << TRAP_machine_check) | (1U << TRAP_invalid_op))
+#define HVM_TRAP_MASK ((1U << TRAP_debug)           | \
+                       (1U << TRAP_invalid_op)      | \
+                       (1U << TRAP_alignment_check) | \
+                       (1U << TRAP_machine_check))
 
 /*
  * x86 event types. This enumeration is valid for:
@@ -444,6 +448,7 @@ void *hvm_map_guest_frame_rw(unsigned long gfn, bool_t permanent,
                              bool_t *writable);
 void *hvm_map_guest_frame_ro(unsigned long gfn, bool_t permanent);
 void hvm_unmap_guest_frame(void *p, bool_t permanent);
+void hvm_mapped_guest_frames_mark_dirty(struct domain *);
 
 static inline void hvm_set_info_guest(struct vcpu *v)
 {
@@ -545,13 +550,6 @@ static inline bool_t hvm_altp2m_supported(void)
 {
     return hvm_funcs.altp2m_supported;
 }
-
-#ifndef NDEBUG
-/* Permit use of the Forced Emulation Prefix in HVM guests */
-extern bool_t opt_hvm_fep;
-#else
-#define opt_hvm_fep 0
-#endif
 
 /* updates the current hardware p2m */
 void altp2m_vcpu_update_p2m(struct vcpu *v);

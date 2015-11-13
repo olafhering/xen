@@ -260,7 +260,6 @@ struct vcpu
 /* Per-domain lock can be recursively acquired in fault handlers. */
 #define domain_lock(d) spin_lock_recursive(&(d)->domain_lock)
 #define domain_unlock(d) spin_unlock_recursive(&(d)->domain_lock)
-#define domain_is_locked(d) spin_is_locked(&(d)->domain_lock)
 
 /* VM event */
 struct vm_event_domain
@@ -464,29 +463,6 @@ struct domain
     struct vnuma_info *vnuma;
 };
 
-struct domain_setup_info
-{
-    /* Initialised by caller. */
-    unsigned long image_addr;
-    unsigned long image_len;
-    /* Initialised by loader: Public. */
-    unsigned long v_start;
-    unsigned long v_end;
-    unsigned long v_kernstart;
-    unsigned long v_kernend;
-    unsigned long v_kernentry;
-#define PAEKERN_no           0
-#define PAEKERN_yes          1
-#define PAEKERN_extended_cr3 2
-#define PAEKERN_bimodal      3
-    unsigned int  pae_kernel;
-    /* Initialised by loader: Private. */
-    unsigned long elf_paddr_offset;
-    unsigned int  load_symtab;
-    unsigned long symtab_addr;
-    unsigned long symtab_len;
-};
-
 /* Protect updates/reads (resp.) of domain_list and domain_hash. */
 extern spinlock_t domlist_update_lock;
 extern rcu_read_lock_t domlist_read_lock;
@@ -609,6 +585,8 @@ int domain_kill(struct domain *d);
 void domain_shutdown(struct domain *d, u8 reason);
 void domain_resume(struct domain *d);
 void domain_pause_for_debugger(void);
+
+int domain_soft_reset(struct domain *d);
 
 int vcpu_start_shutdown_deferral(struct vcpu *v);
 void vcpu_end_shutdown_deferral(struct vcpu *v);
@@ -891,8 +869,6 @@ int cpupool_move_domain(struct domain *d, struct cpupool *c);
 int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op);
 void schedule_dump(struct cpupool *c);
 extern void dump_runq(unsigned char key);
-
-#define num_cpupool_cpus(c) cpumask_weight((c)->cpu_valid)
 
 void arch_do_physinfo(xen_sysctl_physinfo_t *pi);
 

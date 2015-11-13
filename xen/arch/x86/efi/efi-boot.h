@@ -225,7 +225,7 @@ static void __init noreturn efi_arch_post_exit_boot(void)
     asm volatile("pushq $0\n\tpopfq");
     rdmsrl(MSR_EFER, efer);
     efer |= EFER_SCE;
-    if ( cpuid_ext_features & (1 << (X86_FEATURE_NX & 0x1f)) )
+    if ( cpuid_ext_features & cpufeat_mask(X86_FEATURE_NX) )
         efer |= EFER_NX;
     wrmsrl(MSR_EFER, efer);
     write_cr0(X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_WP |
@@ -608,7 +608,8 @@ static void __init efi_arch_cpu(void)
     if ( cpuid_eax(0x80000000) > 0x80000000 )
     {
         cpuid_ext_features = cpuid_edx(0x80000001);
-        boot_cpu_data.x86_capability[1] = cpuid_ext_features;
+        boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_SYSCALL)]
+            = cpuid_ext_features;
     }
 }
 
@@ -639,6 +640,8 @@ static bool_t __init efi_arch_use_config_file(EFI_SYSTEM_TABLE *SystemTable)
 {
     return 1; /* x86 always uses a config file */
 }
+
+static void efi_arch_flush_dcache_area(const void *vaddr, UINTN size) { }
 
 /*
  * Local variables:

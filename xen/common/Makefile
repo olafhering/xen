@@ -1,5 +1,5 @@
 obj-y += bitmap.o
-obj-y += core_parking.o
+obj-$(HAS_CORE_PARKING) += core_parking.o
 obj-y += cpu.o
 obj-y += cpupool.o
 obj-$(HAS_DEVICE_TREE) += device_tree.o
@@ -10,11 +10,12 @@ obj-y += event_channel.o
 obj-y += event_fifo.o
 obj-y += grant_table.o
 obj-y += guestcopy.o
+obj-bin-y += gunzip.init.o
 obj-y += irq.o
 obj-y += kernel.o
 obj-y += keyhandler.o
-obj-$(HAS_KEXEC) += kexec.o
-obj-$(HAS_KEXEC) += kimage.o
+obj-$(CONFIG_KEXEC) += kexec.o
+obj-$(CONFIG_KEXEC) += kimage.o
 obj-y += lib.o
 obj-y += lzo.o
 obj-$(HAS_MEM_ACCESS) += mem_access.o
@@ -62,7 +63,7 @@ obj-$(perfc)       += perfc.o
 obj-$(crash_debug) += gdbstub.o
 obj-$(xenoprof)    += xenoprof.o
 
-subdir-$(CONFIG_COMPAT) += compat
+obj-$(CONFIG_COMPAT) += $(addprefix compat/,domain.o kernel.o memory.o multicall.o tmem_xen.o xlat.o)
 
 subdir-$(x86_64) += hvm
 

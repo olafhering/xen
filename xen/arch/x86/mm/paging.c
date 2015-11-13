@@ -29,6 +29,7 @@
 #include <asm/hvm/nestedhvm.h>
 #include <xen/numa.h>
 #include <xsm/xsm.h>
+#include <public/sched.h> /* SHUTDOWN_suspend */
 
 #include "mm-locks.h"
 
@@ -78,12 +79,10 @@ static mfn_t paging_new_log_dirty_page(struct domain *d)
 static mfn_t paging_new_log_dirty_leaf(struct domain *d)
 {
     mfn_t mfn = paging_new_log_dirty_page(d);
+
     if ( mfn_valid(mfn) )
-    {
-        void *leaf = map_domain_page(mfn);
-        clear_page(leaf);
-        unmap_domain_page(leaf);
-    }
+        clear_domain_page(mfn);
+
     return mfn;
 }
 
@@ -331,9 +330,9 @@ void paging_mark_gfn_dirty(struct domain *d, unsigned long pfn)
     unmap_domain_page(l1);
     if ( changed )
     {
-        PAGING_DEBUG(LOGDIRTY, 
+        PAGING_DEBUG(LOGDIRTY,
                      "marked mfn %" PRI_mfn " (pfn=%lx), dom %d\n",
-                     mfn_x(gmfn), pfn, d->domain_id);
+                     mfn_x(mfn), pfn, d->domain_id);
         d->arch.paging.log_dirty.dirty_count++;
     }
 
@@ -422,6 +421,14 @@ static int paging_log_dirty_op(struct domain *d,
 
     if ( !resuming )
     {
+        /*
+         * Mark dirty all currently write-mapped pages on e.g. the
+         * final iteration of a save operation.
+         */
+        if ( has_hvm_container_domain(d) &&
+             (sc->mode & XEN_DOMCTL_SHADOW_LOGDIRTY_FINAL) )
+            hvm_mapped_guest_frames_mark_dirty(d);
+
         domain_pause(d);
 
         /*
@@ -744,6 +751,8 @@ int paging_domctl(struct domain *d, xen_domctl_shadow_op_t *sc,
 
     case XEN_DOMCTL_SHADOW_OP_CLEAN:
     case XEN_DOMCTL_SHADOW_OP_PEEK:
+        if ( sc->mode & ~XEN_DOMCTL_SHADOW_LOGDIRTY_FINAL )
+            return -EINVAL;
         return paging_log_dirty_op(d, sc, resuming);
     }
 
@@ -815,7 +824,7 @@ int paging_teardown(struct domain *d)
         return rc;
 
     /* Move populate-on-demand cache back to domain_list for destruction */
-    p2m_pod_empty_cache(d);
+    rc = p2m_pod_empty_cache(d);
 
     return rc;
 }

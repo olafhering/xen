@@ -9,6 +9,8 @@
 #define __ASM_I386_CPUFEATURE_H
 #endif
 
+#include <xen/const.h>
+
 #define NCAPINTS	8	/* N 32-bit words worth of info */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (edx), word 0 */
@@ -43,6 +45,7 @@
 #define X86_FEATURE_ACC		(0*32+29) /* Automatic clock control */
 #define X86_FEATURE_IA64	(0*32+30) /* IA-64 processor */
 #define X86_FEATURE_PBE		(0*32+31) /* Pending Break Enable */
+#define X86_FEATURE_3DNOW_ALT	(0*32+31) /* AMD nonstandard 3DNow (Aliases PBE) */
 
 /* AMD-defined CPU features, CPUID level 0x80000001, word 1 */
 /* Don't duplicate feature flags which are redundant with Intel! */
@@ -57,7 +60,11 @@
 #define X86_FEATURE_3DNOWEXT	(1*32+30) /* AMD 3DNow! extensions */
 #define X86_FEATURE_3DNOW	(1*32+31) /* 3DNow! */
 
-/* *** Available for re-use ***, word 2 */
+/* Intel-defined CPU features, CPUID level 0x0000000D:1 (eax), word 2 */
+#define X86_FEATURE_XSAVEOPT	(2*32+ 0) /* XSAVEOPT instruction. */
+#define X86_FEATURE_XSAVEC	(2*32+ 1) /* XSAVEC/XRSTORC instructions. */
+#define X86_FEATURE_XGETBV1	(2*32+ 2) /* XGETBV with %ecx=1. */
+#define X86_FEATURE_XSAVES	(2*32+ 3) /* XSAVES/XRSTORS instructions. */
 
 /* Other features, Linux-defined mapping, word 3 */
 /* This range is used for feature bits which conflict or are synthesized */
@@ -69,6 +76,7 @@
 #define X86_FEATURE_XTOPOLOGY    (3*32+13) /* cpu topology enum extensions */
 #define X86_FEATURE_CPUID_FAULTING (3*32+14) /* cpuid faulting */
 #define X86_FEATURE_CLFLUSH_MONITOR (3*32+15) /* clflush reqd with monitor */
+#define X86_FEATURE_APERFMPERF   (3*32+16) /* APERFMPERF */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
 #define X86_FEATURE_XMM3	(4*32+ 0) /* Streaming SIMD Extensions-3 */
@@ -135,6 +143,7 @@
 #define X86_FEATURE_TBM         (6*32+21) /* trailing bit manipulations */
 #define X86_FEATURE_TOPOEXT     (6*32+22) /* topology extensions CPUID leafs */
 #define X86_FEATURE_DBEXT       (6*32+26) /* data breakpoint extension */
+#define X86_FEATURE_MWAITX      (6*32+29) /* MWAIT extension (MONITORX/MWAITX) */
 
 /* Intel-defined CPU features, CPUID level 0x00000007:0 (ebx), word 7 */
 #define X86_FEATURE_FSGSBASE	(7*32+ 0) /* {RD,WR}{FS,GS}BASE instructions */
@@ -154,42 +163,39 @@
 #define X86_FEATURE_ADX		(7*32+19) /* ADCX, ADOX instructions */
 #define X86_FEATURE_SMAP	(7*32+20) /* Supervisor Mode Access Prevention */
 
+#define cpufeat_word(idx)	((idx) / 32)
+#define cpufeat_bit(idx)	((idx) % 32)
+#define cpufeat_mask(idx)	(_AC(1, U) << cpufeat_bit(idx))
+
 #if !defined(__ASSEMBLY__) && !defined(X86_FEATURES_ONLY)
 #include <xen/bitops.h>
 
 #define cpu_has(c, bit)		test_bit(bit, (c)->x86_capability)
 #define boot_cpu_has(bit)	test_bit(bit, boot_cpu_data.x86_capability)
-#define cpufeat_mask(idx)       (1u << ((idx) & 31))
 
 #define CPUID_MWAIT_LEAF                5
 #define CPUID5_ECX_EXTENSIONS_SUPPORTED 0x1
 #define CPUID5_ECX_INTERRUPT_BREAK      0x2
 
-#define cpu_has_vme		0
+#define CPUID_PM_LEAF                    6
+#define CPUID6_ECX_APERFMPERF_CAPABILITY 0x1
+
 #define cpu_has_de		1
 #define cpu_has_pse		1
-#define cpu_has_tsc		1
 #define cpu_has_pge		1
 #define cpu_has_pat		1
 #define cpu_has_apic		boot_cpu_has(X86_FEATURE_APIC)
 #define cpu_has_sep		boot_cpu_has(X86_FEATURE_SEP)
 #define cpu_has_mtrr		1
 #define cpu_has_mmx		1
-#define cpu_has_fxsr		1
-#define cpu_has_xmm		1
-#define cpu_has_xmm2		1
 #define cpu_has_xmm3		boot_cpu_has(X86_FEATURE_XMM3)
 #define cpu_has_ht		boot_cpu_has(X86_FEATURE_HT)
-#define cpu_has_syscall		1
 #define cpu_has_mp		1
 #define cpu_has_nx		boot_cpu_has(X86_FEATURE_NX)
-#define cpu_has_k6_mtrr		0
-#define cpu_has_cyrix_arr	0
-#define cpu_has_centaur_mcr	0
 #define cpu_has_clflush		boot_cpu_has(X86_FEATURE_CLFLSH)
 #define cpu_has_page1gb		boot_cpu_has(X86_FEATURE_PAGE1GB)
-#define cpu_has_efer		1
 #define cpu_has_fsgsbase	boot_cpu_has(X86_FEATURE_FSGSBASE)
+#define cpu_has_aperfmperf	boot_cpu_has(X86_FEATURE_APERFMPERF)
 
 #define cpu_has_smep            boot_cpu_has(X86_FEATURE_SMEP)
 #define cpu_has_smap            boot_cpu_has(X86_FEATURE_SMAP)
@@ -218,6 +224,11 @@
 #define cpu_has_cpuid_faulting	boot_cpu_has(X86_FEATURE_CPUID_FAULTING)
 
 #define cpu_has_cx16            boot_cpu_has(X86_FEATURE_CX16)
+
+#define cpu_has_xsaveopt	boot_cpu_has(X86_FEATURE_XSAVEOPT)
+#define cpu_has_xsavec		boot_cpu_has(X86_FEATURE_XSAVEC)
+#define cpu_has_xgetbv1		boot_cpu_has(X86_FEATURE_XGETBV1)
+#define cpu_has_xsaves		boot_cpu_has(X86_FEATURE_XSAVES)
 
 enum _cache_type {
     CACHE_TYPE_NULL = 0,

@@ -65,7 +65,7 @@
 /* Global state */
 static struct {
     void __iomem * map_dbase; /* IO mapped Address of distributor registers */
-    void __iomem * map_cbase[2]; /* IO mapped Address of CPU interface registers */
+    void __iomem * map_cbase; /* IO mapped Address of CPU interface registers */
     void __iomem * map_hbase; /* IO Address of virtual interface registers */
     spinlock_t lock;
 } gicv2;
@@ -98,16 +98,12 @@ static inline uint32_t readl_gicd(unsigned int offset)
 
 static inline void writel_gicc(uint32_t val, unsigned int offset)
 {
-    unsigned int page = offset >> PAGE_SHIFT;
-    offset &= ~PAGE_MASK;
-    writel_relaxed(val, gicv2.map_cbase[page] + offset);
+    writel_relaxed(val, gicv2.map_cbase + offset);
 }
 
 static inline uint32_t readl_gicc(unsigned int offset)
 {
-    unsigned int page = offset >> PAGE_SHIFT;
-    offset &= ~PAGE_MASK;
-    return readl_relaxed(gicv2.map_cbase[page] + offset);
+    return readl_relaxed(gicv2.map_cbase + offset);
 }
 
 static inline void writel_gich(uint32_t val, unsigned int offset)
@@ -552,10 +548,9 @@ static void gicv2_irq_set_affinity(struct irq_desc *desc, const cpumask_t *cpu_m
 }
 
 static int gicv2_make_hwdom_dt_node(const struct domain *d,
-                                    const struct dt_device_node *node,
+                                    const struct dt_device_node *gic,
                                     void *fdt)
 {
-    const struct dt_device_node *gic = dt_interrupt_controller;
     const void *compatible = NULL;
     u32 len;
     const __be32 *regs;
@@ -584,7 +579,7 @@ static int gicv2_make_hwdom_dt_node(const struct domain *d,
         return -FDT_ERR_XEN(ENOENT);
     }
 
-    len = dt_cells_to_size(dt_n_addr_cells(node) + dt_n_size_cells(node));
+    len = dt_cells_to_size(dt_n_addr_cells(gic) + dt_n_size_cells(gic));
     len *= 2;
 
     res = fdt_property(fdt, "reg", regs, len);
@@ -615,17 +610,38 @@ static hw_irq_controller gicv2_guest_irq_type = {
     .set_affinity = gicv2_irq_set_affinity,
 };
 
+static bool_t gicv2_is_aliased(paddr_t cbase, paddr_t csize)
+{
+    uint32_t val_low, val_high;
+
+    if ( csize != SZ_128K )
+        return false;
+
+    /*
+     * Verify that we have the first 4kB of a GIC400
+     * aliased over the first 64kB by checking the
+     * GICC_IIDR register on both ends.
+     */
+    val_low = readl_gicc(GICC_IIDR);
+    val_high = readl_gicc(GICC_IIDR + 0xf000);
+
+    return ((val_low & 0xfff0fff) == 0x0202043B && val_low == val_high);
+}
+
 static int __init gicv2_init(void)
 {
     int res;
-    paddr_t hbase, dbase, cbase, vbase;
+    paddr_t hbase, dbase;
+    paddr_t cbase, csize;
+    paddr_t vbase, vsize;
+    uint32_t aliased_offset = 0;
     const struct dt_device_node *node = gicv2_info.node;
 
     res = dt_device_get_address(node, 0, &dbase, NULL);
     if ( res )
         panic("GICv2: Cannot find a valid address for the distributor");
 
-    res = dt_device_get_address(node, 1, &cbase, NULL);
+    res = dt_device_get_address(node, 1, &cbase, &csize);
     if ( res )
         panic("GICv2: Cannot find a valid address for the CPU");
 
@@ -633,7 +649,7 @@ static int __init gicv2_init(void)
     if ( res )
         panic("GICv2: Cannot find a valid address for the hypervisor");
 
-    res = dt_device_get_address(node, 3, &vbase, NULL);
+    res = dt_device_get_address(node, 3, &vbase, &vsize);
     if ( res )
         panic("GICv2: Cannot find a valid address for the virtual CPU");
 
@@ -642,7 +658,28 @@ static int __init gicv2_init(void)
         panic("GICv2: Cannot find the maintenance IRQ");
     gicv2_info.maintenance_irq = res;
 
-    /* TODO: Add check on distributor, cpu size */
+    /* TODO: Add check on distributor */
+
+    /*
+     * The GICv2 CPU interface should at least be 8KB. Although, most of the DT
+     * don't correctly set it and use the GICv1 CPU interface size (i.e 4KB).
+     * Warn and then fixup.
+     */
+    if ( csize < SZ_8K )
+    {
+        printk(XENLOG_WARNING "GICv2: WARNING: "
+               "The GICC size is too small: %#"PRIx64" expected %#x\n",
+               csize, SZ_8K);
+        csize = SZ_8K;
+    }
+
+    /*
+     * Check if the CPU interface and virtual CPU interface have the
+     * same size.
+     */
+    if ( csize != vsize )
+        panic("GICv2: Sizes of GICC (%#"PRIpaddr") and GICV (%#"PRIpaddr") don't match\n",
+               csize, vsize);
 
     printk("GICv2 initialization:\n"
               "        gic_dist_addr=%"PRIpaddr"\n"
@@ -661,21 +698,33 @@ static int __init gicv2_init(void)
     if ( !gicv2.map_dbase )
         panic("GICv2: Failed to ioremap for GIC distributor\n");
 
-    gicv2.map_cbase[0] = ioremap_nocache(cbase, PAGE_SIZE);
-
-    if ( platform_has_quirk(PLATFORM_QUIRK_GIC_64K_STRIDE) )
-        gicv2.map_cbase[1] = ioremap_nocache(cbase + SZ_64K, PAGE_SIZE);
-    else
-        gicv2.map_cbase[1] = ioremap_nocache(cbase + PAGE_SIZE, PAGE_SIZE);
-
-    if ( !gicv2.map_cbase[0] || !gicv2.map_cbase[1] )
+    gicv2.map_cbase = ioremap_nocache(cbase, csize);
+    if ( !gicv2.map_cbase )
         panic("GICv2: Failed to ioremap for GIC CPU interface\n");
+
+    if ( gicv2_is_aliased(cbase, csize) )
+    {
+        /*
+         * Move the base up by 60kB, so that we have a 8kB contiguous
+         * region, which allows us to use GICC_DIR at its
+         * normal offset.
+         * Note the variable cbase is not updated as we need the original
+         * value for the vGICv2 emulation.
+         */
+        aliased_offset = 0xf000;
+
+        gicv2.map_cbase += aliased_offset;
+
+        printk(XENLOG_WARNING
+               "GICv2: Adjusting CPU interface base to %#"PRIx64"\n",
+               cbase + aliased_offset);
+    }
 
     gicv2.map_hbase = ioremap_nocache(hbase, PAGE_SIZE);
     if ( !gicv2.map_hbase )
         panic("GICv2: Failed to ioremap for GIC Virtual interface\n");
 
-    vgic_v2_setup_hw(dbase, cbase, vbase);
+    vgic_v2_setup_hw(dbase, cbase, csize, vbase, aliased_offset);
 
     /* Global settings: interrupt distributor */
     spin_lock_init(&gicv2.lock);

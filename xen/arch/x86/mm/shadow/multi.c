@@ -20,7 +20,9 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <xen/config.h>
+/* Allow uniquely identifying static symbols in the 3 generated objects. */
+asm(".file \"" __OBJECT_FILE__ "\"");
+
 #include <xen/types.h>
 #include <xen/mm.h>
 #include <xen/trace.h>
@@ -73,8 +75,10 @@ typedef enum {
     ft_demand_write = FETCH_TYPE_DEMAND | FETCH_TYPE_WRITE,
 } fetch_type_t;
 
-#ifdef DEBUG_TRACE_DUMP
-static char *fetch_type_names[] = {
+extern const char *const fetch_type_names[];
+
+#if defined(DEBUG_TRACE_DUMP) && CONFIG_PAGING_LEVELS == GUEST_PAGING_LEVELS
+const char *const fetch_type_names[] = {
     [ft_prefetch]     "prefetch",
     [ft_demand_read]  "demand read",
     [ft_demand_write] "demand write",
@@ -366,7 +370,7 @@ static void sh_audit_gw(struct vcpu *v, walk_t *gw)
 
 
 #if (CONFIG_PAGING_LEVELS == GUEST_PAGING_LEVELS)
-void *
+static void *
 sh_guest_map_l1e(struct vcpu *v, unsigned long addr,
                   unsigned long *gl1mfn)
 {
@@ -390,7 +394,7 @@ sh_guest_map_l1e(struct vcpu *v, unsigned long addr,
     return pl1e;
 }
 
-void
+static void
 sh_guest_get_eff_l1e(struct vcpu *v, unsigned long addr, void *eff_l1e)
 {
     walk_t gw;
@@ -402,6 +406,48 @@ sh_guest_get_eff_l1e(struct vcpu *v, unsigned long addr, void *eff_l1e)
 
     (void) sh_walk_guest_tables(v, addr, &gw, PFEC_page_present);
     *(guest_l1e_t *)eff_l1e = gw.l1e;
+}
+
+/*
+ * Write a new value into the guest pagetable, and update the shadows
+ * appropriately.  Returns 0 if we page-faulted, 1 for success.
+ */
+static int
+sh_write_guest_entry(struct vcpu *v, guest_intpte_t *p,
+                     guest_intpte_t new, mfn_t gmfn)
+{
+    int failed;
+
+    paging_lock(v->domain);
+    failed = __copy_to_user(p, &new, sizeof(new));
+    if ( failed != sizeof(new) )
+        sh_validate_guest_entry(v, gmfn, p, sizeof(new));
+    paging_unlock(v->domain);
+
+    return !failed;
+}
+
+/*
+ * Cmpxchg a new value into the guest pagetable, and update the shadows
+ * appropriately. Returns 0 if we page-faulted, 1 if not.
+ * N.B. caller should check the value of "old" to see if the cmpxchg itself
+ * was successful.
+ */
+static int
+sh_cmpxchg_guest_entry(struct vcpu *v, guest_intpte_t *p,
+                       guest_intpte_t *old, guest_intpte_t new, mfn_t gmfn)
+{
+    int failed;
+    guest_intpte_t t = *old;
+
+    paging_lock(v->domain);
+    failed = cmpxchg_user(p, t, new);
+    if ( t == *old )
+        sh_validate_guest_entry(v, gmfn, p, sizeof(new));
+    *old = t;
+    paging_unlock(v->domain);
+
+    return !failed;
 }
 #endif /* CONFIG == GUEST (== SHADOW) */
 
@@ -5179,10 +5225,12 @@ const struct paging_mode sh_paging_mode = {
     .update_cr3                    = sh_update_cr3,
     .update_paging_modes           = shadow_update_paging_modes,
     .write_p2m_entry               = shadow_write_p2m_entry,
-    .write_guest_entry             = shadow_write_guest_entry,
-    .cmpxchg_guest_entry           = shadow_cmpxchg_guest_entry,
+#if CONFIG_PAGING_LEVELS == GUEST_PAGING_LEVELS
+    .write_guest_entry             = sh_write_guest_entry,
+    .cmpxchg_guest_entry           = sh_cmpxchg_guest_entry,
     .guest_map_l1e                 = sh_guest_map_l1e,
     .guest_get_eff_l1e             = sh_guest_get_eff_l1e,
+#endif
     .guest_levels                  = GUEST_PAGING_LEVELS,
     .shadow.detach_old_tables      = sh_detach_old_tables,
     .shadow.x86_emulate_write      = sh_x86_emulate_write,

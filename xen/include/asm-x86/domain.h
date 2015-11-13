@@ -14,6 +14,7 @@
 #define has_32bit_shinfo(d)    ((d)->arch.has_32bit_shinfo)
 #define is_pv_32bit_domain(d)  ((d)->arch.is_32bit_pv)
 #define is_pv_32bit_vcpu(v)    (is_pv_32bit_domain((v)->domain))
+#define is_pvh_32bit_domain(d) (is_pvh_domain(d) && has_32bit_shinfo(d))
 
 #define is_hvm_pv_evtchn_domain(d) (has_hvm_container_domain(d) && \
         d->arch.hvm_domain.irq.callback_via_type == HVMIRQ_callback_vector)
@@ -385,9 +386,21 @@ struct arch_domain
 
     /* Mem_access emulation control */
     bool_t mem_access_emulate_enabled;
+    bool_t mem_access_emulate_each_rep;
 
-    struct monitor_write_data *event_write_data;
+    /* Emulated devices enabled bitmap. */
+    uint32_t emulation_flags;
 } __cacheline_aligned;
+
+#define has_vlapic(d)      (!!((d)->arch.emulation_flags & XEN_X86_EMU_LAPIC))
+#define has_vhpet(d)       (!!((d)->arch.emulation_flags & XEN_X86_EMU_HPET))
+#define has_vpm(d)         (!!((d)->arch.emulation_flags & XEN_X86_EMU_PM))
+#define has_vrtc(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_RTC))
+#define has_vioapic(d)     (!!((d)->arch.emulation_flags & XEN_X86_EMU_IOAPIC))
+#define has_vpic(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_PIC))
+#define has_vvga(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_VGA))
+#define has_viommu(d)      (!!((d)->arch.emulation_flags & XEN_X86_EMU_IOMMU))
+#define has_vpit(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_PIT))
 
 #define has_arch_pdevs(d)    (!list_empty(&(d)->arch.pdev_list))
 
@@ -533,16 +546,7 @@ struct arch_vcpu
     /* A secondary copy of the vcpu time info. */
     XEN_GUEST_HANDLE(vcpu_time_info_t) time_info_guest;
 
-    /*
-     * Should we emulate the next matching instruction on VCPU resume
-     * after a vm_event?
-     */
-    struct {
-        uint32_t emulate_flags;
-        unsigned long gpa;
-        unsigned long eip;
-        struct vm_event_emul_read_data *emul_read_data;
-    } vm_event;
+    struct arch_vm_event *vm_event;
 };
 
 smap_check_policy_t smap_policy_change(struct vcpu *v,
@@ -585,6 +589,16 @@ void domain_cpuid(struct domain *d,
                   unsigned int  *edx);
 
 #define domain_max_vcpus(d) (is_hvm_domain(d) ? HVM_MAX_VCPUS : MAX_VIRT_CPUS)
+
+static inline struct vcpu_guest_context *alloc_vcpu_guest_context(void)
+{
+    return vmalloc(sizeof(struct vcpu_guest_context));
+}
+
+static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
+{
+    vfree(vgc);
+}
 
 #endif /* __ASM_DOMAIN_H__ */
 

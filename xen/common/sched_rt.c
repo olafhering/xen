@@ -256,7 +256,7 @@ rt_dump_vcpu(const struct scheduler *ops, const struct rt_vcpu *svc)
      */
     mask = _cpumask_scratch[svc->vcpu->processor];
 
-    cpupool_mask = cpupool_scheduler_cpumask(svc->vcpu->domain->cpupool);
+    cpupool_mask = cpupool_domain_cpumask(svc->vcpu->domain);
     cpumask_and(mask, cpupool_mask, svc->vcpu->cpu_hard_affinity);
     cpulist_scnprintf(keyhandler_scratch, sizeof(keyhandler_scratch), mask);
     printk("[%5d.%-2u] cpu %u, (%"PRI_stime", %"PRI_stime"),"
@@ -597,7 +597,7 @@ rt_alloc_vdata(const struct scheduler *ops, struct vcpu *vc, void *dd)
     if ( !is_idle_vcpu(vc) )
         svc->budget = RTDS_DEFAULT_BUDGET;
 
-    SCHED_STAT_CRANK(vcpu_init);
+    SCHED_STAT_CRANK(vcpu_alloc);
 
     return svc;
 }
@@ -635,6 +635,8 @@ rt_vcpu_insert(const struct scheduler *ops, struct vcpu *vc)
 
     /* add rt_vcpu svc to scheduler-specific vcpu list of the dom */
     list_add_tail(&svc->sdom_elem, &svc->sdom->vcpu);
+
+    SCHED_STAT_CRANK(vcpu_insert);
 }
 
 /*
@@ -648,7 +650,7 @@ rt_vcpu_remove(const struct scheduler *ops, struct vcpu *vc)
     struct rt_dom * const sdom = svc->sdom;
     spinlock_t *lock;
 
-    SCHED_STAT_CRANK(vcpu_destroy);
+    SCHED_STAT_CRANK(vcpu_remove);
 
     BUG_ON( sdom == NULL );
 
@@ -673,7 +675,7 @@ rt_cpu_pick(const struct scheduler *ops, struct vcpu *vc)
     cpumask_t *online;
     int cpu;
 
-    online = cpupool_scheduler_cpumask(vc->domain->cpupool);
+    online = cpupool_domain_cpumask(vc->domain);
     cpumask_and(&cpus, online, vc->cpu_hard_affinity);
 
     cpu = cpumask_test_cpu(vc->processor, &cpus)
@@ -753,7 +755,7 @@ __runq_pick(const struct scheduler *ops, const cpumask_t *mask)
         iter_svc = __q_elem(iter);
 
         /* mask cpu_hard_affinity & cpupool & mask */
-        online = cpupool_scheduler_cpumask(iter_svc->vcpu->domain->cpupool);
+        online = cpupool_domain_cpumask(iter_svc->vcpu->domain);
         cpumask_and(&cpu_common, online, iter_svc->vcpu->cpu_hard_affinity);
         cpumask_and(&cpu_common, mask, &cpu_common);
         if ( cpumask_empty(&cpu_common) )
@@ -929,7 +931,7 @@ rt_vcpu_sleep(const struct scheduler *ops, struct vcpu *vc)
         cpu_raise_softirq(vc->processor, SCHEDULE_SOFTIRQ);
     else if ( __vcpu_on_q(svc) )
         __q_remove(svc);
-    else if ( test_bit(__RTDS_delayed_runq_add, &svc->flags) )
+    else if ( svc->flags & RTDS_delayed_runq_add )
         clear_bit(__RTDS_delayed_runq_add, &svc->flags);
 }
 
@@ -965,7 +967,7 @@ runq_tickle(const struct scheduler *ops, struct rt_vcpu *new)
     if ( new == NULL || is_idle_vcpu(new->vcpu) )
         return;
 
-    online = cpupool_scheduler_cpumask(new->vcpu->domain->cpupool);
+    online = cpupool_domain_cpumask(new->vcpu->domain);
     cpumask_and(&not_tickled, online, new->vcpu->cpu_hard_affinity);
     cpumask_andnot(&not_tickled, &not_tickled, &prv->tickled);
 
@@ -1062,7 +1064,7 @@ rt_vcpu_wake(const struct scheduler *ops, struct vcpu *vc)
      * the Runqueue/DepletedQ. Instead, we set a flag so that it will be
      * put on the Runqueue/DepletedQ after the context has been saved.
      */
-    if ( unlikely(test_bit(__RTDS_scheduled, &svc->flags)) )
+    if ( unlikely(svc->flags & RTDS_scheduled) )
     {
         set_bit(__RTDS_delayed_runq_add, &svc->flags);
         return;
@@ -1078,7 +1080,7 @@ rt_vcpu_wake(const struct scheduler *ops, struct vcpu *vc)
 
     ASSERT(!list_empty(&prv->sdom));
     sdom = list_entry(prv->sdom.next, struct rt_dom, sdom_elem);
-    online = cpupool_scheduler_cpumask(sdom->dom->cpupool);
+    online = cpupool_domain_cpumask(sdom->dom);
     snext = __runq_pick(ops, online); /* pick snext from ALL valid cpus */
 
     runq_tickle(ops, snext);
@@ -1113,7 +1115,7 @@ rt_context_saved(const struct scheduler *ops, struct vcpu *vc)
 
         ASSERT(!list_empty(&prv->sdom));
         sdom = list_entry(prv->sdom.next, struct rt_dom, sdom_elem);
-        online = cpupool_scheduler_cpumask(sdom->dom->cpupool);
+        online = cpupool_domain_cpumask(sdom->dom);
         snext = __runq_pick(ops, online); /* pick snext from ALL cpus */
 
         runq_tickle(ops, snext);
@@ -1156,7 +1158,7 @@ rt_dom_cntl(
         spin_lock_irqsave(&prv->lock, flags);
         list_for_each( iter, &sdom->vcpu )
         {
-            struct rt_vcpu * svc = list_entry(iter, struct rt_vcpu, sdom_elem);
+            svc = list_entry(iter, struct rt_vcpu, sdom_elem);
             svc->period = MICROSECS(op->u.rtds.period); /* transfer to nanosec */
             svc->budget = MICROSECS(op->u.rtds.budget);
         }

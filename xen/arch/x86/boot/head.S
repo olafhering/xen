@@ -142,7 +142,7 @@ __start:
         mov     %edx,sym_phys(boot_cpu_data)+CPUINFO_FEATURE_OFFSET(X86_FEATURE_LM)
 
         /* Check for availability of long mode. */
-        bt      $X86_FEATURE_LM & 0x1f,%edx
+        bt      $cpufeat_bit(X86_FEATURE_LM),%edx
         jnc     bad_cpu
 
         /* Stash TSC to calculate a good approximation of time-since-boot */
@@ -169,7 +169,6 @@ __start:
         /* Apply relocations to bootstrap trampoline. */
         mov     sym_phys(trampoline_phys),%edx
         mov     $sym_phys(__trampoline_rel_start),%edi
-        mov     %edx,sym_phys(trampoline_phys)
 1:
         mov     (%edi),%eax
         add     %edx,(%edi,%eax)

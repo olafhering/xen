@@ -61,14 +61,14 @@ static char *xc_dom_guest_type(struct xc_dom_image *dom,
     case EM_386:
         switch ( dom->parms.pae )
         {
-        case 3 /* PAEKERN_bimodal */:
+        case XEN_PAE_BIMODAL:
             if ( strstr(dom->xen_caps, "xen-3.0-x86_32p") )
                 return "xen-3.0-x86_32p";
             return "xen-3.0-x86_32";
-        case PAEKERN_extended_cr3:
-        case PAEKERN_yes:
+        case XEN_PAE_EXTCR3:
+        case XEN_PAE_YES:
             return "xen-3.0-x86_32p";
-        case PAEKERN_no:
+        case XEN_PAE_NO:
         default:
             return "xen-3.0-x86_32";
         }
@@ -106,7 +106,27 @@ static elf_negerrnoval check_elf_kernel(struct xc_dom_image *dom, bool verbose)
 
 static elf_negerrnoval xc_dom_probe_elf_kernel(struct xc_dom_image *dom)
 {
-    return check_elf_kernel(dom, 0);
+    struct elf_binary elf;
+    int rc;
+
+    rc = check_elf_kernel(dom, 0);
+    if ( rc != 0 )
+        return rc;
+
+    rc = elf_init(&elf, dom->kernel_blob, dom->kernel_size);
+    if ( rc != 0 )
+        return rc;
+
+    /*
+     * We need to check that it contains Xen ELFNOTES,
+     * or else we might be trying to load a plain ELF.
+     */
+    elf_parse_binary(&elf);
+    rc = elf_xen_parse(&elf, &dom->parms);
+    if ( rc != 0 )
+        return rc;
+
+    return 0;
 }
 
 static elf_errorstatus xc_dom_load_elf_symtab(struct xc_dom_image *dom,

@@ -36,25 +36,31 @@ static struct {
     bool_t enabled;
     /* Distributor interface address */
     paddr_t dbase;
-    /* CPU interface address */
+    /* CPU interface address & size */
     paddr_t cbase;
+    paddr_t csize;
     /* Virtual CPU interface address */
     paddr_t vbase;
+
+    /* Offset to add to get an 8kB contiguous region if GIC is aliased */
+    uint32_t aliased_offset;
 } vgic_v2_hw;
 
-void vgic_v2_setup_hw(paddr_t dbase, paddr_t cbase, paddr_t vbase)
+void vgic_v2_setup_hw(paddr_t dbase, paddr_t cbase, paddr_t csize,
+                      paddr_t vbase, uint32_t aliased_offset)
 {
     vgic_v2_hw.enabled = 1;
     vgic_v2_hw.dbase = dbase;
     vgic_v2_hw.cbase = cbase;
+    vgic_v2_hw.csize = csize;
     vgic_v2_hw.vbase = vbase;
+    vgic_v2_hw.aliased_offset = aliased_offset;
 }
 
-static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
+static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info,
+                                   register_t *r, void *priv)
 {
     struct hsr_dabt dabt = info->dabt;
-    struct cpu_user_regs *regs = guest_cpu_user_regs();
-    register_t *r = select_user_reg(regs, dabt.reg);
     struct vgic_irq_rank *rank;
     int gicd_reg = (int)(info->gpa - v->domain->arch.vgic.dbase);
     unsigned long flags;
@@ -130,7 +136,7 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
         *r = rank->v2.itargets[REG_RANK_INDEX(8, gicd_reg - GICD_ITARGETSR,
                                               DABT_WORD)];
         if ( dabt.size == DABT_BYTE )
-            *r = vgic_byte_read(*r, dabt.sign, gicd_reg);
+            *r = vgic_byte_read(*r, gicd_reg);
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
@@ -140,10 +146,10 @@ static int vgic_v2_distr_mmio_read(struct vcpu *v, mmio_info_t *info)
         if ( rank == NULL) goto read_as_zero;
 
         vgic_lock_rank(v, rank, flags);
-        *r = rank->ipriority[REG_RANK_INDEX(8, gicd_reg - GICD_IPRIORITYR,
-                                            DABT_WORD)];
+        *r = rank->ipriorityr[REG_RANK_INDEX(8, gicd_reg - GICD_IPRIORITYR,
+                                             DABT_WORD)];
         if ( dabt.size == DABT_BYTE )
-            *r = vgic_byte_read(*r, dabt.sign, gicd_reg);
+            *r = vgic_byte_read(*r, gicd_reg);
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
@@ -247,11 +253,10 @@ static int vgic_v2_to_sgi(struct vcpu *v, register_t sgir)
     return vgic_to_sgi(v, sgir, sgi_mode, virq, &target);
 }
 
-static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
+static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info,
+                                    register_t r, void *priv)
 {
     struct hsr_dabt dabt = info->dabt;
-    struct cpu_user_regs *regs = guest_cpu_user_regs();
-    register_t *r = select_user_reg(regs, dabt.reg);
     struct vgic_irq_rank *rank;
     int gicd_reg = (int)(info->gpa - v->domain->arch.vgic.dbase);
     uint32_t tr;
@@ -265,7 +270,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         if ( dabt.size != DABT_WORD ) goto bad_width;
         /* Ignore all but the enable bit */
         vgic_lock(v);
-        v->domain->arch.vgic.ctlr = (*r) & GICD_CTL_ENABLE;
+        v->domain->arch.vgic.ctlr = r & GICD_CTL_ENABLE;
         vgic_unlock(v);
 
         return 1;
@@ -289,12 +294,8 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         if ( rank == NULL) goto write_ignore;
         vgic_lock_rank(v, rank, flags);
         tr = rank->ienable;
-        rank->ienable |= *r;
-        /* The virtual irq is derived from register offset.
-         * The register difference is word difference. So divide by 2(DABT_WORD)
-         * to get Virtual irq number */
-        vgic_enable_irqs(v, (*r) & (~tr),
-                         (gicd_reg - GICD_ISENABLER) >> DABT_WORD);
+        rank->ienable |= r;
+        vgic_enable_irqs(v, r & (~tr), rank->index);
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
@@ -304,12 +305,8 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         if ( rank == NULL) goto write_ignore;
         vgic_lock_rank(v, rank, flags);
         tr = rank->ienable;
-        rank->ienable &= ~*r;
-        /* The virtual irq is derived from register offset.
-         * The register difference is word difference. So divide by 2(DABT_WORD)
-         * to get  Virtual irq number */
-        vgic_disable_irqs(v, (*r) & tr,
-                         (gicd_reg - GICD_ICENABLER) >> DABT_WORD);
+        rank->ienable &= ~r;
+        vgic_disable_irqs(v, r & tr, rank->index);
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
@@ -317,28 +314,28 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         if ( dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled word write %#"PRIregister" to ISPENDR%d\n",
-               v, *r, gicd_reg - GICD_ISPENDR);
+               v, r, gicd_reg - GICD_ISPENDR);
         return 0;
 
     case GICD_ICPENDR ... GICD_ICPENDRN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled word write %#"PRIregister" to ICPENDR%d\n",
-               v, *r, gicd_reg - GICD_ICPENDR);
+               v, r, gicd_reg - GICD_ICPENDR);
         return 0;
 
     case GICD_ISACTIVER ... GICD_ISACTIVERN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled word write %#"PRIregister" to ISACTIVER%d\n",
-               v, *r, gicd_reg - GICD_ISACTIVER);
+               v, r, gicd_reg - GICD_ISACTIVER);
         return 0;
 
     case GICD_ICACTIVER ... GICD_ICACTIVERN:
         if ( dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled word write %#"PRIregister" to ICACTIVER%d\n",
-               v, *r, gicd_reg - GICD_ICACTIVER);
+               v, r, gicd_reg - GICD_ICACTIVER);
         return 0;
 
     case GICD_ITARGETSR ... GICD_ITARGETSR + 7:
@@ -360,7 +357,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
             target = target | (target << 8) | (target << 16) | (target << 24);
         else
             target = (target << (8 * (gicd_reg & 0x3)));
-        target &= *r;
+        target &= r;
         /* ignore zero writes */
         if ( !target )
             goto write_ignore;
@@ -379,7 +376,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
 
             new_target = i % 8;
             old_target_mask = vgic_byte_read(rank->v2.itargets[REG_RANK_INDEX(8,
-                                             gicd_reg - GICD_ITARGETSR, DABT_WORD)], 0, i/8);
+                                             gicd_reg - GICD_ITARGETSR, DABT_WORD)], i/8);
             old_target = find_first_bit(&old_target_mask, 8);
 
             if ( new_target != old_target )
@@ -407,11 +404,11 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         if ( rank == NULL) goto write_ignore;
         vgic_lock_rank(v, rank, flags);
         if ( dabt.size == DABT_WORD )
-            rank->ipriority[REG_RANK_INDEX(8, gicd_reg - GICD_IPRIORITYR,
-                                           DABT_WORD)] = *r;
+            rank->ipriorityr[REG_RANK_INDEX(8, gicd_reg - GICD_IPRIORITYR,
+                                            DABT_WORD)] = r;
         else
-            vgic_byte_write(&rank->ipriority[REG_RANK_INDEX(8,
-                        gicd_reg - GICD_IPRIORITYR, DABT_WORD)], *r, gicd_reg);
+            vgic_byte_write(&rank->ipriorityr[REG_RANK_INDEX(8,
+                        gicd_reg - GICD_IPRIORITYR, DABT_WORD)], r, gicd_reg);
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
@@ -425,7 +422,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         rank = vgic_rank_offset(v, 2, gicd_reg - GICD_ICFGR, DABT_WORD);
         if ( rank == NULL) goto write_ignore;
         vgic_lock_rank(v, rank, flags);
-        rank->icfg[REG_RANK_INDEX(2, gicd_reg - GICD_ICFGR, DABT_WORD)] = *r;
+        rank->icfg[REG_RANK_INDEX(2, gicd_reg - GICD_ICFGR, DABT_WORD)] = r;
         vgic_unlock_rank(v, rank, flags);
         return 1;
 
@@ -435,20 +432,20 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
 
     case GICD_SGIR:
         if ( dabt.size != DABT_WORD ) goto bad_width;
-        return vgic_v2_to_sgi(v, *r);
+        return vgic_v2_to_sgi(v, r);
 
     case GICD_CPENDSGIR ... GICD_CPENDSGIRN:
         if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled %s write %#"PRIregister" to ICPENDSGIR%d\n",
-               v, dabt.size ? "word" : "byte", *r, gicd_reg - GICD_CPENDSGIR);
+               v, dabt.size ? "word" : "byte", r, gicd_reg - GICD_CPENDSGIR);
         return 0;
 
     case GICD_SPENDSGIR ... GICD_SPENDSGIRN:
         if ( dabt.size != DABT_BYTE && dabt.size != DABT_WORD ) goto bad_width;
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled %s write %#"PRIregister" to ISPENDSGIR%d\n",
-               v, dabt.size ? "word" : "byte", *r, gicd_reg - GICD_SPENDSGIR);
+               v, dabt.size ? "word" : "byte", r, gicd_reg - GICD_SPENDSGIR);
         return 0;
 
     /* Implementation defined -- write ignored */
@@ -475,14 +472,14 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
     default:
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled write r%d=%"PRIregister" offset %#08x\n",
-               v, dabt.reg, *r, gicd_reg);
+               v, dabt.reg, r, gicd_reg);
         return 0;
     }
 
 bad_width:
     printk(XENLOG_G_ERR
            "%pv: vGICD: bad write width %d r%d=%"PRIregister" offset %#08x\n",
-           v, dabt.size, dabt.reg, *r, gicd_reg);
+           v, dabt.size, dabt.reg, r, gicd_reg);
     domain_crash_synchronous();
     return 0;
 
@@ -493,8 +490,8 @@ write_ignore:
 }
 
 static const struct mmio_handler_ops vgic_v2_distr_mmio_handler = {
-    .read_handler  = vgic_v2_distr_mmio_read,
-    .write_handler = vgic_v2_distr_mmio_write,
+    .read  = vgic_v2_distr_mmio_read,
+    .write = vgic_v2_distr_mmio_write,
 };
 
 static struct vcpu *vgic_v2_get_target_vcpu(struct vcpu *v, unsigned int irq)
@@ -505,7 +502,7 @@ static struct vcpu *vgic_v2_get_target_vcpu(struct vcpu *v, unsigned int irq)
     ASSERT(spin_is_locked(&rank->lock));
 
     target = vgic_byte_read(rank->v2.itargets[REG_RANK_INDEX(8,
-                                              irq, DABT_WORD)], 0, irq & 0x3);
+                                              irq, DABT_WORD)], irq & 0x3);
 
     /* 1-N SPI should be delivered as pending to all the vcpus in the
      * mask, but here we just return the first vcpu for simplicity and
@@ -514,18 +511,6 @@ static struct vcpu *vgic_v2_get_target_vcpu(struct vcpu *v, unsigned int irq)
     ASSERT(target >= 0 && target < v->domain->max_vcpus);
     v_target = v->domain->vcpu[target];
     return v_target;
-}
-
-static int vgic_v2_get_irq_priority(struct vcpu *v, unsigned int irq)
-{
-    int priority;
-    struct vgic_irq_rank *rank = vgic_rank_irq(v, irq);
-
-    ASSERT(spin_is_locked(&rank->lock));
-    priority = vgic_byte_read(rank->ipriority[REG_RANK_INDEX(8,
-                                              irq, DABT_WORD)], 0, irq & 0x3);
-
-    return priority;
 }
 
 static int vgic_v2_vcpu_init(struct vcpu *v)
@@ -546,6 +531,8 @@ static int vgic_v2_vcpu_init(struct vcpu *v)
 static int vgic_v2_domain_init(struct domain *d)
 {
     int i, ret;
+    paddr_t cbase, csize;
+    paddr_t vbase;
 
     /*
      * The hardware domain gets the hardware address.
@@ -554,33 +541,38 @@ static int vgic_v2_domain_init(struct domain *d)
     if ( is_hardware_domain(d) )
     {
         d->arch.vgic.dbase = vgic_v2_hw.dbase;
-        d->arch.vgic.cbase = vgic_v2_hw.cbase;
+        /*
+         * For the hardware domain, we always map the whole HW CPU
+         * interface region in order to match the device tree (the "reg"
+         * properties is copied as it is).
+         * Note that we assume the size of the CPU interface is always
+         * aligned to PAGE_SIZE.
+         */
+        cbase = vgic_v2_hw.cbase;
+        csize = vgic_v2_hw.csize;
+        vbase = vgic_v2_hw.vbase;
     }
     else
     {
         d->arch.vgic.dbase = GUEST_GICD_BASE;
-        d->arch.vgic.cbase = GUEST_GICC_BASE;
+        /*
+         * The CPU interface exposed to the guest is always 8kB. We may
+         * need to add an offset to the virtual CPU interface base
+         * address when in the GIC is aliased to get a 8kB contiguous
+         * region.
+         */
+        BUILD_BUG_ON(GUEST_GICC_SIZE != SZ_8K);
+        cbase = GUEST_GICC_BASE;
+        csize = GUEST_GICC_SIZE;
+        vbase = vgic_v2_hw.vbase + vgic_v2_hw.aliased_offset;
     }
 
     /*
      * Map the gic virtual cpu interface in the gic cpu interface
      * region of the guest.
-     *
-     * The second page is always mapped at +4K irrespective of the
-     * GIC_64K_STRIDE quirk. The DTB passed to the guest reflects this.
      */
-    ret = map_mmio_regions(d, paddr_to_pfn(d->arch.vgic.cbase), 1,
-                           paddr_to_pfn(vgic_v2_hw.vbase));
-    if ( ret )
-        return ret;
-
-    if ( !platform_has_quirk(PLATFORM_QUIRK_GIC_64K_STRIDE) )
-        ret = map_mmio_regions(d, paddr_to_pfn(d->arch.vgic.cbase + PAGE_SIZE),
-                               2, paddr_to_pfn(vgic_v2_hw.vbase + PAGE_SIZE));
-    else
-        ret = map_mmio_regions(d, paddr_to_pfn(d->arch.vgic.cbase + PAGE_SIZE),
-                               2, paddr_to_pfn(vgic_v2_hw.vbase + SZ_64K));
-
+    ret = map_mmio_regions(d, paddr_to_pfn(cbase), csize / PAGE_SIZE,
+                           paddr_to_pfn(vbase));
     if ( ret )
         return ret;
 
@@ -590,7 +582,7 @@ static int vgic_v2_domain_init(struct domain *d)
                sizeof(d->arch.vgic.shared_irqs[i].v2.itargets));
 
     register_mmio_handler(d, &vgic_v2_distr_mmio_handler, d->arch.vgic.dbase,
-                          PAGE_SIZE);
+                          PAGE_SIZE, NULL);
 
     return 0;
 }
@@ -598,7 +590,6 @@ static int vgic_v2_domain_init(struct domain *d)
 static const struct vgic_ops vgic_v2_ops = {
     .vcpu_init   = vgic_v2_vcpu_init,
     .domain_init = vgic_v2_domain_init,
-    .get_irq_priority = vgic_v2_get_irq_priority,
     .get_target_vcpu = vgic_v2_get_target_vcpu,
     .max_vcpus = 8,
 };

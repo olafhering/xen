@@ -872,7 +872,7 @@ static int __init detect_init_APIC (void)
         return -1;
     }
 
-    set_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
+    __set_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
     mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
 
     /* The BIOS may have set up the APIC at some other address */
@@ -943,8 +943,18 @@ void __init x2apic_bsp_setup(void)
     mask_8259A();
     mask_IO_APIC_setup(ioapic_entries);
 
-    if ( iommu_enable_x2apic_IR() )
+    switch ( iommu_enable_x2apic_IR() )
     {
+    case 0:
+        break;
+    case -ENXIO: /* ACPI_DMAR_X2APIC_OPT_OUT set */
+        if ( !x2apic_enabled )
+        {
+            printk("Not enabling x2APIC (upon firmware request)\n");
+            goto restore_out;
+        }
+        /* fall through */
+    default:
         if ( x2apic_enabled )
             panic("Interrupt remapping could not be enabled while "
                   "x2APIC is already enabled by BIOS");
@@ -1120,7 +1130,7 @@ static void __devinit setup_APIC_timer(void)
 
 static int __init calibrate_APIC_clock(void)
 {
-    unsigned long long t1 = 0, t2 = 0;
+    unsigned long long t1, t2;
     long tt1, tt2;
     long result;
     int i;
@@ -1147,8 +1157,7 @@ static int __init calibrate_APIC_clock(void)
     /*
      * We wrapped around just now. Let's start:
      */
-    if (cpu_has_tsc)
-        t1 = rdtsc();
+    t1 = rdtsc();
     tt1 = apic_read(APIC_TMCCT);
 
     /*
@@ -1158,8 +1167,7 @@ static int __init calibrate_APIC_clock(void)
         wait_8254_wraparound();
 
     tt2 = apic_read(APIC_TMCCT);
-    if (cpu_has_tsc)
-        t2 = rdtsc();
+    t2 = rdtsc();
 
     /*
      * The APIC bus clock counter is 32 bits only, it
@@ -1171,16 +1179,12 @@ static int __init calibrate_APIC_clock(void)
 
     result = (tt1-tt2)*APIC_DIVISOR/LOOPS;
 
-    if (cpu_has_tsc)
-        apic_printk(APIC_VERBOSE, "..... CPU clock speed is "
-                    "%ld.%04ld MHz.\n",
-                    ((long)(t2-t1)/LOOPS)/(1000000/HZ),
-                    ((long)(t2-t1)/LOOPS)%(1000000/HZ));
+    apic_printk(APIC_VERBOSE, "..... CPU clock speed is %ld.%04ld MHz.\n",
+                ((long)(t2 - t1) / LOOPS) / (1000000 / HZ),
+                ((long)(t2 - t1) / LOOPS) % (1000000 / HZ));
 
-    apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
-                "%ld.%04ld MHz.\n",
-                result/(1000000/HZ),
-                result%(1000000/HZ));
+    apic_printk(APIC_VERBOSE, "..... host bus clock speed is %ld.%04ld MHz.\n",
+                result / (1000000 / HZ), result % (1000000 / HZ));
 
     /* set up multipliers for accurate timer code */
     bus_freq   = result*HZ;
@@ -1365,7 +1369,7 @@ void pmu_apic_interrupt(struct cpu_user_regs *regs)
 int __init APIC_init_uniprocessor (void)
 {
     if (enable_local_apic < 0)
-        clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
+        __clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
 
     if (!smp_found_config && !cpu_has_apic) {
         skip_ioapic_setup = 1;
@@ -1378,7 +1382,6 @@ int __init APIC_init_uniprocessor (void)
     if (!cpu_has_apic && APIC_INTEGRATED(apic_version[boot_cpu_physical_apicid])) {
         printk(KERN_ERR "BIOS bug, local APIC #%d not detected!...\n",
                boot_cpu_physical_apicid);
-        clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
         skip_ioapic_setup = 1;
         return -1;
     }

@@ -9,21 +9,22 @@
 #define __ASM_XSTATE_H
 
 #include <xen/types.h>
+#include <asm/cpufeature.h>
 
 #define FCW_DEFAULT               0x037f
 #define FCW_RESET                 0x0040
 #define MXCSR_DEFAULT             0x1f80
 
 #define XSTATE_CPUID              0x0000000d
-#define XSTATE_FEATURE_XSAVEOPT   (1 << 0)    /* sub-leaf 1, eax[bit 0] */
-#define XSTATE_FEATURE_XSAVEC     (1 << 1)    /* sub-leaf 1, eax[bit 1] */
-#define XSTATE_FEATURE_XGETBV1    (1 << 2)    /* sub-leaf 1, eax[bit 2] */
-#define XSTATE_FEATURE_XSAVES     (1 << 3)    /* sub-leaf 1, eax[bit 3] */
 
 #define XCR_XFEATURE_ENABLED_MASK 0x00000000  /* index of XCR0 */
 
+#define XSAVE_HDR_SIZE            64
+#define XSAVE_SSE_OFFSET          160
 #define XSTATE_YMM_SIZE           256
-#define XSTATE_AREA_MIN_SIZE      (512 + 64)  /* FP/SSE + XSAVE.HEADER */
+#define FXSAVE_SIZE               512
+#define XSAVE_HDR_OFFSET          FXSAVE_SIZE
+#define XSTATE_AREA_MIN_SIZE      (FXSAVE_SIZE + XSAVE_HDR_SIZE)
 
 #define XSTATE_FP      (1ULL << 0)
 #define XSTATE_SSE     (1ULL << 1)
@@ -41,9 +42,9 @@
 #define XSTATE_ALL     (~(1ULL << 63))
 #define XSTATE_NONLAZY (XSTATE_LWP | XSTATE_BNDREGS | XSTATE_BNDCSR)
 #define XSTATE_LAZY    (XSTATE_ALL & ~XSTATE_NONLAZY)
+#define XSTATE_COMPACTION_ENABLED  (1ULL << 63)
 
 extern u64 xfeature_mask;
-extern bool_t cpu_has_xsaves, cpu_has_xgetbv1;
 
 /* extended state save area */
 struct __packed __attribute__((aligned (64))) xsave_struct
@@ -72,7 +73,8 @@ struct __packed __attribute__((aligned (64))) xsave_struct
 
     struct {
         u64 xstate_bv;
-        u64 reserved[7];
+        u64 xcomp_bv;
+        u64 reserved[6];
     } xsave_hdr;                             /* The 64-byte header */
 
     struct { char x[XSTATE_YMM_SIZE]; } ymm; /* YMM */
@@ -82,6 +84,8 @@ struct __packed __attribute__((aligned (64))) xsave_struct
 /* extended state operations */
 bool_t __must_check set_xcr0(u64 xfeatures);
 uint64_t get_xcr0(void);
+void set_msr_xss(u64 xss);
+uint64_t get_msr_xss(void);
 void xsave(struct vcpu *v, uint64_t mask);
 void xrstor(struct vcpu *v, uint64_t mask);
 bool_t xsave_enabled(const struct vcpu *v);
@@ -91,7 +95,7 @@ int __must_check handle_xsetbv(u32 index, u64 new_bv);
 /* extended state init and cleanup functions */
 void xstate_free_save_area(struct vcpu *v);
 int xstate_alloc_save_area(struct vcpu *v);
-void xstate_init(bool_t bsp);
+void xstate_init(struct cpuinfo_x86 *c);
 unsigned int xstate_ctxt_size(u64 xcr0);
 
 #endif /* __ASM_XSTATE_H */

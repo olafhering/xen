@@ -263,6 +263,8 @@ virtual node.
 
 Note that virtual NUMA for PV guest is not yet supported, because
 there is an issue with cpuid handling that affects PV virtual NUMA.
+Furthermore, guests with virtual NUMA cannot be saved or migrated
+because the migration stream does not preserve node information.
 
 Each B<VNODE_SPEC> is a list, which has a form of
 "[VNODE_CONFIG_OPTION,VNODE_CONFIG_OPTION, ... ]"  (without quotes).
@@ -349,6 +351,12 @@ destroy the domain.
 write a "coredump" of the domain to F</var/lib/xen/dump/NAME> and then
 restart the domain.
 
+=item B<soft-reset>
+
+Reset all Xen specific interfaces for the Xen-aware HVM domain allowing
+it to reestablish these interfaces and continue executing the domain. PV
+and non-Xen-aware HVM guests are not supported.
+
 =back
 
 The default for C<on_poweroff> is C<destroy>.
@@ -366,6 +374,11 @@ Default is C<destroy>.
 =item B<on_crash="ACTION">
 
 Action to take if the domain crashes.  Default is C<destroy>.
+
+=item B<on_soft_reset="ACTION">
+
+Action to take if the domain performs 'soft reset' (e.g. does kexec).
+Default is C<soft-reset>.
 
 =back
 
@@ -794,14 +807,17 @@ Possible B<KEY>s are:
 
 =item B<permissive=BOOLEAN>
 
-(PV only) By default pciback only allows PV guests to write "known
-safe" values into PCI config space.  But many devices require writes
-to other areas of config space in order to operate properly.  This
-tells the pciback driver to allow all writes to PCI config space of
-this device by this domain.  This option should be enabled with
-caution: it gives the guest much more control over the device, which
-may have security or stability implications.  It is recommended to
-enable this option only for trusted VMs under administrator control.
+By default pciback only allows PV guests to write "known safe" values
+into PCI config space, likewise QEMU (both qemu-xen and
+qemu-traditional) imposes the same contraint on HVM guests. However
+many devices require writes to other areas of config space in order to
+operate properly.  This option tells the backend (pciback or QEMU) to
+allow all writes to PCI config space of this device by this domain.
+
+This option should be enabled with caution: it gives the guest much
+more control over the device, which may have security or stability
+implications.  It is recommended to enable this option only for
+trusted VMs under administrator control.
 
 =item B<msitranslate=BOOLEAN>
 
@@ -840,9 +856,8 @@ Note this would override global B<rdm> option.
 
 =item B<pci_permissive=BOOLEAN>
 
-(PV only) Changes the default value of 'permissive' for all PCI
-devices passed through to this VM. See L<permissive|/"permissive_boolean">
-above.
+Changes the default value of 'permissive' for all PCI devices passed
+through to this VM. See L<permissive|/"permissive_boolean"> above.
 
 =item B<pci_msitranslate=BOOLEAN>
 
@@ -860,7 +875,7 @@ through to this VM. See L<seize|/"seize_boolean"> above.
 devices passed through to this VM. See L<power_mgt|/"power_mgmt_boolean">
 above.
 
-=item B<gfx_passthru=BOOLEAN>
+=item B<gfx_passthru=BOOLEAN|"STRING">
 
 Enable graphics device PCI passthrough. This option makes an assigned
 PCI graphics card become primary graphics card in the VM. The QEMU
@@ -888,9 +903,36 @@ working graphics passthrough. See the XenVGAPassthroughTestedAdapters
 L<http://wiki.xen.org/wiki/XenVGAPassthroughTestedAdapters> wiki page
 for currently supported graphics cards for gfx_passthru.
 
-gfx_passthru is currently only supported with the qemu-xen-traditional
-device-model. Upstream qemu-xen device-model currently does not have
-support for gfx_passthru.
+gfx_passthru is currently supported both with the qemu-xen-traditional
+device-model and upstream qemu-xen device-model.
+
+When given as a boolean the B<gfx_passthru> option either disables gfx
+passthru or enables autodetection.
+
+But when given as a string the B<gfx_passthru> option describes the type
+of device to enable. Note this behavior is only supported with the upstream
+qemu-xen device-model. With qemu-xen-traditional IGD is always assumed
+and other options than autodetect or explicit IGD will result in an error.
+
+Currently, valid options are:
+
+=over 4
+
+=item B<gfx_passthru=0>
+
+Disables graphics device PCI passthrough.
+
+=item B<gfx_passthru=1>, B<gfx_passthru="default">
+
+Enables graphics device PCI passthrough and autodetects the type of device
+which is being used.
+
+=item "igd"
+
+Enables graphics device PCI passthrough but forcing the type of device to
+Intel Graphics Device.
+
+=back
 
 Note that some graphics adapters (AMD/ATI cards, for example) do not
 necessarily require gfx_passthru option, so you can use the normal Xen

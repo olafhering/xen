@@ -414,7 +414,7 @@ static int flush_iotlb_reg(void *_iommu, u16 did,
 {
     struct iommu *iommu = (struct iommu *) _iommu;
     int tlb_offset = ecap_iotlb_offset(iommu->ecap);
-    u64 val = 0, val_iva = 0;
+    u64 val = 0;
     unsigned long flags;
 
     /*
@@ -435,7 +435,6 @@ static int flush_iotlb_reg(void *_iommu, u16 did,
     switch ( type )
     {
     case DMA_TLB_GLOBAL_FLUSH:
-        /* global flush doesn't need set IVA_REG */
         val = DMA_TLB_GLOBAL_FLUSH|DMA_TLB_IVT;
         break;
     case DMA_TLB_DSI_FLUSH:
@@ -443,8 +442,6 @@ static int flush_iotlb_reg(void *_iommu, u16 did,
         break;
     case DMA_TLB_PSI_FLUSH:
         val = DMA_TLB_PSI_FLUSH|DMA_TLB_IVT|DMA_TLB_DID(did);
-        /* Note: always flush non-leaf currently */
-        val_iva = size_order | addr;
         break;
     default:
         BUG();
@@ -457,8 +454,11 @@ static int flush_iotlb_reg(void *_iommu, u16 did,
 
     spin_lock_irqsave(&iommu->register_lock, flags);
     /* Note: Only uses first TLB reg currently */
-    if ( val_iva )
-        dmar_writeq(iommu->reg, tlb_offset, val_iva);
+    if ( type == DMA_TLB_PSI_FLUSH )
+    {
+        /* Note: always flush non-leaf currently. */
+        dmar_writeq(iommu->reg, tlb_offset, size_order | addr);
+    }
     dmar_writeq(iommu->reg, tlb_offset + 8, val);
 
     /* Make sure hardware complete it */
@@ -991,10 +991,13 @@ static void dma_msi_unmask(struct irq_desc *desc)
 {
     struct iommu *iommu = desc->action->dev_id;
     unsigned long flags;
+    u32 sts;
 
     /* unmask it */
     spin_lock_irqsave(&iommu->register_lock, flags);
-    dmar_writel(iommu->reg, DMAR_FECTL_REG, 0);
+    sts = dmar_readl(iommu->reg, DMAR_FECTL_REG);
+    sts &= ~DMA_FECTL_IM;
+    dmar_writel(iommu->reg, DMAR_FECTL_REG, sts);
     spin_unlock_irqrestore(&iommu->register_lock, flags);
     iommu->msi.msi_attrib.host_masked = 0;
 }
@@ -1003,10 +1006,13 @@ static void dma_msi_mask(struct irq_desc *desc)
 {
     unsigned long flags;
     struct iommu *iommu = desc->action->dev_id;
+    u32 sts;
 
     /* mask it */
     spin_lock_irqsave(&iommu->register_lock, flags);
-    dmar_writel(iommu->reg, DMAR_FECTL_REG, DMA_FECTL_IM);
+    sts = dmar_readl(iommu->reg, DMAR_FECTL_REG);
+    sts |= DMA_FECTL_IM;
+    dmar_writel(iommu->reg, DMAR_FECTL_REG, sts);
     spin_unlock_irqrestore(&iommu->register_lock, flags);
     iommu->msi.msi_attrib.host_masked = 1;
 }
@@ -2006,6 +2012,7 @@ static int init_vtd_hw(void)
     struct iommu_flush *flush = NULL;
     int ret;
     unsigned long flags;
+    u32 sts;
 
     /*
      * Basic VT-d HW init: set VT-d interrupt, clear VT-d faults.  
@@ -2019,7 +2026,9 @@ static int init_vtd_hw(void)
         clear_fault_bits(iommu);
 
         spin_lock_irqsave(&iommu->register_lock, flags);
-        dmar_writel(iommu->reg, DMAR_FECTL_REG, 0);
+        sts = dmar_readl(iommu->reg, DMAR_FECTL_REG);
+        sts &= ~DMA_FECTL_IM;
+        dmar_writel(iommu->reg, DMAR_FECTL_REG, sts);
         spin_unlock_irqrestore(&iommu->register_lock, flags);
     }
 
@@ -2210,7 +2219,7 @@ int __init intel_vtd_setup(void)
     if ( ret )
         goto error;
 
-    register_keyhandler('V', &dump_iommu_info_keyhandler);
+    register_keyhandler('V', vtd_dump_iommu_info, "dump iommu info", 1);
 
     return 0;
 
@@ -2297,7 +2306,9 @@ static int intel_iommu_assign_device(
     /*
      * In rare cases one given rmrr is shared by multiple devices but
      * obviously this would put the security of a system at risk. So
-     * we should prevent from this sort of device assignment.
+     * we would prevent from this sort of device assignment. But this
+     * can be permitted if user set
+     *      "pci = [ 'sbdf, rdm_policy=relaxed' ]"
      *
      * TODO: in the future we can introduce group device assignment
      * interface to make sure devices sharing RMRR are assigned to the
@@ -2310,12 +2321,17 @@ static int intel_iommu_assign_device(
              PCI_DEVFN2(bdf) == devfn &&
              rmrr->scope.devices_cnt > 1 )
         {
-            printk(XENLOG_G_ERR VTDPREFIX
-                   " cannot assign %04x:%02x:%02x.%u"
+            bool_t relaxed = !!(flag & XEN_DOMCTL_DEV_RDM_RELAXED);
+
+            printk(XENLOG_GUEST "%s" VTDPREFIX
+                   " It's %s to assign %04x:%02x:%02x.%u"
                    " with shared RMRR at %"PRIx64" for Dom%d.\n",
+                   relaxed ? XENLOG_WARNING : XENLOG_ERR,
+                   relaxed ? "risky" : "disallowed",
                    seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
                    rmrr->base_address, d->domain_id);
-            return -EPERM;
+            if ( !relaxed )
+                return -EPERM;
         }
     }
 

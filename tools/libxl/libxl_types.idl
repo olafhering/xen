@@ -138,6 +138,8 @@ libxl_action_on_shutdown = Enumeration("action_on_shutdown", [
 
     (5, "COREDUMP_DESTROY"),
     (6, "COREDUMP_RESTART"),
+
+    (7, "SOFT_RESET"),
     ], init_val = "LIBXL_ACTION_ON_SHUTDOWN_DESTROY")
 
 libxl_trigger = Enumeration("trigger", [
@@ -155,6 +157,11 @@ libxl_tsc_mode = Enumeration("tsc_mode", [
     (1, "always_emulate"),
     (2, "native"),
     (3, "native_paravirt"),
+    ])
+
+libxl_gfx_passthru_kind = Enumeration("gfx_passthru_kind", [
+    (0, "default"),
+    (1, "igd"),
     ])
 
 # Consistent with the values defined for HVM_PARAM_TIMER_MODE.
@@ -192,6 +199,7 @@ libxl_shutdown_reason = Enumeration("shutdown_reason", [
     (2, "suspend"),
     (3, "crash"),
     (4, "watchdog"),
+    (5, "soft_reset"),
     ], init_val = "LIBXL_SHUTDOWN_REASON_UNKNOWN")
 
 libxl_vga_interface_type = Enumeration("vga_interface_type", [
@@ -487,6 +495,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
                                        ("spice",            libxl_spice_info),
                                        
                                        ("gfx_passthru",     libxl_defbool),
+                                       ("gfx_passthru_kind", libxl_gfx_passthru_kind),
                                        
                                        ("serial",           string),
                                        ("boot",             string),
@@ -676,6 +685,7 @@ libxl_domain_config = Struct("domain_config", [
     ("on_reboot", libxl_action_on_shutdown),
     ("on_watchdog", libxl_action_on_shutdown),
     ("on_crash", libxl_action_on_shutdown),
+    ("on_soft_reset", libxl_action_on_shutdown),
     ], dir=DIR_IN)
 
 libxl_diskinfo = Struct("diskinfo", [
@@ -842,9 +852,13 @@ libxl_psr_cmt_type = Enumeration("psr_cmt_type", [
 libxl_psr_cbm_type = Enumeration("psr_cbm_type", [
     (0, "UNKNOWN"),
     (1, "L3_CBM"),
+    (2, "L3_CBM_CODE"),
+    (3, "L3_CBM_DATA"),
     ])
 
 libxl_psr_cat_info = Struct("psr_cat_info", [
+    ("id", uint32),
     ("cos_max", uint32),
     ("cbm_len", uint32),
+    ("cdp_enabled", bool),
     ])

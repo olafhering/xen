@@ -82,12 +82,28 @@ struct pending_irq
     struct list_head lr_queue;
 };
 
+#define NR_INTERRUPT_PER_RANK   32
+#define INTERRUPT_RANK_MASK (NR_INTERRUPT_PER_RANK - 1)
+
 /* Represents state corresponding to a block of 32 interrupts */
 struct vgic_irq_rank {
     spinlock_t lock; /* Covers access to all other members of this struct */
+
+    uint8_t index;
+
     uint32_t ienable;
     uint32_t icfg[2];
-    uint32_t ipriority[8];
+
+    /*
+     * Provide efficient access to the priority of an vIRQ while keeping
+     * the emulation simple.
+     * Note, this is working fine as long as Xen is using little endian.
+     */
+    union {
+        uint8_t priority[32];
+        uint32_t ipriorityr[8];
+    };
+
     union {
         struct {
             uint32_t itargets[8];
@@ -114,8 +130,6 @@ struct vgic_ops {
     int (*vcpu_init)(struct vcpu *v);
     /* Domain specific initialization of vGIC */
     int (*domain_init)(struct domain *d);
-    /* Get priority for a given irq stored in vgic structure */
-    int (*get_irq_priority)(struct vcpu *v, unsigned int irq);
     /* Get the target vcpu for a given virq. The rank lock is already taken
      * when calling this. */
     struct vcpu *(*get_target_vcpu)(struct vcpu *v, unsigned int irq);
@@ -158,15 +172,13 @@ static inline int REG_RANK_NR(int b, uint32_t n)
     }
 }
 
-static inline uint32_t vgic_byte_read(uint32_t val, int sign, int offset)
+static inline uint32_t vgic_byte_read(uint32_t val, int offset)
 {
     int byte = offset & 0x3;
 
     val = val >> (8*byte);
-    if ( sign && (val & 0x80) )
-        val |= 0xffffff00;
-    else
-        val &= 0x000000ff;
+    val &= 0x000000ff;
+
     return val;
 }
 
@@ -174,10 +186,10 @@ static inline void vgic_byte_write(uint32_t *reg, uint32_t var, int offset)
 {
     int byte = offset & 0x3;
 
-    var &= (0xff << (8*byte));
+    var &= 0xff;
 
     *reg &= ~(0xff << (8*byte));
-    *reg |= var;
+    *reg |= (var << (8*byte));
 }
 
 enum gic_sgi_mode;
@@ -236,7 +248,8 @@ static inline int vgic_allocate_spi(struct domain *d)
 
 extern void vgic_free_virq(struct domain *d, unsigned int virq);
 
-void vgic_v2_setup_hw(paddr_t dbase, paddr_t cbase, paddr_t vbase);
+void vgic_v2_setup_hw(paddr_t dbase, paddr_t cbase, paddr_t csize,
+                      paddr_t vbase, uint32_t aliased_offset);
 
 #ifdef HAS_GICV3
 struct rdist_region;

@@ -14,6 +14,7 @@
  */
 
 #include <xen/libelf/libelf.h>
+#include <xenguest.h>
 
 #define INVALID_P2M_ENTRY   ((xen_pfn_t)-1)
 
@@ -132,7 +133,6 @@ struct xc_dom_image {
     xen_pfn_t total_pages;
     xen_pfn_t p2m_size;         /* number of pfns covered by p2m */
     struct xc_dom_phys *phys_pages;
-    int realmodearea_log;
 #if defined (__arm__) || defined(__aarch64__)
     xen_pfn_t rambank_size[GUEST_RAM_BANKS];
 #endif
@@ -157,8 +157,6 @@ struct xc_dom_image {
 
     xc_interface *xch;
     domid_t guest_domid;
-    int8_t vhpt_size_log2; /* for IA64 */
-    int8_t superpages;
     int claim_enabled; /* 0 by default, 1 enables it */
     int shadow_enabled;
 
@@ -179,6 +177,25 @@ struct xc_dom_image {
     struct xc_dom_arch *arch_hooks;
     /* allocate up to virt_alloc_end */
     int (*allocate) (struct xc_dom_image * dom, xen_vaddr_t up_to);
+
+    /* Container type (HVM or PV). */
+    enum {
+        XC_DOM_PV_CONTAINER,
+        XC_DOM_HVM_CONTAINER,
+    } container_type;
+
+    /* HVM specific fields. */
+    xen_pfn_t target_pages;
+    xen_paddr_t mmio_start;
+    xen_paddr_t mmio_size;
+    xen_paddr_t lowmem_end;
+    xen_paddr_t highmem_end;
+
+    /* Extra ACPI tables passed to HVMLOADER */
+    struct xc_hvm_firmware_module acpi_module;
+
+    /* Extra SMBIOS structures passed to HVMLOADER */
+    struct xc_hvm_firmware_module smbios_module;
 };
 
 /* --- pluggable kernel loader ------------------------------------- */
@@ -207,7 +224,12 @@ struct xc_dom_arch {
     /* arch-specific data structs setup */
     int (*start_info) (struct xc_dom_image * dom);
     int (*shared_info) (struct xc_dom_image * dom, void *shared_info);
-    int (*vcpu) (struct xc_dom_image * dom, void *vcpu_ctxt);
+    int (*vcpu) (struct xc_dom_image * dom);
+    int (*bootearly) (struct xc_dom_image * dom);
+    int (*bootlate) (struct xc_dom_image * dom);
+
+    /* arch-specific memory initialization. */
+    int (*meminit) (struct xc_dom_image * dom);
 
     char *guest_type;
     char *native_protocol;
@@ -375,30 +397,14 @@ static inline void *xc_dom_vaddr_to_ptr(struct xc_dom_image *dom,
     return ptr + offset;
 }
 
-static inline xen_pfn_t xc_dom_p2m_host(struct xc_dom_image *dom, xen_pfn_t pfn)
+static inline xen_pfn_t xc_dom_p2m(struct xc_dom_image *dom, xen_pfn_t pfn)
 {
-    if (dom->shadow_enabled)
+    if ( dom->shadow_enabled || xc_dom_feature_translated(dom) )
         return pfn;
     if (pfn < dom->rambase_pfn || pfn >= dom->rambase_pfn + dom->total_pages)
         return INVALID_MFN;
     return dom->p2m_host[pfn - dom->rambase_pfn];
 }
-
-static inline xen_pfn_t xc_dom_p2m_guest(struct xc_dom_image *dom,
-                                         xen_pfn_t pfn)
-{
-    if (xc_dom_feature_translated(dom))
-        return pfn;
-    if (pfn < dom->rambase_pfn || pfn >= dom->rambase_pfn + dom->total_pages)
-        return INVALID_MFN;
-    return dom->p2m_host[pfn - dom->rambase_pfn];
-}
-
-/* --- arch bits --------------------------------------------------- */
-
-int arch_setup_meminit(struct xc_dom_image *dom);
-int arch_setup_bootearly(struct xc_dom_image *dom);
-int arch_setup_bootlate(struct xc_dom_image *dom);
 
 /*
  * Local variables:

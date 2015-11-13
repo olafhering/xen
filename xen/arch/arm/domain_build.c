@@ -407,15 +407,14 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
     int res = 0;
     int had_dom0_bootargs = 0;
 
-    const struct bootmodule *mod = kinfo->kernel_bootmodule;
+    const struct bootmodule *kernel = kinfo->kernel_bootmodule;
 
-    if ( mod && mod->cmdline[0] )
-        bootargs = &mod->cmdline[0];
+    if ( kernel && kernel->cmdline[0] )
+        bootargs = &kernel->cmdline[0];
 
     dt_for_each_property_node (node, prop)
     {
         const void *prop_data = prop->value;
-        void *new_data = NULL;
         u32 prop_len = prop->length;
 
         /*
@@ -471,8 +470,6 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
 
         res = fdt_property(kinfo->fdt, prop->name, prop_data, prop_len);
 
-        xfree(new_data);
-
         if ( res )
             return res;
     }
@@ -492,7 +489,7 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
 
     if ( dt_node_path_is_equal(node, "/chosen") )
     {
-        const struct bootmodule *mod = kinfo->initrd_bootmodule;
+        const struct bootmodule *initrd = kinfo->initrd_bootmodule;
 
         if ( bootargs )
         {
@@ -506,7 +503,7 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
          * If the bootloader provides an initrd, we must create a placeholder
          * for the initrd properties. The values will be replaced later.
          */
-        if ( mod && mod->size )
+        if ( initrd && initrd->size )
         {
             u64 a = 0;
             res = fdt_property(kinfo->fdt, "linux,initrd-start", &a, sizeof(a));
@@ -569,7 +566,7 @@ static int make_memory_node(const struct domain *d,
                             const struct kernel_info *kinfo)
 {
     int res, i;
-    int reg_size = dt_n_addr_cells(parent) + dt_n_size_cells(parent);
+    int reg_size = dt_child_n_addr_cells(parent) + dt_child_n_size_cells(parent);
     int nr_cells = reg_size*kinfo->mem.nr_banks;
     __be32 reg[nr_cells];
     __be32 *cells;
@@ -594,7 +591,7 @@ static int make_memory_node(const struct domain *d,
         DPRINT("  Bank %d: %#"PRIx64"->%#"PRIx64"\n",
                 i, start, start + size);
 
-        dt_set_range(&cells, parent, start, size);
+        dt_child_set_range(&cells, parent, start, size);
     }
 
     res = fdt_property(fdt, "reg", reg, sizeof(reg));
@@ -617,8 +614,8 @@ static int make_hypervisor_node(const struct kernel_info *kinfo,
     __be32 *cells;
     int res;
     /* Convenience alias */
-    int addrcells = dt_n_addr_cells(parent);
-    int sizecells = dt_n_size_cells(parent);
+    int addrcells = dt_child_n_addr_cells(parent);
+    int sizecells = dt_child_n_size_cells(parent);
     void *fdt = kinfo->fdt;
 
     DPRINT("Create hypervisor node\n");
@@ -643,7 +640,7 @@ static int make_hypervisor_node(const struct kernel_info *kinfo,
 
     /* reg 0 is grant table space */
     cells = &reg[0];
-    dt_set_range(&cells, parent, kinfo->gnttab_start, kinfo->gnttab_size);
+    dt_child_set_range(&cells, parent, kinfo->gnttab_start, kinfo->gnttab_size);
     res = fdt_property(fdt, "reg", reg,
                        dt_cells_to_size(addrcells + sizecells));
     if ( res )
@@ -1205,6 +1202,13 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_TIMER,
         { /* sentinel */ },
     };
+    static const struct dt_device_match reserved_matches[] __initconst =
+    {
+        DT_MATCH_PATH("/psci"),
+        DT_MATCH_PATH("/memory"),
+        DT_MATCH_PATH("/hypervisor"),
+        { /* sentinel */ },
+    };
     struct dt_device_node *child;
     int res;
     const char *name;
@@ -1226,8 +1230,10 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         return 0;
     }
 
-    /* Replace these nodes with our own. Note that the original may be
-     * used_by DOMID_XEN so this check comes first. */
+    /*
+     * Replace these nodes with our own. Note that the original may be
+     * used_by DOMID_XEN so this check comes first.
+     */
     if ( device_get_class(node) == DEVICE_GIC )
         return make_gic_node(d, kinfo->fdt, node);
     if ( dt_match_node(timer_matches, node) )
@@ -1240,7 +1246,8 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         return 0;
     }
 
-    /* Even if the IOMMU device is not used by Xen, it should not be
+    /*
+     * Even if the IOMMU device is not used by Xen, it should not be
      * passthrough to DOM0
      */
     if ( device_get_class(node) == DEVICE_IOMMU )
@@ -1248,6 +1255,15 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         DPRINT(" IOMMU, skip it\n");
         return 0;
     }
+
+    /*
+     * Xen is using some path for its own purpose. Warn if a node
+     * already exists with the same path.
+     */
+    if ( dt_match_node(reserved_matches, node) )
+        printk(XENLOG_WARNING
+               "WARNING: Path %s is reserved, skip the node as we may re-use the path.\n",
+               path);
 
     res = handle_device(d, node);
     if ( res)

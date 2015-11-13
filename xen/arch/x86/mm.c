@@ -160,7 +160,10 @@ static void put_superpage(unsigned long mfn);
 static uint32_t base_disallow_mask;
 /* Global bit is allowed to be set on L1 PTEs. Intended for user mappings. */
 #define L1_DISALLOW_MASK ((base_disallow_mask | _PAGE_GNTTAB) & ~_PAGE_GLOBAL)
-#define L2_DISALLOW_MASK (base_disallow_mask & ~_PAGE_PSE)
+
+#define L2_DISALLOW_MASK (unlikely(opt_allow_superpage) \
+                          ? base_disallow_mask & ~_PAGE_PSE \
+                          : base_disallow_mask)
 
 #define l3_disallow_mask(d) (!is_pv_32bit_domain(d) ? \
                              base_disallow_mask : 0xFFFFF198U)
@@ -502,12 +505,12 @@ void update_cr3(struct vcpu *v)
     make_cr3(v, cr3_mfn);
 }
 
+static const char __section(".bss.page_aligned") zero_page[PAGE_SIZE];
 
 static void invalidate_shadow_ldt(struct vcpu *v, int flush)
 {
     l1_pgentry_t *pl1e;
-    int i;
-    unsigned long pfn;
+    unsigned int i;
     struct page_info *page;
 
     BUG_ON(unlikely(in_irq()));
@@ -522,10 +525,10 @@ static void invalidate_shadow_ldt(struct vcpu *v, int flush)
 
     for ( i = 16; i < 32; i++ )
     {
-        pfn = l1e_get_pfn(pl1e[i]);
-        if ( pfn == 0 ) continue;
+        if ( !(l1e_get_flags(pl1e[i]) & _PAGE_PRESENT) )
+            continue;
+        page = l1e_get_page(pl1e[i]);
         l1e_write(&pl1e[i], l1e_empty());
-        page = mfn_to_page(pfn);
         ASSERT_PAGE_IS_TYPE(page, PGT_seg_desc_page);
         ASSERT_PAGE_IS_DOMAIN(page, v->domain);
         put_page_and_type(page);
@@ -1839,7 +1842,10 @@ static int mod_l2_entry(l2_pgentry_t *pl2e,
         }
 
         /* Fast path for identical mapping and presence. */
-        if ( !l2e_has_changed(ol2e, nl2e, _PAGE_PRESENT) )
+        if ( !l2e_has_changed(ol2e, nl2e,
+                              unlikely(opt_allow_superpage)
+                              ? _PAGE_PSE | _PAGE_RW | _PAGE_PRESENT
+                              : _PAGE_PRESENT) )
         {
             adjust_guest_l2e(nl2e, d);
             if ( UPDATE_ENTRY(l2, pl2e, ol2e, nl2e, pfn, vcpu, preserve_ad) )
@@ -3538,7 +3544,7 @@ long do_mmu_update(
     {
         /* Pagetables belong to a foreign domain (PFD). */
         if ( (pt_owner = rcu_lock_domain_by_id(pt_dom - 1)) == NULL )
-            return -EINVAL;
+            return -ESRCH;
 
         if ( pt_owner == d )
             rcu_unlock_domain(pt_owner);
@@ -4420,16 +4426,17 @@ long do_update_va_mapping_otherdomain(unsigned long va, u64 val64,
 void destroy_gdt(struct vcpu *v)
 {
     l1_pgentry_t *pl1e;
-    int i;
-    unsigned long pfn;
+    unsigned int i;
+    unsigned long pfn, zero_pfn = PFN_DOWN(__pa(zero_page));
 
     v->arch.pv_vcpu.gdt_ents = 0;
     pl1e = gdt_ldt_ptes(v->domain, v);
     for ( i = 0; i < FIRST_RESERVED_GDT_PAGE; i++ )
     {
-        if ( (pfn = l1e_get_pfn(pl1e[i])) != 0 )
+        pfn = l1e_get_pfn(pl1e[i]);
+        if ( (l1e_get_flags(pl1e[i]) & _PAGE_PRESENT) && pfn != zero_pfn )
             put_page_and_type(mfn_to_page(pfn));
-        l1e_write(&pl1e[i], l1e_empty());
+        l1e_write(&pl1e[i], l1e_from_pfn(zero_pfn, __PAGE_HYPERVISOR_RO));
         v->arch.pv_vcpu.gdt_frames[i] = 0;
     }
 }
@@ -4442,7 +4449,7 @@ long set_gdt(struct vcpu *v,
     struct domain *d = v->domain;
     l1_pgentry_t *pl1e;
     /* NB. There are 512 8-byte entries per GDT page. */
-    int i, nr_pages = (entries + 511) / 512;
+    unsigned int i, nr_pages = (entries + 511) / 512;
 
     if ( entries > FIRST_RESERVED_GDT_ENTRY )
         return -EINVAL;

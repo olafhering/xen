@@ -1287,6 +1287,27 @@ int xc_domain_setvnuma(xc_interface *xch,
                         unsigned int *vdistance,
                         unsigned int *vcpu_to_vnode,
                         unsigned int *vnode_to_pnode);
+/*
+ * Retrieve vnuma configuration
+ * domid: IN, target domid
+ * nr_vnodes: IN/OUT, number of vnodes, not NULL
+ * nr_vmemranges: IN/OUT, number of vmemranges, not NULL
+ * nr_vcpus: IN/OUT, number of vcpus, not NULL
+ * vmemranges: OUT, an array which has length of nr_vmemranges
+ * vdistance: OUT, an array which has length of nr_vnodes * nr_vnodes
+ * vcpu_to_vnode: OUT, an array which has length of nr_vcpus
+ */
+int xc_domain_getvnuma(xc_interface *xch,
+                       uint32_t domid,
+                       uint32_t *nr_vnodes,
+                       uint32_t *nr_vmemranges,
+                       uint32_t *nr_vcpus,
+                       xen_vmemrange_t *vmemrange,
+                       unsigned int *vdistance,
+                       unsigned int *vcpu_to_vnode);
+
+int xc_domain_soft_reset(xc_interface *xch,
+                         uint32_t domid);
 
 #if defined(__i386__) || defined(__x86_64__)
 /*
@@ -2407,6 +2428,18 @@ int xc_monitor_software_breakpoint(xc_interface *xch, domid_t domain_id,
 int xc_monitor_guest_request(xc_interface *xch, domid_t domain_id,
                              bool enable, bool sync);
 
+/**
+ * This function enables / disables emulation for each REP for a
+ * REP-compatible instruction.
+ *
+ * @parm xch a handle to an open hypervisor interface.
+ * @parm domain_id the domain id one wants to get the node affinity of.
+ * @parm enable if 0 optimize when possible, else emulate each REP.
+ * @return 0 on success, -1 on failure.
+ */
+int xc_monitor_emulate_each_rep(xc_interface *xch, domid_t domain_id,
+                                bool enable);
+
 /***
  * Memory sharing operations.
  *
@@ -2794,7 +2827,9 @@ enum xc_psr_cmt_type {
 typedef enum xc_psr_cmt_type xc_psr_cmt_type;
 
 enum xc_psr_cat_type {
-    XC_PSR_CAT_L3_CBM = 1,
+    XC_PSR_CAT_L3_CBM      = 1,
+    XC_PSR_CAT_L3_CBM_CODE = 2,
+    XC_PSR_CAT_L3_CBM_DATA = 3,
 };
 typedef enum xc_psr_cat_type xc_psr_cat_type;
 
@@ -2820,7 +2855,8 @@ int xc_psr_cat_get_domain_data(xc_interface *xch, uint32_t domid,
                                xc_psr_cat_type type, uint32_t target,
                                uint64_t *data);
 int xc_psr_cat_get_l3_info(xc_interface *xch, uint32_t socket,
-                           uint32_t *cos_max, uint32_t *cbm_len);
+                           uint32_t *cos_max, uint32_t *cbm_len,
+                           bool *cdp_enabled);
 #endif
 
 #endif /* XENCTRL_H */

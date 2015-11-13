@@ -338,7 +338,7 @@ int80_slow_path:
          * Setup entry vector and error code as if this was a GPF caused by an
          * IDT entry with DPL==0.
          */
-        movl  $((0x80 << 3) | 0x2),UREGS_error_code(%rsp)
+        movl  $((0x80 << 3) | X86_XEC_IDT),UREGS_error_code(%rsp)
         SAVE_PRESERVED
         movl  $TRAP_gp_fault,UREGS_entry_vector(%rsp)
         /* A GPF wouldn't have incremented the instruction pointer. */
@@ -547,7 +547,7 @@ exception_with_ints_disabled:
 FATAL_exception_with_ints_disabled:
         movq  %rsp,%rdi
         call  fatal_trap
-        ud2
+        BUG   /* fatal_trap() shouldn't return. */
 
 ENTRY(divide_error)
         pushq $0
@@ -620,7 +620,7 @@ ENTRY(double_fault)
         SAVE_ALL STAC
         movq  %rsp,%rdi
         call  do_double_fault
-        ud2
+        BUG   /* do_double_fault() shouldn't return. */
 
         .pushsection .init.text, "ax", @progbits
 ENTRY(early_page_fault)
@@ -722,6 +722,10 @@ ENTRY(exception_table)
         .quad do_reserved_trap /* Architecturally reserved exceptions. */
         .endr
         .size exception_table, . - exception_table
+
+#ifndef CONFIG_KEXEC
+#define do_kexec_op do_ni_hypercall
+#endif
 
 ENTRY(hypercall_table)
         .quad do_set_trap_table     /*  0 */

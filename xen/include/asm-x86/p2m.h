@@ -292,10 +292,20 @@ struct p2m_domain {
                          entry_count;  /* # of pages in p2m marked pod      */
         unsigned long    reclaim_single; /* Last gpfn of a scan */
         unsigned long    max_guest;    /* gpfn of max guest demand-populate */
-#define POD_HISTORY_MAX 128
-        /* gpfn of last guest superpage demand-populated */
-        unsigned long    last_populated[POD_HISTORY_MAX]; 
-        unsigned int     last_populated_index;
+
+        /*
+         * Tracking of the most recently populated PoD pages, for eager
+         * reclamation.
+         */
+        struct pod_mrp_list {
+#define NR_POD_MRP_ENTRIES 32
+
+/* Encode ORDER_2M superpage in top bit of GFN */
+#define POD_LAST_SUPERPAGE (INVALID_GFN & ~(INVALID_GFN >> 1))
+
+            unsigned long list[NR_POD_MRP_ENTRIES];
+            unsigned int idx;
+        } mrp;
         mm_lock_t        lock;         /* Locking of private pod structs,   *
                                         * not relying on the p2m lock.      */
     } pod;
@@ -578,7 +588,7 @@ void p2m_pod_dump_data(struct domain *d);
 
 /* Move all pages from the populate-on-demand cache to the domain page_list
  * (usually in preparation for domain destruction) */
-void p2m_pod_empty_cache(struct domain *d);
+int p2m_pod_empty_cache(struct domain *d);
 
 /* Set populate-on-demand cache size so that the total memory allocated to a
  * domain matches target */
@@ -679,6 +689,9 @@ int p2m_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
 
 /* Set up function pointers for PT implementation: only for use by p2m code */
 extern void p2m_pt_init(struct p2m_domain *p2m);
+
+void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
+                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc);
 
 /* Debugging and auditing of the P2M code? */
 #ifndef NDEBUG

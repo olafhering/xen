@@ -528,6 +528,8 @@ static bool_t __init read_file(EFI_FILE_HANDLE dir_handle, CHAR16 *name,
         PrintErrMesg(name, ret);
     }
 
+    efi_arch_flush_dcache_area(file->ptr, file->size);
+
     return 1;
 }
 
@@ -593,6 +595,158 @@ static char *__init get_value(const struct file *cfg, const char *section,
         ptr += strlen(ptr);
     }
     return NULL;
+}
+
+static void __init efi_init(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+{
+    efi_ih = ImageHandle;
+    efi_bs = SystemTable->BootServices;
+    efi_bs_revision = efi_bs->Hdr.Revision;
+    efi_rs = SystemTable->RuntimeServices;
+    efi_ct = SystemTable->ConfigurationTable;
+    efi_num_ct = SystemTable->NumberOfTableEntries;
+    efi_version = SystemTable->Hdr.Revision;
+    efi_fw_vendor = SystemTable->FirmwareVendor;
+    efi_fw_revision = SystemTable->FirmwareRevision;
+
+    StdOut = SystemTable->ConOut;
+    StdErr = SystemTable->StdErr ?: StdOut;
+}
+
+static void __init efi_console_set_mode(void)
+{
+    UINTN cols, rows, size;
+    unsigned int best, i;
+
+    for ( i = 0, size = 0, best = StdOut->Mode->Mode;
+          i < StdOut->Mode->MaxMode; ++i )
+    {
+        if ( StdOut->QueryMode(StdOut, i, &cols, &rows) == EFI_SUCCESS &&
+             cols * rows > size )
+        {
+            size = cols * rows;
+            best = i;
+        }
+    }
+    if ( best != StdOut->Mode->Mode )
+        StdOut->SetMode(StdOut, best);
+}
+
+static EFI_GRAPHICS_OUTPUT_PROTOCOL __init *efi_get_gop(void)
+{
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mode_info;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
+    EFI_HANDLE *handles = NULL;
+    EFI_STATUS status;
+    UINTN info_size, size = 0;
+    static EFI_GUID __initdata gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+    unsigned int i;
+
+    status = efi_bs->LocateHandle(ByProtocol, &gop_guid, NULL, &size, NULL);
+    if ( status == EFI_BUFFER_TOO_SMALL )
+        status = efi_bs->AllocatePool(EfiLoaderData, size, (void **)&handles);
+    if ( !EFI_ERROR(status) )
+        status = efi_bs->LocateHandle(ByProtocol, &gop_guid, NULL, &size,
+                                      handles);
+    if ( EFI_ERROR(status) )
+        size = 0;
+    for ( i = 0; i < size / sizeof(*handles); ++i )
+    {
+        status = efi_bs->HandleProtocol(handles[i], &gop_guid, (void **)&gop);
+        if ( EFI_ERROR(status) )
+            continue;
+        status = gop->QueryMode(gop, gop->Mode->Mode, &info_size, &mode_info);
+        if ( !EFI_ERROR(status) )
+            break;
+    }
+    if ( handles )
+        efi_bs->FreePool(handles);
+    if ( EFI_ERROR(status) )
+        gop = NULL;
+
+    return gop;
+}
+
+static UINTN __init efi_find_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop,
+                                      UINTN cols, UINTN rows, UINTN depth)
+{
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mode_info;
+    EFI_STATUS status;
+    UINTN gop_mode = ~0, info_size, size;
+    unsigned int i;
+
+    for ( i = size = 0; i < gop->Mode->MaxMode; ++i )
+    {
+        unsigned int bpp = 0;
+
+        status = gop->QueryMode(gop, i, &info_size, &mode_info);
+        if ( EFI_ERROR(status) )
+            continue;
+        switch ( mode_info->PixelFormat )
+        {
+        case PixelBitMask:
+            bpp = hweight32(mode_info->PixelInformation.RedMask |
+                            mode_info->PixelInformation.GreenMask |
+                            mode_info->PixelInformation.BlueMask);
+            break;
+        case PixelRedGreenBlueReserved8BitPerColor:
+        case PixelBlueGreenRedReserved8BitPerColor:
+            bpp = 24;
+            break;
+        default:
+            continue;
+        }
+        if ( cols == mode_info->HorizontalResolution &&
+             rows == mode_info->VerticalResolution &&
+             (!depth || bpp == depth) )
+        {
+            gop_mode = i;
+            break;
+        }
+        if ( !cols && !rows &&
+             mode_info->HorizontalResolution *
+             mode_info->VerticalResolution > size )
+        {
+            size = mode_info->HorizontalResolution *
+                   mode_info->VerticalResolution;
+            gop_mode = i;
+        }
+    }
+
+    return gop_mode;
+}
+
+static void __init efi_tables(void)
+{
+    unsigned int i;
+
+    /* Obtain basic table pointers. */
+    for ( i = 0; i < efi_num_ct; ++i )
+    {
+        static EFI_GUID __initdata acpi2_guid = ACPI_20_TABLE_GUID;
+        static EFI_GUID __initdata acpi_guid = ACPI_TABLE_GUID;
+        static EFI_GUID __initdata mps_guid = MPS_TABLE_GUID;
+        static EFI_GUID __initdata smbios_guid = SMBIOS_TABLE_GUID;
+        static EFI_GUID __initdata smbios3_guid = SMBIOS3_TABLE_GUID;
+
+        if ( match_guid(&acpi2_guid, &efi_ct[i].VendorGuid) )
+	       efi.acpi20 = (long)efi_ct[i].VendorTable;
+        if ( match_guid(&acpi_guid, &efi_ct[i].VendorGuid) )
+	       efi.acpi = (long)efi_ct[i].VendorTable;
+        if ( match_guid(&mps_guid, &efi_ct[i].VendorGuid) )
+	       efi.mps = (long)efi_ct[i].VendorTable;
+        if ( match_guid(&smbios_guid, &efi_ct[i].VendorGuid) )
+	       efi.smbios = (long)efi_ct[i].VendorTable;
+        if ( match_guid(&smbios3_guid, &efi_ct[i].VendorGuid) )
+	       efi.smbios3 = (long)efi_ct[i].VendorTable;
+    }
+
+#ifndef CONFIG_ARM /* TODO - disabled until implemented on ARM */
+    dmi_efi_get_table(efi.smbios != EFI_INVALID_TABLE_ADDR
+                      ? (void *)(long)efi.smbios : NULL,
+                      efi.smbios3 != EFI_INVALID_TABLE_ADDR
+                      ? (void *)(long)efi.smbios3 : NULL);
+#endif
 }
 
 static void __init setup_efi_pci(void)
@@ -682,6 +836,92 @@ static void __init setup_efi_pci(void)
     efi_bs->FreePool(handles);
 }
 
+static void __init efi_variables(void)
+{
+    EFI_STATUS status;
+
+    status = (efi_rs->Hdr.Revision >> 16) >= 2 ?
+             efi_rs->QueryVariableInfo(EFI_VARIABLE_NON_VOLATILE |
+                                       EFI_VARIABLE_BOOTSERVICE_ACCESS |
+                                       EFI_VARIABLE_RUNTIME_ACCESS,
+                                       &efi_boot_max_var_store_size,
+                                       &efi_boot_remain_var_store_size,
+                                       &efi_boot_max_var_size) :
+             EFI_INCOMPATIBLE_VERSION;
+    if ( EFI_ERROR(status) )
+    {
+        efi_boot_max_var_store_size = 0;
+        efi_boot_remain_var_store_size = 0;
+        efi_boot_max_var_size = status;
+        PrintStr(L"Warning: Could not query variable store: ");
+        DisplayUint(status, 0);
+        PrintStr(newline);
+    }
+}
+
+static void __init efi_set_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop, UINTN gop_mode)
+{
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mode_info;
+    EFI_STATUS status;
+    UINTN info_size;
+
+    /* Set graphics mode. */
+    if ( gop_mode < gop->Mode->MaxMode && gop_mode != gop->Mode->Mode )
+        gop->SetMode(gop, gop_mode);
+
+    /* Get graphics and frame buffer info. */
+    status = gop->QueryMode(gop, gop->Mode->Mode, &info_size, &mode_info);
+    if ( !EFI_ERROR(status) )
+        efi_arch_video_init(gop, info_size, mode_info);
+}
+
+static void __init efi_exit_boot(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+{
+    EFI_STATUS status;
+    UINTN info_size = 0, map_key;
+    bool_t retry;
+
+    efi_bs->GetMemoryMap(&info_size, NULL, &map_key,
+                         &efi_mdesc_size, &mdesc_ver);
+    info_size += 8 * efi_mdesc_size;
+    efi_memmap = efi_arch_allocate_mmap_buffer(info_size);
+    if ( !efi_memmap )
+        blexit(L"Unable to allocate memory for EFI memory map");
+
+    for ( retry = 0; ; retry = 1 )
+    {
+        efi_memmap_size = info_size;
+        status = SystemTable->BootServices->GetMemoryMap(&efi_memmap_size,
+                                                         efi_memmap, &map_key,
+                                                         &efi_mdesc_size,
+                                                         &mdesc_ver);
+        if ( EFI_ERROR(status) )
+            PrintErrMesg(L"Cannot obtain memory map", status);
+
+        efi_arch_process_memory_map(SystemTable, efi_memmap, efi_memmap_size,
+                                    efi_mdesc_size, mdesc_ver);
+
+        efi_arch_pre_exit_boot();
+
+        status = SystemTable->BootServices->ExitBootServices(ImageHandle,
+                                                             map_key);
+        efi_bs = NULL;
+        if ( status != EFI_INVALID_PARAMETER || retry )
+            break;
+    }
+
+    if ( EFI_ERROR(status) )
+        PrintErrMesg(L"Cannot exit boot services", status);
+
+    /* Adjust pointers into EFI. */
+    efi_ct = (void *)efi_ct + DIRECTMAP_VIRT_START;
+#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
+    efi_rs = (void *)efi_rs + DIRECTMAP_VIRT_START;
+#endif
+    efi_memmap = (void *)efi_memmap + DIRECTMAP_VIRT_START;
+    efi_fw_vendor = (void *)efi_fw_vendor + DIRECTMAP_VIRT_START;
+}
+
 static int __init __maybe_unused set_color(u32 mask, int bpp, u8 *pos, u8 *sz)
 {
    if ( bpp < 0 )
@@ -701,34 +941,21 @@ void EFIAPI __init noreturn
 efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     static EFI_GUID __initdata loaded_image_guid = LOADED_IMAGE_PROTOCOL;
-    static EFI_GUID __initdata gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
     static EFI_GUID __initdata shim_lock_guid = SHIM_LOCK_PROTOCOL_GUID;
     EFI_LOADED_IMAGE *loaded_image;
     EFI_STATUS status;
     unsigned int i, argc;
     CHAR16 **argv, *file_name, *cfg_file_name = NULL, *options = NULL;
-    UINTN map_key, info_size, gop_mode = ~0;
-    EFI_HANDLE *handles = NULL;
+    UINTN gop_mode = ~0;
     EFI_SHIM_LOCK_PROTOCOL *shim_lock;
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
-    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mode_info;
     union string section = { NULL }, name;
-    bool_t base_video = 0, retry;
+    bool_t base_video = 0;
     char *option_str;
     bool_t use_cfg_file;
 
-    efi_ih = ImageHandle;
-    efi_bs = SystemTable->BootServices;
-    efi_bs_revision = efi_bs->Hdr.Revision;
-    efi_rs = SystemTable->RuntimeServices;
-    efi_ct = SystemTable->ConfigurationTable;
-    efi_num_ct = SystemTable->NumberOfTableEntries;
-    efi_version = SystemTable->Hdr.Revision;
-    efi_fw_vendor = SystemTable->FirmwareVendor;
-    efi_fw_revision = SystemTable->FirmwareRevision;
+    efi_init(ImageHandle, SystemTable);
 
-    StdOut = SystemTable->ConOut;
-    StdErr = SystemTable->StdErr ?: StdOut;
     use_cfg_file = efi_arch_use_config_file(SystemTable);
 
     status = efi_bs->HandleProtocol(ImageHandle, &loaded_image_guid,
@@ -789,23 +1016,7 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
 
         if ( !base_video )
-        {
-            unsigned int best;
-            UINTN cols, rows, size;
-
-            for ( i = 0, size = 0, best = StdOut->Mode->Mode;
-                  i < StdOut->Mode->MaxMode; ++i )
-            {
-                if ( StdOut->QueryMode(StdOut, i, &cols, &rows) == EFI_SUCCESS &&
-                     cols * rows > size )
-                {
-                    size = cols * rows;
-                    best = i;
-                }
-            }
-            if ( best != StdOut->Mode->Mode )
-                StdOut->SetMode(StdOut, best);
-        }
+            efi_console_set_mode();
     }
 
     PrintStr(L"Xen " __stringify(XEN_VERSION) "." __stringify(XEN_SUBVERSION)
@@ -824,27 +1035,7 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                                &cols, &rows) == EFI_SUCCESS )
             efi_arch_console_init(cols, rows);
 
-        status = efi_bs->LocateHandle(ByProtocol, &gop_guid, NULL, &size, NULL);
-        if ( status == EFI_BUFFER_TOO_SMALL )
-            status = efi_bs->AllocatePool(EfiLoaderData, size, (void **)&handles);
-        if ( !EFI_ERROR(status) )
-            status = efi_bs->LocateHandle(ByProtocol, &gop_guid, NULL, &size,
-                                          handles);
-        if ( EFI_ERROR(status) )
-            size = 0;
-        for ( i = 0; i < size / sizeof(*handles); ++i )
-        {
-            status = efi_bs->HandleProtocol(handles[i], &gop_guid, (void **)&gop);
-            if ( EFI_ERROR(status) )
-                continue;
-            status = gop->QueryMode(gop, gop->Mode->Mode, &info_size, &mode_info);
-            if ( !EFI_ERROR(status) )
-                break;
-        }
-        if ( handles )
-            efi_bs->FreePool(handles);
-        if ( EFI_ERROR(status) )
-            gop = NULL;
+        gop = efi_get_gop();
 
         /* Get the file system interface. */
         dir_handle = get_parent_handle(loaded_image, &file_name);
@@ -953,45 +1144,7 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         dir_handle->Close(dir_handle);
 
         if ( gop && !base_video )
-        {
-            for ( i = size = 0; i < gop->Mode->MaxMode; ++i )
-            {
-                unsigned int bpp = 0;
-
-                status = gop->QueryMode(gop, i, &info_size, &mode_info);
-                if ( EFI_ERROR(status) )
-                    continue;
-                switch ( mode_info->PixelFormat )
-                {
-                case PixelBitMask:
-                    bpp = hweight32(mode_info->PixelInformation.RedMask |
-                                    mode_info->PixelInformation.GreenMask |
-                                    mode_info->PixelInformation.BlueMask);
-                    break;
-                case PixelRedGreenBlueReserved8BitPerColor:
-                case PixelBlueGreenRedReserved8BitPerColor:
-                    bpp = 24;
-                    break;
-                default:
-                    continue;
-                }
-                if ( cols == mode_info->HorizontalResolution &&
-                     rows == mode_info->VerticalResolution &&
-                     (!depth || bpp == depth) )
-                {
-                    gop_mode = i;
-                    break;
-                }
-                if ( !cols && !rows &&
-                     mode_info->HorizontalResolution *
-                     mode_info->VerticalResolution > size )
-                {
-                    size = mode_info->HorizontalResolution *
-                           mode_info->VerticalResolution;
-                    gop_mode = i;
-                }
-            }
-        }
+            gop_mode = efi_find_gop_mode(gop, cols, rows, depth);
     }
 
     efi_arch_edd();
@@ -999,111 +1152,20 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     /* XXX Collect EDID info. */
     efi_arch_cpu();
 
-    /* Obtain basic table pointers. */
-    for ( i = 0; i < efi_num_ct; ++i )
-    {
-        static EFI_GUID __initdata acpi2_guid = ACPI_20_TABLE_GUID;
-        static EFI_GUID __initdata acpi_guid = ACPI_TABLE_GUID;
-        static EFI_GUID __initdata mps_guid = MPS_TABLE_GUID;
-        static EFI_GUID __initdata smbios_guid = SMBIOS_TABLE_GUID;
-        static EFI_GUID __initdata smbios3_guid = SMBIOS3_TABLE_GUID;
-
-        if ( match_guid(&acpi2_guid, &efi_ct[i].VendorGuid) )
-	       efi.acpi20 = (long)efi_ct[i].VendorTable;
-        if ( match_guid(&acpi_guid, &efi_ct[i].VendorGuid) )
-	       efi.acpi = (long)efi_ct[i].VendorTable;
-        if ( match_guid(&mps_guid, &efi_ct[i].VendorGuid) )
-	       efi.mps = (long)efi_ct[i].VendorTable;
-        if ( match_guid(&smbios_guid, &efi_ct[i].VendorGuid) )
-	       efi.smbios = (long)efi_ct[i].VendorTable;
-        if ( match_guid(&smbios3_guid, &efi_ct[i].VendorGuid) )
-	       efi.smbios3 = (long)efi_ct[i].VendorTable;
-    }
-
-#ifndef CONFIG_ARM /* TODO - disabled until implemented on ARM */
-    dmi_efi_get_table(efi.smbios != EFI_INVALID_TABLE_ADDR
-                      ? (void *)(long)efi.smbios : NULL,
-                      efi.smbios3 != EFI_INVALID_TABLE_ADDR
-                      ? (void *)(long)efi.smbios3 : NULL);
-#endif
+    efi_tables();
 
     /* Collect PCI ROM contents. */
     setup_efi_pci();
 
     /* Get snapshot of variable store parameters. */
-    status = (efi_rs->Hdr.Revision >> 16) >= 2 ?
-             efi_rs->QueryVariableInfo(EFI_VARIABLE_NON_VOLATILE |
-                                       EFI_VARIABLE_BOOTSERVICE_ACCESS |
-                                       EFI_VARIABLE_RUNTIME_ACCESS,
-                                       &efi_boot_max_var_store_size,
-                                       &efi_boot_remain_var_store_size,
-                                       &efi_boot_max_var_size) :
-             EFI_INCOMPATIBLE_VERSION;
-    if ( EFI_ERROR(status) )
-    {
-        efi_boot_max_var_store_size = 0;
-        efi_boot_remain_var_store_size = 0;
-        efi_boot_max_var_size = status;
-        PrintStr(L"Warning: Could not query variable store: ");
-        DisplayUint(status, 0);
-        PrintStr(newline);
-    }
+    efi_variables();
 
     efi_arch_memory_setup();
 
     if ( gop )
-    {
+        efi_set_gop_mode(gop, gop_mode);
 
-        /* Set graphics mode. */
-        if ( gop_mode < gop->Mode->MaxMode && gop_mode != gop->Mode->Mode )
-            gop->SetMode(gop, gop_mode);
-
-        /* Get graphics and frame buffer info. */
-        status = gop->QueryMode(gop, gop->Mode->Mode, &info_size, &mode_info);
-        if ( !EFI_ERROR(status) )
-            efi_arch_video_init(gop, info_size, mode_info);
-    }
-
-    info_size = 0;
-    efi_bs->GetMemoryMap(&info_size, NULL, &map_key,
-                         &efi_mdesc_size, &mdesc_ver);
-    info_size += 8 * efi_mdesc_size;
-    efi_memmap = efi_arch_allocate_mmap_buffer(info_size);
-    if ( !efi_memmap )
-        blexit(L"Unable to allocate memory for EFI memory map");
-
-    for ( retry = 0; ; retry = 1 )
-    {
-        efi_memmap_size = info_size;
-        status = SystemTable->BootServices->GetMemoryMap(&efi_memmap_size,
-                                                         efi_memmap, &map_key,
-                                                         &efi_mdesc_size,
-                                                         &mdesc_ver);
-        if ( EFI_ERROR(status) )
-            PrintErrMesg(L"Cannot obtain memory map", status);
-
-        efi_arch_process_memory_map(SystemTable, efi_memmap, efi_memmap_size,
-                                    efi_mdesc_size, mdesc_ver);
-
-        efi_arch_pre_exit_boot();
-
-        status = SystemTable->BootServices->ExitBootServices(ImageHandle,
-                                                             map_key);
-        efi_bs = NULL;
-        if ( status != EFI_INVALID_PARAMETER || retry )
-            break;
-    }
-
-    if ( EFI_ERROR(status) )
-        PrintErrMesg(L"Cannot exit boot services", status);
-
-    /* Adjust pointers into EFI. */
-    efi_ct = (void *)efi_ct + DIRECTMAP_VIRT_START;
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
-    efi_rs = (void *)efi_rs + DIRECTMAP_VIRT_START;
-#endif
-    efi_memmap = (void *)efi_memmap + DIRECTMAP_VIRT_START;
-    efi_fw_vendor = (void *)efi_fw_vendor + DIRECTMAP_VIRT_START;
+    efi_exit_boot(ImageHandle, SystemTable);
 
     efi_arch_post_exit_boot();
     for( ; ; ); /* not reached */

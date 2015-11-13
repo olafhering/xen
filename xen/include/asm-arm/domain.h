@@ -17,7 +17,6 @@ struct hvm_domain
 {
     uint64_t              params[HVM_NR_PARAMS];
     struct hvm_iommu      iommu;
-    bool_t                introspection_enabled;
 }  __cacheline_aligned;
 
 #ifdef CONFIG_ARM_64
@@ -56,7 +55,8 @@ struct arch_domain
     struct hvm_domain hvm_domain;
     xen_pfn_t *grant_table_gpfn;
 
-    struct io_handler io_handlers;
+    struct vmmio vmmio;
+
     /* Continuable domain_relinquish_resources(). */
     enum {
         RELMEM_not_started,
@@ -91,7 +91,7 @@ struct arch_domain
          * rank order.
          */
         spinlock_t lock;
-        int ctlr;
+        uint32_t ctlr;
         int nr_spis; /* Number of SPIs */
         unsigned long *allocated_irqs; /* bitmap of IRQs allocated */
         struct vgic_irq_rank *shared_irqs;
@@ -102,7 +102,6 @@ struct arch_domain
         struct pending_irq *pending_irqs;
         /* Base address for guest GIC */
         paddr_t dbase; /* Distributor base address */
-        paddr_t cbase; /* CPU base address */
 #ifdef HAS_GICV3
         /* GIC V3 addressing */
         /* List of contiguous occupied by the redistributors */
@@ -299,6 +298,16 @@ static inline register_t vcpuid_to_vaffinity(unsigned int vcpuid)
     vaff |= ((vcpuid >> 4) & MPIDR_LEVEL_MASK) << MPIDR_LEVEL_SHIFT(1);
 
     return vaff;
+}
+
+static inline struct vcpu_guest_context *alloc_vcpu_guest_context(void)
+{
+    return xmalloc(struct vcpu_guest_context);
+}
+
+static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
+{
+    xfree(vgc);
 }
 
 #endif /* __ASM_DOMAIN_H__ */

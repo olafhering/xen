@@ -68,6 +68,13 @@ static void vgic_init_pending_irq(struct pending_irq *p, unsigned int virq)
     p->irq = virq;
 }
 
+static void vgic_rank_init(struct vgic_irq_rank *rank, uint8_t index)
+{
+    spin_lock_init(&rank->lock);
+
+    rank->index = index;
+}
+
 int domain_vgic_init(struct domain *d, unsigned int nr_spis)
 {
     int i;
@@ -114,8 +121,8 @@ int domain_vgic_init(struct domain *d, unsigned int nr_spis)
     for (i=0; i<d->arch.vgic.nr_spis; i++)
         vgic_init_pending_irq(&d->arch.vgic.pending_irqs[i], i + 32);
 
-    for (i=0; i<DOMAIN_NR_RANKS(d); i++)
-        spin_lock_init(&d->arch.vgic.shared_irqs[i].lock);
+    for ( i = 0; i < DOMAIN_NR_RANKS(d); i++ )
+        vgic_rank_init(&d->arch.vgic.shared_irqs[i], i + 1);
 
     ret = d->arch.vgic.handler->domain_init(d);
     if ( ret )
@@ -169,7 +176,7 @@ int vcpu_vgic_init(struct vcpu *v)
     if ( v->arch.vgic.private_irqs == NULL )
       return -ENOMEM;
 
-    spin_lock_init(&v->arch.vgic.private_irqs->lock);
+    vgic_rank_init(v->arch.vgic.private_irqs, 0);
 
     v->domain->arch.vgic.handler->vcpu_init(v);
 
@@ -202,6 +209,19 @@ struct vcpu *vgic_get_target_vcpu(struct vcpu *v, unsigned int irq)
     v_target = d->arch.vgic.handler->get_target_vcpu(v, irq);
     vgic_unlock_rank(v, rank, flags);
     return v_target;
+}
+
+static int vgic_get_virq_priority(struct vcpu *v, unsigned int virq)
+{
+    struct vgic_irq_rank *rank = vgic_rank_irq(v, virq);
+    unsigned long flags;
+    int priority;
+
+    vgic_lock_rank(v, rank, flags);
+    priority = rank->priority[virq & INTERRUPT_RANK_MASK];
+    vgic_unlock_rank(v, rank, flags);
+
+    return priority;
 }
 
 void vgic_migrate_irq(struct vcpu *old, struct vcpu *new, unsigned int irq)
@@ -407,14 +427,11 @@ void vgic_clear_pending_irqs(struct vcpu *v)
 void vgic_vcpu_inject_irq(struct vcpu *v, unsigned int virq)
 {
     uint8_t priority;
-    struct vgic_irq_rank *rank = vgic_rank_irq(v, virq);
     struct pending_irq *iter, *n = irq_to_pending(v, virq);
     unsigned long flags;
     bool_t running;
 
-    vgic_lock_rank(v, rank, flags);
-    priority = v->domain->arch.vgic.handler->get_irq_priority(v, virq);
-    vgic_unlock_rank(v, rank, flags);
+    priority = vgic_get_virq_priority(v, virq);
 
     spin_lock_irqsave(&v->arch.vgic.lock, flags);
 

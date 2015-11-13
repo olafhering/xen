@@ -31,13 +31,19 @@ static void iommu_dump_p2m_table(unsigned char key);
  *
  *   off|no|false|disable       Disable IOMMU (default)
  *   force|required             Don't boot unless IOMMU is enabled
+ *   no-intremap                Disable interrupt remapping
+ *   verbose                    Be more verbose
+ *   debug                      Enable debugging messages and checks
  *   workaround_bios_bug        Workaround some bios issue to still enable
-                                VT-d, don't guarantee security
+ *                              VT-d, don't guarantee security
  *   dom0-passthrough           No DMA translation at all for Dom0
  *   dom0-strict                No 1:1 memory mapping for Dom0
+ *   no-sharept                 Don't share VT-d and EPT page tables
  *   no-snoop                   Disable VT-d Snoop Control
  *   no-qinval                  Disable VT-d Queued Invalidation
- *   no-intremap                Disable VT-d Interrupt Remapping
+ *   no-igfx                    Disable VT-d for IGD devices (insecure)
+ *   no-amd-iommu-perdev-intremap Don't use per-device interrupt remapping
+ *                              tables (insecure)
  */
 custom_param("iommu", parse_iommu_param);
 bool_t __initdata iommu_enable = 1;
@@ -60,12 +66,6 @@ DEFINE_PER_CPU(bool_t, iommu_dont_flush_iotlb);
 DEFINE_SPINLOCK(iommu_pt_cleanup_lock);
 PAGE_LIST_HEAD(iommu_pt_cleanup_list);
 static struct tasklet iommu_pt_cleanup_tasklet;
-
-static struct keyhandler iommu_p2m_table = {
-    .diagnostic = 0,
-    .u.fn = iommu_dump_p2m_table,
-    .desc = "dump iommu p2m table"
-};
 
 static void __init parse_iommu_param(char *s)
 {
@@ -155,7 +155,7 @@ void __hwdom_init iommu_hwdom_init(struct domain *d)
     if ( !iommu_enabled )
         return;
 
-    register_keyhandler('o', &iommu_p2m_table);
+    register_keyhandler('o', &iommu_dump_p2m_table, "dump iommu p2m table", 0);
     d->need_iommu = !!iommu_dom0_strict;
     if ( need_iommu(d) && !iommu_use_hap_pt(d) )
     {

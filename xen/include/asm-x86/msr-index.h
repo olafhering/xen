@@ -58,6 +58,8 @@
 
 #define MSR_IA32_BNDCFGS		0x00000D90
 
+#define MSR_IA32_XSS			0x00000da0
+
 #define MSR_MTRRfix64K_00000		0x00000250
 #define MSR_MTRRfix16K_80000		0x00000258
 #define MSR_MTRRfix16K_A0000		0x00000259
@@ -328,7 +330,10 @@
 #define MSR_IA32_CMT_EVTSEL		0x00000c8d
 #define MSR_IA32_CMT_CTR		0x00000c8e
 #define MSR_IA32_PSR_ASSOC		0x00000c8f
+#define MSR_IA32_PSR_L3_QOS_CFG	0x00000c81
 #define MSR_IA32_PSR_L3_MASK(n)	(0x00000c90 + (n))
+#define MSR_IA32_PSR_L3_MASK_CODE(n)	(0x00000c90 + (n) * 2 + 1)
+#define MSR_IA32_PSR_L3_MASK_DATA(n)	(0x00000c90 + (n) * 2)
 
 /* Intel Model 6 */
 #define MSR_P6_PERFCTR(n)		(0x000000c1 + (n))

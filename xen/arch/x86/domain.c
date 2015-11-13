@@ -48,7 +48,6 @@
 #include <asm/cpuidle.h>
 #include <asm/mpspec.h>
 #include <asm/ldt.h>
-#include <asm/fixmap.h>
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/support.h>
 #include <asm/hvm/viridian.h>
@@ -204,6 +203,7 @@ smap_check_policy_t smap_policy_change(struct vcpu *v,
     return old_policy;
 }
 
+#ifndef CONFIG_BIGMEM
 /*
  * The hole may be at or above the 44-bit boundary, so we need to determine
  * the total bit count until reaching 32 significant (not squashed out) bits
@@ -225,10 +225,14 @@ static unsigned int __init noinline _domain_struct_bits(void)
 
     return bits;
 }
+#endif
 
 struct domain *alloc_domain_struct(void)
 {
     struct domain *d;
+#ifdef CONFIG_BIGMEM
+    const unsigned int bits = 0;
+#else
     /*
      * We pack the PDX of the domain structure into a 32-bit field within
      * the page_info structure. Hence the MEMF_bits() restriction.
@@ -237,6 +241,7 @@ struct domain *alloc_domain_struct(void)
 
     if ( unlikely(!bits) )
          bits = _domain_struct_bits();
+#endif
 
     BUILD_BUG_ON(sizeof(*d) > PAGE_SIZE);
     d = alloc_xenheap_pages(0, MEMF_bits(bits));
@@ -270,51 +275,6 @@ struct vcpu *alloc_vcpu_struct(void)
 void free_vcpu_struct(struct vcpu *v)
 {
     free_xenheap_page(v);
-}
-
-static DEFINE_PER_CPU(struct page_info *[
-    PFN_UP(sizeof(struct vcpu_guest_context))], vgc_pages);
-
-struct vcpu_guest_context *alloc_vcpu_guest_context(void)
-{
-    unsigned int i, cpu = smp_processor_id();
-    enum fixed_addresses idx = FIX_VGC_BEGIN -
-        cpu * PFN_UP(sizeof(struct vcpu_guest_context));
-
-    BUG_ON(per_cpu(vgc_pages[0], cpu) != NULL);
-
-    for ( i = 0; i < PFN_UP(sizeof(struct vcpu_guest_context)); ++i )
-    {
-        struct page_info *pg = alloc_domheap_page(current->domain,
-                                                  MEMF_no_owner);
-
-        if ( unlikely(pg == NULL) )
-        {
-            free_vcpu_guest_context(NULL);
-            return NULL;
-        }
-        __set_fixmap(idx - i, page_to_mfn(pg), __PAGE_HYPERVISOR_RW);
-        per_cpu(vgc_pages[i], cpu) = pg;
-    }
-    return (void *)fix_to_virt(idx);
-}
-
-void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
-{
-    unsigned int i, cpu = smp_processor_id();
-    enum fixed_addresses idx = FIX_VGC_BEGIN -
-        cpu * PFN_UP(sizeof(struct vcpu_guest_context));
-
-    BUG_ON(vgc && vgc != (void *)fix_to_virt(idx));
-
-    for ( i = 0; i < PFN_UP(sizeof(struct vcpu_guest_context)); ++i )
-    {
-        if ( !per_cpu(vgc_pages[i], cpu) )
-            continue;
-        clear_fixmap(idx - i);
-        free_domheap_page(per_cpu(vgc_pages[i], cpu));
-        per_cpu(vgc_pages[i], cpu) = NULL;
-    }
 }
 
 static int setup_compat_l4(struct vcpu *v)
@@ -358,7 +318,7 @@ int switch_native(struct domain *d)
 
     if ( !may_switch_mode(d) )
         return -EACCES;
-    if ( !is_pv_32bit_domain(d) )
+    if ( !is_pv_32bit_domain(d) && !is_pvh_32bit_domain(d) )
         return 0;
 
     d->arch.is_32bit_pv = d->arch.has_32bit_shinfo = 0;
@@ -366,7 +326,11 @@ int switch_native(struct domain *d)
     for_each_vcpu( d, v )
     {
         free_compat_arg_xlat(v);
-        release_compat_l4(v);
+
+        if ( !is_pvh_domain(d) )
+            release_compat_l4(v);
+        else
+            hvm_set_mode(v, 8);
     }
 
     return 0;
@@ -377,25 +341,26 @@ int switch_compat(struct domain *d)
     struct vcpu *v;
     int rc;
 
-    if ( is_pvh_domain(d) )
-    {
-        printk(XENLOG_G_INFO
-               "Xen currently does not support 32bit PVH guests\n");
-        return -EINVAL;
-    }
-
     if ( !may_switch_mode(d) )
         return -EACCES;
-    if ( is_pv_32bit_domain(d) )
+    if ( is_pv_32bit_domain(d) || is_pvh_32bit_domain(d) )
         return 0;
 
-    d->arch.is_32bit_pv = d->arch.has_32bit_shinfo = 1;
+    d->arch.has_32bit_shinfo = 1;
+    if ( is_pv_domain(d) )
+        d->arch.is_32bit_pv = 1;
 
     for_each_vcpu( d, v )
     {
         rc = setup_compat_arg_xlat(v);
         if ( !rc )
-            rc = setup_compat_l4(v);
+        {
+            if ( !is_pvh_domain(d) )
+                rc = setup_compat_l4(v);
+            else
+                rc = hvm_set_mode(v, 4);
+        }
+
         if ( rc )
             goto undo_and_fail;
     }
@@ -410,7 +375,7 @@ int switch_compat(struct domain *d)
     {
         free_compat_arg_xlat(v);
 
-        if ( !pagetable_is_null(v->arch.guest_table) )
+        if ( !is_pvh_domain(d) && !pagetable_is_null(v->arch.guest_table) )
             release_compat_l4(v);
     }
 
@@ -423,9 +388,6 @@ int vcpu_initialise(struct vcpu *v)
     int rc;
 
     v->arch.flags = TF_kernel_mode;
-
-    /* By default, do not emulate */
-    v->arch.vm_event.emulate_flags = 0;
 
     rc = mapcache_vcpu_init(v);
     if ( rc )
@@ -511,8 +473,8 @@ int vcpu_initialise(struct vcpu *v)
 
 void vcpu_destroy(struct vcpu *v)
 {
-    xfree(v->arch.vm_event.emul_read_data);
-    v->arch.vm_event.emul_read_data = NULL;
+    xfree(v->arch.vm_event);
+    v->arch.vm_event = NULL;
 
     if ( is_pv_32bit_vcpu(v) )
     {
@@ -534,6 +496,9 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     int i, paging_initialised = 0;
     int rc = -ENOMEM;
 
+    if ( config == NULL && !is_idle_domain(d) )
+        return -EINVAL;
+
     d->arch.s3_integrity = !!(domcr_flags & DOMCRF_s3_integrity);
 
     INIT_LIST_HEAD(&d->arch.pdev_list);
@@ -553,6 +518,30 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         printk(XENLOG_G_WARNING
                "Dom%d may compromise security on this CPU.\n",
                d->domain_id);
+    }
+
+    if ( is_idle_domain(d) )
+    {
+        d->arch.emulation_flags = 0;
+    }
+    else
+    {
+        if ( (config->emulation_flags & ~XEN_X86_EMU_ALL) != 0 )
+        {
+            printk(XENLOG_G_ERR "d%d: Invalid emulation bitmap: %#x\n",
+                   d->domain_id, config->emulation_flags);
+            return -EINVAL;
+        }
+        if ( is_hvm_domain(d) ? (config->emulation_flags != XEN_X86_EMU_ALL)
+                              : (config->emulation_flags != 0) )
+        {
+            printk(XENLOG_G_ERR "d%d: Xen does not allow %s domain creation "
+                   "with the current selection of emulators: %#x\n",
+                   d->domain_id, is_hvm_domain(d) ? "HVM" : "PV",
+                   config->emulation_flags);
+            return -EOPNOTSUPP;
+        }
+        d->arch.emulation_flags = config->emulation_flags;
     }
 
     if ( has_hvm_container_domain(d) )
@@ -668,9 +657,6 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
 
 void arch_domain_destroy(struct domain *d)
 {
-    vfree(d->arch.event_write_data);
-    d->arch.event_write_data = NULL;
-
     if ( has_hvm_container_domain(d) )
         hvm_domain_destroy(d);
 
@@ -708,6 +694,87 @@ void arch_domain_unpause(struct domain *d)
 {
     if ( has_viridian_time_ref_count(d) )
         viridian_time_ref_count_thaw(d);
+}
+
+int arch_domain_soft_reset(struct domain *d)
+{
+    struct page_info *page = virt_to_page(d->shared_info), *new_page;
+    int ret = 0;
+    struct domain *owner;
+    unsigned long mfn, gfn;
+    p2m_type_t p2mt;
+    unsigned int i;
+
+    /* Soft reset is supported for HVM/PVH domains only. */
+    if ( !has_hvm_container_domain(d) )
+        return -EINVAL;
+
+    hvm_domain_soft_reset(d);
+
+    spin_lock(&d->event_lock);
+    for ( i = 0; i < d->nr_pirqs ; i++ )
+    {
+        if ( domain_pirq_to_emuirq(d, i) != IRQ_UNBOUND )
+        {
+            ret = unmap_domain_pirq_emuirq(d, i);
+            if ( ret )
+                break;
+        }
+    }
+    spin_unlock(&d->event_lock);
+
+    if ( ret )
+        return ret;
+
+    /*
+     * The shared_info page needs to be replaced with a new page, otherwise we
+     * will get a hole if the domain does XENMAPSPACE_shared_info.
+     */
+
+    owner = page_get_owner_and_reference(page);
+    ASSERT( owner == d );
+
+    mfn = page_to_mfn(page);
+    gfn = mfn_to_gmfn(d, mfn);
+
+    /*
+     * gfn == INVALID_GFN indicates that the shared_info page was never mapped
+     * to the domain's address space and there is nothing to replace.
+     */
+    if ( gfn == INVALID_GFN )
+        goto exit_put_page;
+
+    if ( mfn_x(get_gfn_query(d, gfn, &p2mt)) != mfn )
+    {
+        printk(XENLOG_G_ERR "Failed to get Dom%d's shared_info GFN (%lx)\n",
+               d->domain_id, gfn);
+        ret = -EINVAL;
+        goto exit_put_page;
+    }
+
+    new_page = alloc_domheap_page(d, 0);
+    if ( !new_page )
+    {
+        printk(XENLOG_G_ERR "Failed to alloc a page to replace"
+               " Dom%d's shared_info frame %lx\n", d->domain_id, gfn);
+        ret = -ENOMEM;
+        goto exit_put_gfn;
+    }
+    guest_physmap_remove_page(d, gfn, mfn, PAGE_ORDER_4K);
+
+    ret = guest_physmap_add_page(d, gfn, page_to_mfn(new_page), PAGE_ORDER_4K);
+    if ( ret )
+    {
+        printk(XENLOG_G_ERR "Failed to add a page to replace"
+               " Dom%d's shared_info frame %lx\n", d->domain_id, gfn);
+        free_domheap_page(new_page);
+    }
+ exit_put_gfn:
+    put_gfn(d, gfn);
+ exit_put_page:
+    put_page(page);
+
+    return ret;
 }
 
 /*
@@ -772,7 +839,7 @@ int arch_set_info_guest(
 
     /* The context is a compat-mode one if the target domain is compat-mode;
      * we expect the tools to DTRT even in compat-mode callers. */
-    compat = is_pv_32bit_domain(d);
+    compat = is_pv_32bit_domain(d) || is_pvh_32bit_domain(d);
 
 #define c(fld) (compat ? (c.cmp->fld) : (c.nat->fld))
     flags = c(flags);
@@ -1312,7 +1379,7 @@ static void load_segments(struct vcpu *n)
                 domain_crash(n->domain);
             }
 
-            if ( test_bit(_VGCF_failsafe_disables_events, &n->arch.vgc_flags) )
+            if ( n->arch.vgc_flags & VGCF_failsafe_disables_events )
                 vcpu_info(n, evtchn_upcall_mask) = 1;
 
             regs->entry_vector |= TRAP_syscall;
@@ -1354,7 +1421,7 @@ static void load_segments(struct vcpu *n)
             domain_crash(n->domain);
         }
 
-        if ( test_bit(_VGCF_failsafe_disables_events, &n->arch.vgc_flags) )
+        if ( n->arch.vgc_flags & VGCF_failsafe_disables_events )
             vcpu_info(n, evtchn_upcall_mask) = 1;
 
         regs->entry_vector |= TRAP_syscall;
@@ -1372,10 +1439,10 @@ static void save_segments(struct vcpu *v)
     struct cpu_user_regs *regs = &v->arch.user_regs;
     unsigned int dirty_segment_mask = 0;
 
-    regs->ds = read_segment_register(ds);
-    regs->es = read_segment_register(es);
-    regs->fs = read_segment_register(fs);
-    regs->gs = read_segment_register(gs);
+    regs->ds = read_sreg(ds);
+    regs->es = read_sreg(es);
+    regs->fs = read_sreg(fs);
+    regs->gs = read_sreg(gs);
 
     if ( cpu_has_fsgsbase && !is_pv_32bit_vcpu(v) )
     {
@@ -1435,7 +1502,6 @@ static void paravirt_ctxt_switch_to(struct vcpu *v)
 {
     unsigned long cr4;
 
-    set_int80_direct_trap(v);
     switch_kernel_stack(v);
 
     cr4 = pv_guest_cr4_to_real_cr4(v);
@@ -1710,7 +1776,7 @@ void hypercall_cancel_continuation(void)
     struct cpu_user_regs *regs = guest_cpu_user_regs();
     struct mc_state *mcs = &current->mc_state;
 
-    if ( test_bit(_MCSF_in_multicall, &mcs->flags) )
+    if ( mcs->flags & MCSF_in_multicall )
     {
         __clear_bit(_MCSF_call_preempted, &mcs->flags);
     }
@@ -1734,7 +1800,7 @@ unsigned long hypercall_create_continuation(
 
     va_start(args, format);
 
-    if ( test_bit(_MCSF_in_multicall, &mcs->flags) )
+    if ( mcs->flags & MCSF_in_multicall )
     {
         __set_bit(_MCSF_call_preempted, &mcs->flags);
 
@@ -1812,9 +1878,9 @@ int hypercall_xlat_continuation(unsigned int *id, unsigned int nr,
 
     va_start(args, mask);
 
-    if ( test_bit(_MCSF_in_multicall, &mcs->flags) )
+    if ( mcs->flags & MCSF_in_multicall )
     {
-        if ( !test_bit(_MCSF_call_preempted, &mcs->flags) )
+        if ( !(mcs->flags & MCSF_call_preempted) )
         {
             va_end(args);
             return 0;

@@ -349,7 +349,7 @@ void __init init_cpu_to_node(void)
         u32 apicid = x86_cpu_to_apicid[i];
         if ( apicid == BAD_APICID )
             continue;
-        node = apicid_to_node[apicid];
+        node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;
         if ( node == NUMA_NO_NODE || !node_online(node) )
             node = 0;
         numa_set_node(i, node);
@@ -365,7 +365,7 @@ EXPORT_SYMBOL(node_data);
 static void dump_numa(unsigned char key)
 {
     s_time_t now = NOW();
-    unsigned int i, j;
+    unsigned int i, j, n;
     int err;
     struct domain *d;
     struct page_info *page;
@@ -389,8 +389,26 @@ static void dump_numa(unsigned char key)
                NODE_DATA(i)->node_id);
     }
 
+    j = cpumask_first(&cpu_online_map);
+    n = 0;
     for_each_online_cpu ( i )
-        printk("CPU%d -> NODE%d\n", i, cpu_to_node[i]);
+    {
+        if ( i != j + n || cpu_to_node[j] != cpu_to_node[i] )
+        {
+            if ( n > 1 )
+                printk("CPU%u...%u -> NODE%d\n", j, j + n - 1, cpu_to_node[j]);
+            else
+                printk("CPU%u -> NODE%d\n", j, cpu_to_node[j]);
+            j = i;
+            n = 1;
+        }
+        else
+            ++n;
+    }
+    if ( n > 1 )
+        printk("CPU%u...%u -> NODE%d\n", j, j + n - 1, cpu_to_node[j]);
+    else
+        printk("CPU%u -> NODE%d\n", j, cpu_to_node[j]);
 
     rcu_read_lock(&domlist_read_lock);
 
@@ -483,15 +501,9 @@ static void dump_numa(unsigned char key)
     rcu_read_unlock(&domlist_read_lock);
 }
 
-static struct keyhandler dump_numa_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = dump_numa,
-    .desc = "dump numa info"
-};
-
 static __init int register_numa_trigger(void)
 {
-    register_keyhandler('u', &dump_numa_keyhandler);
+    register_keyhandler('u', dump_numa, "dump NUMA info", 1);
     return 0;
 }
 __initcall(register_numa_trigger);

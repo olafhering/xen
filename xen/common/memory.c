@@ -92,7 +92,7 @@ static void increase_reservation(struct memop_args *a)
 static void populate_physmap(struct memop_args *a)
 {
     struct page_info *page;
-    unsigned long i, j;
+    unsigned int i, j;
     xen_pfn_t gpfn, mfn;
     struct domain *d = a->domain;
 
@@ -140,34 +140,38 @@ static void populate_physmap(struct memop_args *a)
                     if ( !get_page(page, d) )
                     {
                         gdprintk(XENLOG_INFO,
-                                 "mfn %#"PRI_xen_pfn" doesn't belong to the"
-                                 " domain\n", mfn);
+                                 "mfn %#"PRI_xen_pfn" doesn't belong to d%d\n",
+                                  mfn, d->domain_id);
                         goto out;
                     }
                     put_page(page);
                 }
 
-                page = mfn_to_page(gpfn);
+                mfn = gpfn;
+                page = mfn_to_page(mfn);
             }
             else
+            {
                 page = alloc_domheap_pages(d, a->extent_order, a->memflags);
 
-            if ( unlikely(page == NULL) ) 
-            {
-                if ( !opt_tmem || (a->extent_order != 0) )
-                    gdprintk(XENLOG_INFO, "Could not allocate order=%d extent:"
-                             " id=%d memflags=%x (%ld of %d)\n",
-                             a->extent_order, d->domain_id, a->memflags,
-                             i, a->nr_extents);
-                goto out;
+                if ( unlikely(!page) )
+                {
+                    if ( !opt_tmem || a->extent_order )
+                        gdprintk(XENLOG_INFO,
+                                 "Could not allocate order=%u extent: id=%d memflags=%#x (%u of %u)\n",
+                                 a->extent_order, d->domain_id, a->memflags,
+                                 i, a->nr_extents);
+                    goto out;
+                }
+
+                mfn = page_to_mfn(page);
             }
 
-            mfn = page_to_mfn(page);
             guest_physmap_add_page(d, gpfn, mfn, a->extent_order);
 
             if ( !paging_mode_translate(d) )
             {
-                for ( j = 0; j < (1 << a->extent_order); j++ )
+                for ( j = 0; j < (1U << a->extent_order); j++ )
                     set_gpfn_from_mfn(mfn + j, gpfn + j);
 
                 /* Inform the domain of the new page's machine address. */ 
@@ -253,8 +257,17 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
 
     if ( test_and_clear_bit(_PGT_pinned, &page->u.inuse.type_info) )
         put_page_and_type(page);
-            
-    if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
+
+    /*
+     * With the lack of an IOMMU on some platforms, domains with DMA-capable
+     * device must retrieve the same pfn when the hypercall populate_physmap
+     * is called.
+     *
+     * For this purpose (and to match populate_physmap() behavior), the page
+     * is kept allocated.
+     */
+    if ( !is_domain_direct_mapped(d) &&
+         test_and_clear_bit(_PGC_allocated, &page->count_info) )
         put_page(page);
 
     guest_physmap_remove_page(d, gmfn, mfn, 0);
@@ -303,13 +316,6 @@ static void decrease_reservation(struct memop_args *a)
         /* See if populate-on-demand wants to handle this */
         if ( is_hvm_domain(a->domain)
              && p2m_pod_decrease_reservation(a->domain, gmfn, a->extent_order) )
-            continue;
-
-        /* With the lack for iommu on some ARM platform, domain with DMA-capable
-         * device must retrieve the same pfn when the hypercall
-         * populate_physmap is called.
-         */
-        if ( is_domain_direct_mapped(a->domain) )
             continue;
 
         for ( j = 0; j < (1 << a->extent_order); j++ )
@@ -955,7 +961,6 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_add_to_physmap_batch:
     {
         struct xen_add_to_physmap_batch xatpb;
-        struct domain *d;
 
         BUILD_BUG_ON((typeof(xatpb.size))-1 >
                      (UINT_MAX >> MEMOP_EXTENT_SHIFT));
@@ -1001,7 +1006,6 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     {
         struct xen_remove_from_physmap xrfp;
         struct page_info *page;
-        struct domain *d;
 
         if ( unlikely(start_extent) )
             return -ENOSYS;
@@ -1070,7 +1074,6 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_get_vnumainfo:
     {
         struct xen_vnuma_topology_info topology;
-        struct domain *d;
         unsigned int dom_vnodes, dom_vranges, dom_vcpus;
         struct vnuma_info tmp;
 

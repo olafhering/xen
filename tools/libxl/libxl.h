@@ -205,6 +205,13 @@
 #define LIBXL_HAVE_BUILDINFO_ARM_GIC_VERSION 1
 
 /*
+ * LIBXL_HAVE_SOFT_RESET indicates that libxl supports performing
+ * 'soft reset' for domains and there is 'soft_reset' shutdown reason
+ * in enum libxl_shutdown_reason.
+ */
+#define LIBXL_HAVE_SOFT_RESET 1
+
+/*
  * libxl ABI compatibility
  *
  * The only guarantee which libxl makes regarding ABI compatibility
@@ -796,6 +803,13 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  * If this is defined, the Cache Allocation Technology feature is supported.
  */
 #define LIBXL_HAVE_PSR_CAT 1
+
+/*
+ * LIBXL_HAVE_PSR_CDP
+ *
+ * If this is defined, the Code and Data Prioritization feature is supported.
+ */
+#define LIBXL_HAVE_PSR_CDP 1
 #endif
 
 /*
@@ -814,11 +828,12 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
 #define LIBXL_HAVE_VSCSI 1
 
 /*
- * LIBXL_HAVE_SOCKET_BITMAP_ALLOC
+ * LIBXL_HAVE_SOCKET_BITMAP
  *
- * If this is defined, then libxl_socket_bitmap_alloc exists.
+ * If this is defined, then libxl_socket_bitmap_alloc and
+ * libxl_get_online_socketmap exist.
  */
-#define LIBXL_HAVE_SOCKET_BITMAP_ALLOC 1
+#define LIBXL_HAVE_SOCKET_BITMAP 1
 
 /*
  * LIBXL_HAVE_SRM_V2
@@ -838,6 +853,12 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  * parameter of 1, and convert the stream format automatically.
  */
 #define LIBXL_HAVE_SRM_V1 1
+
+/*
+ * libxl_domain_build_info has the u.hvm.gfx_passthru_kind field and
+ * the libxl_gfx_passthru_kind enumeration is defined.
+*/
+#define LIBXL_HAVE_GFX_PASSTHRU_KIND
 
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
@@ -1138,6 +1159,14 @@ int static inline libxl_domain_create_restore_0x040200(
 #define libxl_domain_create_restore libxl_domain_create_restore_0x040200
 
 #endif
+
+int libxl_domain_soft_reset(libxl_ctx *ctx,
+                            libxl_domain_config *d_config,
+                            uint32_t domid,
+                            const libxl_asyncop_how *ao_how,
+                            const libxl_asyncprogress_how
+                            *aop_console_how)
+                            LIBXL_EXTERNAL_CALLERS_ONLY;
 
   /* A progress report will be made via ao_console_how, of type
    * domain_create_console_available, when the domain's primary

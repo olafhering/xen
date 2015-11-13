@@ -24,13 +24,12 @@
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/support.h>
 #include <asm/processor.h>
+#include <asm/smp.h>
 #include <asm/numa.h>
 #include <xen/nodemask.h>
 #include <xen/cpu.h>
 #include <xsm/xsm.h>
 #include <asm/psr.h>
-
-#define get_xen_guest_handle(val, hnd)  do { val = (hnd).p; } while (0)
 
 struct l3_cache_info {
     int ret;
@@ -75,7 +74,8 @@ long cpu_down_helper(void *data)
 
 void arch_do_physinfo(xen_sysctl_physinfo_t *pi)
 {
-    memcpy(pi->hw_cap, boot_cpu_data.x86_capability, NCAPINTS*4);
+    memcpy(pi->hw_cap, boot_cpu_data.x86_capability,
+           min(sizeof(pi->hw_cap), sizeof(boot_cpu_data.x86_capability)));
     if ( hvm_enabled )
         pi->capabilities |= XEN_SYSCTL_PHYSCAP_hvm;
     if ( iommu_enabled )
@@ -177,12 +177,13 @@ long arch_do_sysctl(
         case XEN_SYSCTL_PSR_CAT_get_l3_info:
             ret = psr_get_cat_l3_info(sysctl->u.psr_cat_op.target,
                                       &sysctl->u.psr_cat_op.u.l3_info.cbm_len,
-                                      &sysctl->u.psr_cat_op.u.l3_info.cos_max);
+                                      &sysctl->u.psr_cat_op.u.l3_info.cos_max,
+                                      &sysctl->u.psr_cat_op.u.l3_info.flags);
 
             if ( !ret && __copy_field_to_guest(u_sysctl, sysctl, u.psr_cat_op) )
                 ret = -EFAULT;
-
             break;
+
         default:
             ret = -EOPNOTSUPP;
             break;

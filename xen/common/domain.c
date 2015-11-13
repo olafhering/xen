@@ -70,7 +70,7 @@ integer_param("hardware_dom", hardware_domid);
 
 struct vcpu *idle_vcpu[NR_CPUS] __read_mostly;
 
-static vcpu_info_t dummy_vcpu_info;
+vcpu_info_t dummy_vcpu_info;
 
 static void __domain_finalise_shutdown(struct domain *d)
 {
@@ -110,6 +110,16 @@ static void vcpu_check_shutdown(struct vcpu *v)
     spin_unlock(&d->shutdown_lock);
 }
 
+static void vcpu_info_reset(struct vcpu *v)
+{
+    struct domain *d = v->domain;
+
+    v->vcpu_info = ((v->vcpu_id < XEN_LEGACY_MAX_VCPUS)
+                    ? (vcpu_info_t *)&shared_info(d, vcpu_info[v->vcpu_id])
+                    : &dummy_vcpu_info);
+    v->vcpu_info_mfn = INVALID_MFN;
+}
+
 struct vcpu *alloc_vcpu(
     struct domain *d, unsigned int vcpu_id, unsigned int cpu_id)
 {
@@ -145,10 +155,7 @@ struct vcpu *alloc_vcpu(
         v->runstate.state = RUNSTATE_offline;        
         v->runstate.state_entry_time = NOW();
         set_bit(_VPF_down, &v->pause_flags);
-        v->vcpu_info = ((vcpu_id < XEN_LEGACY_MAX_VCPUS)
-                        ? (vcpu_info_t *)&shared_info(d, vcpu_info[vcpu_id])
-                        : &dummy_vcpu_info);
-        v->vcpu_info_mfn = INVALID_MFN;
+        vcpu_info_reset(v);
         init_waitqueue_vcpu(v);
     }
 
@@ -184,7 +191,8 @@ struct vcpu *alloc_vcpu(
     /* Must be called after making new vcpu visible to for_each_vcpu(). */
     vcpu_check_shutdown(v);
 
-    domain_update_node_affinity(d);
+    if ( !is_idle_domain(d) )
+        domain_update_node_affinity(d);
 
     return v;
 }
@@ -437,7 +445,7 @@ void domain_update_node_affinity(struct domain *d)
         return;
     }
 
-    online = cpupool_online_cpumask(d->cpupool);
+    online = cpupool_domain_cpumask(d);
 
     spin_lock(&d->node_affinity_lock);
 
@@ -833,6 +841,7 @@ static void complete_domain_destroy(struct rcu_head *head)
 
     xsm_free_security_domain(d);
     free_cpumask_var(d->domain_dirty_cpumask);
+    xfree(d->vcpu);
     free_domain_struct(d);
 
     send_global_virq(VIRQ_DOM_EXC);
@@ -1038,6 +1047,38 @@ void domain_unpause_except_self(struct domain *d)
         domain_unpause(d);
 }
 
+int domain_soft_reset(struct domain *d)
+{
+    struct vcpu *v;
+    int rc;
+
+    spin_lock(&d->shutdown_lock);
+    for_each_vcpu ( d, v )
+        if ( !v->paused_for_shutdown )
+        {
+            spin_unlock(&d->shutdown_lock);
+            return -EINVAL;
+        }
+    spin_unlock(&d->shutdown_lock);
+
+    rc = evtchn_reset(d);
+    if ( rc )
+        return rc;
+
+    grant_table_warn_active_grants(d);
+
+    for_each_vcpu ( d, v )
+        unmap_vcpu_info(v);
+
+    rc = arch_domain_soft_reset(d);
+    if ( !rc )
+        domain_resume(d);
+    else
+        domain_crash(d);
+
+    return rc;
+}
+
 int vcpu_reset(struct vcpu *v)
 {
     struct domain *d = v->domain;
@@ -1095,7 +1136,7 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
         return -EINVAL;
 
     /* Run this command on yourself or on other offline VCPUS. */
-    if ( (v != current) && !test_bit(_VPF_down, &v->pause_flags) )
+    if ( (v != current) && !(v->pause_flags & VPF_down) )
         return -EINVAL;
 
     page = get_page_from_gfn(d, gfn, NULL, P2M_ALLOC);
@@ -1149,8 +1190,7 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
 
 /*
  * Unmap the vcpu info page if the guest decided to place it somewhere
- * else.  This is only used from arch_domain_destroy, so there's no
- * need to do anything clever.
+ * else. This is used from arch_domain_destroy and domain_soft_reset.
  */
 void unmap_vcpu_info(struct vcpu *v)
 {
@@ -1163,8 +1203,7 @@ void unmap_vcpu_info(struct vcpu *v)
     unmap_domain_page_global((void *)
                              ((unsigned long)v->vcpu_info & PAGE_MASK));
 
-    v->vcpu_info = &dummy_vcpu_info;
-    v->vcpu_info_mfn = INVALID_MFN;
+    vcpu_info_reset(v);
 
     put_page_and_type(mfn_to_page(mfn));
 }
@@ -1225,7 +1264,7 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
 
     case VCPUOP_is_up:
-        rc = !test_bit(_VPF_down, &v->pause_flags);
+        rc = !(v->pause_flags & VPF_down);
         break;
 
     case VCPUOP_get_runstate_info:
@@ -1291,7 +1330,6 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
 
     case VCPUOP_register_vcpu_info:
     {
-        struct domain *d = v->domain;
         struct vcpu_register_vcpu_info info;
 
         rc = -EFAULT;

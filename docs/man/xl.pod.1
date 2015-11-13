@@ -1527,18 +1527,6 @@ monitor types are:
 
 =back
 
-=head1 IGNORED FOR COMPATIBILITY WITH XM
-
-xl is mostly command-line compatible with the old xm utility used with
-the old Python xend.  For compatibility, the following options are
-ignored:
-
-=over 4
-
-=item B<xl migrate --live>
-
-=back
-
 =head2 CACHE ALLOCATION TECHNOLOGY
 
 Intel Broadwell and later server platforms offer capabilities to configure and
@@ -1547,6 +1535,13 @@ cache resources (i.e. L3 cache) to be made available for high priority
 applications. In the Xen implementation, CAT is used to control cache allocation
 on VM basis. To enforce cache on a specific domain, just set capacity bitmasks
 (CBM) for the domain.
+
+Intel Broadwell and later server platforms also offer Code/Data Prioritization
+(CDP) for cache allocations, which support specifying code or data cache for
+applications. CDP is used on a per VM basis in the Xen implementation. To
+specify code or data CBM for the domain, CDP feature must be enabled and CBM
+type options need to be specified when setting CBM, and the type options (code
+and data) are mutually exclusive.
 
 =over 4
 
@@ -1563,11 +1558,31 @@ B<OPTIONS>
 
 Specify the socket to process, otherwise all sockets are processed.
 
+=item B<-c>, B<--code>
+
+Set code CBM when CDP is enabled.
+
+=item B<-d>, B<--data>
+
+Set data CBM when CDP is enabled.
+
 =back
 
 =item B<psr-cat-show> [I<domain-id>]
 
 Show CAT settings for a certain domain or all domains.
+
+=back
+
+=head1 IGNORED FOR COMPATIBILITY WITH XM
+
+xl is mostly command-line compatible with the old xm utility used with
+the old Python xend.  For compatibility, the following options are
+ignored:
+
+=over 4
+
+=item B<xl migrate --live>
 
 =back
 

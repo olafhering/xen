@@ -239,9 +239,12 @@ acpi_table_parse_entries(char *id,
 		}
 
 		if (entry->type == entry_id
-		    && (!max_entries || count++ < max_entries))
+		    && (!max_entries || count < max_entries)) {
 			if (handler(entry, table_end))
 				return -EINVAL;
+
+			count++;
+		}
 
 		entry = (struct acpi_subtable_header *)
 		    ((unsigned long)entry + entry->length);
@@ -287,7 +290,7 @@ int __init acpi_table_parse(char *id, acpi_table_handler handler)
 	if (table) {
 		return handler(table);
 	} else
-		return 1;
+		return -ENODEV;
 }
 
 /* 
@@ -326,7 +329,12 @@ static void __init check_multiple_madt(void)
 
 int __init acpi_table_init(void)
 {
-	acpi_initialize_tables(NULL, ACPI_MAX_TABLES, 0);
+	acpi_status status;
+
+	status = acpi_initialize_tables(NULL, ACPI_MAX_TABLES, 0);
+	if (ACPI_FAILURE(status))
+		return -EINVAL;
+
 	check_multiple_madt();
 	return 0;
 }

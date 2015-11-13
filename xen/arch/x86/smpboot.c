@@ -332,8 +332,7 @@ void start_secondary(void *unused)
     set_processor_id(cpu);
     set_current(idle_vcpu[cpu]);
     this_cpu(curr_vcpu) = idle_vcpu[cpu];
-    if ( cpu_has_efer )
-        rdmsrl(MSR_EFER, this_cpu(efer));
+    rdmsrl(MSR_EFER, this_cpu(efer));
 
     /*
      * Just as during early bootstrap, it is convenient here to disable
@@ -993,7 +992,8 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
             cpu = node;
             goto out;
         }
-        apicid_to_node[apic_id] = node;
+        if ( apic_id < MAX_LOCAL_APIC )
+             apicid_to_node[apic_id] = node;
     }
 
     /* Physically added CPUs do not have synchronised TSC. */
@@ -1084,7 +1084,7 @@ void __init smp_intr_init(void)
         vector = alloc_hipriority_vector();
         per_cpu(vector_irq, cpu)[vector] = irq;
         irq_to_desc(irq)->arch.vector = vector;
-        cpumask_copy(irq_to_desc(irq)->arch.cpu_mask, &cpu_online_map);
+        cpumask_setall(irq_to_desc(irq)->arch.cpu_mask);
     }
 
     /* Direct IPI vectors. */

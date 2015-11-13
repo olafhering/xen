@@ -64,12 +64,14 @@ static unsigned int __read_mostly ple_window = 4096;
 integer_param("ple_window", ple_window);
 
 static bool_t __read_mostly opt_pml_enabled = 0;
+static s8 __read_mostly opt_ept_ad = -1;
 
 /*
  * The 'ept' parameter controls functionalities that depend on, or impact the
  * EPT mechanism. Optional comma separated value may contain:
  *
  *  pml                 Enable PML
+ *  ad                  Use A/D bits
  */
 static void __init parse_ept_param(char *s)
 {
@@ -87,6 +89,8 @@ static void __init parse_ept_param(char *s)
 
         if ( !strcmp(s, "pml") )
             opt_pml_enabled = val;
+        else if ( !strcmp(s, "ad") )
+            opt_ept_ad = val;
 
         s = ss + 1;
     } while ( ss );
@@ -267,6 +271,13 @@ static int vmx_init_vmcs_config(void)
                                         SECONDARY_EXEC_ENABLE_VPID) )
     {
         rdmsrl(MSR_IA32_VMX_EPT_VPID_CAP, _vmx_ept_vpid_cap);
+
+        if ( !opt_ept_ad )
+            _vmx_ept_vpid_cap &= ~VMX_EPT_AD_BIT;
+        else if ( /* Work around Erratum AVR41 on Avoton processors. */
+                  boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model == 0x4d &&
+                  opt_ept_ad < 0 )
+            _vmx_ept_vpid_cap &= ~VMX_EPT_AD_BIT;
 
         /*
          * Additional sanity checking before using EPT:
@@ -1160,7 +1171,7 @@ static int construct_vmcs(struct vcpu *v)
     __vmwrite(GUEST_FS_AR_BYTES, 0xc093);
     __vmwrite(GUEST_GS_AR_BYTES, 0xc093);
     if ( is_pvh_domain(d) )
-        /* CS.L == 1, exec, read/write, accessed. PVH 32bitfixme. */
+        /* CS.L == 1, exec, read/write, accessed. */
         __vmwrite(GUEST_CS_AR_BYTES, 0xa09b);
     else
         __vmwrite(GUEST_CS_AR_BYTES, 0xc09b); /* exec/read, accessed */
@@ -1489,7 +1500,7 @@ int vmx_domain_enable_pml(struct domain *d)
     if ( vmx_domain_pml_enabled(d) )
         return 0;
 
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         if ( (rc = vmx_vcpu_enable_pml(v)) != 0 )
             goto error;
 
@@ -1498,7 +1509,7 @@ int vmx_domain_enable_pml(struct domain *d)
     return 0;
 
  error:
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         if ( vmx_vcpu_pml_enabled(v) )
             vmx_vcpu_disable_pml(v);
     return rc;
@@ -1519,7 +1530,7 @@ void vmx_domain_disable_pml(struct domain *d)
     if ( !vmx_domain_pml_enabled(d) )
         return;
 
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         vmx_vcpu_disable_pml(v);
 
     d->arch.hvm_domain.vmx.status &= ~VMX_DOMAIN_PML_ENABLED;
@@ -1538,8 +1549,32 @@ void vmx_domain_flush_pml_buffers(struct domain *d)
     if ( !vmx_domain_pml_enabled(d) )
         return;
 
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         vmx_vcpu_flush_pml_buffer(v);
+}
+
+static void vmx_vcpu_update_eptp(struct vcpu *v, u64 eptp)
+{
+    vmx_vmcs_enter(v);
+    __vmwrite(EPT_POINTER, eptp);
+    vmx_vmcs_exit(v);
+}
+
+/*
+ * Update EPTP data to VMCS of all vcpus of the domain. Must be called when
+ * domain is paused.
+ */
+void vmx_domain_update_eptp(struct domain *d)
+{
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    struct vcpu *v;
+
+    ASSERT(atomic_read(&d->pause_count));
+
+    for_each_vcpu ( d, v )
+        vmx_vcpu_update_eptp(v, ept_get_eptp(&p2m->ept));
+
+    ept_sync_domain(p2m);
 }
 
 int vmx_create_vmcs(struct vcpu *v)
@@ -1577,21 +1612,14 @@ void vmx_destroy_vmcs(struct vcpu *v)
     free_xenheap_page(v->arch.hvm_vmx.msr_bitmap);
 }
 
-void vm_launch_fail(void)
+void vmx_vmentry_failure(void)
 {
+    struct vcpu *curr = current;
     unsigned long error;
 
     __vmread(VM_INSTRUCTION_ERROR, &error);
-    printk("<vm_launch_fail> error code %lx\n", error);
-    domain_crash_synchronous();
-}
-
-void vm_resume_fail(void)
-{
-    unsigned long error;
-
-    __vmread(VM_INSTRUCTION_ERROR, &error);
-    printk("<vm_resume_fail> error code %lx\n", error);
+    gprintk(XENLOG_ERR, "VM%s error: %#lx\n",
+            curr->arch.hvm_vmx.launched ? "RESUME" : "LAUNCH", error);
     domain_crash_synchronous();
 }
 
@@ -1858,15 +1886,9 @@ static void vmcs_dump(unsigned char ch)
     printk("**************************************\n");
 }
 
-static struct keyhandler vmcs_dump_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = vmcs_dump,
-    .desc = "dump Intel's VMCS"
-};
-
 void __init setup_vmcs_dump(void)
 {
-    register_keyhandler('v', &vmcs_dump_keyhandler);
+    register_keyhandler('v', vmcs_dump, "dump VT-x VMCSs", 1);
 }
 
 

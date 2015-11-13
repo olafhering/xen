@@ -29,7 +29,7 @@ extern bool_t rwbf_quirk;
 
 void print_iommu_regs(struct acpi_drhd_unit *drhd);
 void print_vtd_entries(struct iommu *iommu, int bus, int devfn, u64 gmfn);
-extern struct keyhandler dump_iommu_info_keyhandler;
+keyhandler_fn_t vtd_dump_iommu_info;
 
 int enable_qinval(struct iommu *iommu);
 void disable_qinval(struct iommu *iommu);
@@ -93,8 +93,8 @@ void vtd_ops_preamble_quirk(struct iommu* iommu);
 void vtd_ops_postamble_quirk(struct iommu* iommu);
 void me_wifi_quirk(struct domain *domain, u8 bus, u8 devfn, int map);
 void pci_vtd_quirk(const struct pci_dev *);
-int platform_supports_intremap(void);
-int platform_supports_x2apic(void);
+bool_t platform_supports_intremap(void);
+bool_t platform_supports_x2apic(void);
 
 void vtd_set_hwdom_mapping(struct domain *d);
 

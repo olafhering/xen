@@ -137,7 +137,7 @@ void ret_from_intr(void);
 #endif
 
 #define CPUINFO_FEATURE_OFFSET(feature)           \
-        ((((feature) >> 3) & ~3) + CPUINFO_features)
+    (CPUINFO_features + (cpufeat_word(feature) * 4))
 
 #else
 
@@ -324,7 +324,7 @@ static always_inline void stac(void)
         jne   789f
         cmpq  UREGS_r12(%rsp),%r12
         je    987f
-789:    ud2
+789:    BUG   /* Corruption of partial register state. */
         .subsection 0
 #endif
 .endif

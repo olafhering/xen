@@ -10,6 +10,7 @@ lock_profile  ?= n
 crash_debug   ?= n
 frame_pointer ?= n
 lto           ?= n
+kexec         ?= y
 
 include $(XEN_ROOT)/Config.mk
 
@@ -41,10 +42,10 @@ ALL_OBJS-y               += $(BASEDIR)/xsm/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/arch/$(TARGET_ARCH)/built_in.o
 ALL_OBJS-$(x86)          += $(BASEDIR)/crypto/built_in.o
 
-CFLAGS += -fno-builtin -fno-common
+CFLAGS += -nostdinc -fno-builtin -fno-common
 CFLAGS += -Werror -Wredundant-decls -Wno-pointer-arith
 CFLAGS += -pipe -g -D__XEN__ -include $(BASEDIR)/include/xen/config.h
-CFLAGS += -nostdinc
+CFLAGS += '-D__OBJECT_FILE__="$@"'
 
 CFLAGS-$(XSM_ENABLE)    += -DXSM_ENABLE
 CFLAGS-$(FLASK_ENABLE)  += -DFLASK_ENABLE
@@ -72,6 +73,11 @@ ifneq ($(max_phys_irqs),)
 CFLAGS-y                += -DMAX_PHYS_IRQS=$(max_phys_irqs)
 endif
 
+CONFIG_KEXEC-$(HAS_KEXEC) := $(kexec)
+CONFIG_KEXEC              := $(CONFIG_KEXEC-y)
+
+CFLAGS-$(CONFIG_KEXEC)  += -DCONFIG_KEXEC
+
 AFLAGS-y                += -D__ASSEMBLY__ -include $(BASEDIR)/include/xen/config.h
 
 # Clang's built-in assembler can't handle .code16/.code32/.code64 yet
@@ -80,8 +86,7 @@ AFLAGS-$(clang)         += -no-integrated-as
 ALL_OBJS := $(ALL_OBJS-y)
 
 # Get gcc to generate the dependencies for us.
-CFLAGS-y += -MMD -MF .$(@F).d
-DEPS = .*.d
+CFLAGS-y += -MMD -MF $(@D)/.$(@F).d
 
 CFLAGS += $(CFLAGS-y)
 
@@ -96,6 +101,14 @@ LDFLAGS += $(LDFLAGS_DIRECT)
 LDFLAGS += $(LDFLAGS-y)
 
 include Makefile
+
+DEPS = .*.d
+define gendep
+    ifneq ($(1),$(subst /,:,$(1)))
+        DEPS += $(dir $(1)).$(basename $(notdir $(1))).d
+    endif
+endef
+$(foreach o,$(filter-out %/,$(obj-y)),$(eval $(call gendep,$(o))))
 
 # Ensure each subdirectory has exactly one trailing slash.
 subdir-n := $(patsubst %,%/,$(patsubst %/,%,$(subdir-n) $(subdir-)))

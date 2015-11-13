@@ -242,22 +242,22 @@ endif
 
 ifeq ($(GIT_HTTP),y)
 OVMF_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/ovmf.git
-QEMU_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/qemu-upstream-unstable.git
-QEMU_TRADITIONAL_URL ?= http://xenbits.xen.org/git-http/qemu-xen-unstable.git
+QEMU_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/qemu-xen.git
+QEMU_TRADITIONAL_URL ?= http://xenbits.xen.org/git-http/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/seabios.git
 MINIOS_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/mini-os.git
 else
 OVMF_UPSTREAM_URL ?= git://xenbits.xen.org/ovmf.git
-QEMU_UPSTREAM_URL ?= git://xenbits.xen.org/qemu-upstream-unstable.git
-QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-unstable.git
+QEMU_UPSTREAM_URL ?= git://xenbits.xen.org/qemu-xen.git
+QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= cb9a7ebabcd6b8a49dc0854b2f9592d732b5afbd
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.6.0-rc3
-MINIOS_UPSTREAM_REVISION ?= b36bcb370d611ad7f41e8c21d061e6291e088c58
-# Fri Jun 26 11:58:40 2015 +0100
-# Correct printf formatting for tpm_tis message.
+OVMF_UPSTREAM_REVISION ?= af9785a9ed61daea52b47f0bf448f1f228beee1e
+QEMU_UPSTREAM_REVISION ?= master
+MINIOS_UPSTREAM_REVISION ?= 256035e01a1aa5739e34f245f3b1e9e8ee204210
+# Thu Jul 23 11:08:38 2015 +0100
+# arm: interrupt controller
 
 SEABIOS_UPSTREAM_REVISION ?= rel-1.8.2
 # Tue Mar 17 10:52:16 2015 -0400
@@ -266,9 +266,9 @@ SEABIOS_UPSTREAM_REVISION ?= rel-1.8.2
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= 5cdde31eacdd288359746019ad05cac8ed5d9f70
-# Fri Aug 28 15:53:40 2015 +0100
-# HVM: atomically access pointers in bufioreq handling
+QEMU_TRADITIONAL_REVISION ?= bc00cad75d8bcc3ba696992bec219c21db8406aa
+# Tue Mar 11 10:19:23 2014 +0000
+# block-vvfat: fix resource leaks in read_directory()
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

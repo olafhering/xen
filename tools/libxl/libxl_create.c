@@ -97,12 +97,12 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
             if (rc < 0) {
                 /* qemu-xen unavailable, use qemu-xen-traditional */
                 if (errno == ENOENT) {
-                    LIBXL__LOG_ERRNO(CTX, XTL_VERBOSE, "qemu-xen is unavailable"
-                                     ", use qemu-xen-traditional instead");
+                    LOGE(VERBOSE, "qemu-xen is unavailable"
+                         ", use qemu-xen-traditional instead");
                     b_info->device_model_version =
                         LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL;
                 } else {
-                    LIBXL__LOG_ERRNO(CTX, XTL_ERROR, "qemu-xen access error");
+                    LOGE(ERROR, "qemu-xen access error");
                     return ERROR_FAIL;
                 }
             }
@@ -148,7 +148,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         b_info->device_model_version !=
             LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL &&
         libxl_defbool_val(b_info->device_model_stubdomain)) {
-        LIBXL__LOG(CTX, XTL_ERROR,
+        LOG(ERROR,
             "device model stubdomains require \"qemu-xen-traditional\"");
         return ERROR_INVAL;
     }
@@ -374,9 +374,8 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         }
         break;
     default:
-        LIBXL__LOG(CTX, LIBXL__LOG_ERROR,
-                   "invalid domain type %s in create info",
-                   libxl_domain_type_to_string(b_info->type));
+        LOG(ERROR, "invalid domain type %s in create info",
+            libxl_domain_type_to_string(b_info->type));
         return ERROR_INVAL;
     }
     return 0;
@@ -496,8 +495,6 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
     /* convenience aliases */
     libxl_domain_create_info *info = &d_config->c_info;
 
-    assert(!libxl_domid_valid_guest(*domid));
-
     uuid_string = libxl__uuid2string(gc, info->uuid);
     if (!uuid_string) {
         rc = ERROR_NOMEM;
@@ -518,25 +515,27 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
         }
         flags |= XEN_DOMCTL_CDF_hap;
     }
-    *domid = -1;
 
     /* Ultimately, handle is an array of 16 uint8_t, same as uuid */
     libxl_uuid_copy(ctx, (libxl_uuid *)handle, &info->uuid);
 
     ret = libxl__arch_domain_prepare_config(gc, d_config, xc_config);
     if (ret < 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "fail to get domain config");
+        LOGE(ERROR, "fail to get domain config");
         rc = ERROR_FAIL;
         goto out;
     }
 
-    ret = xc_domain_create_config(ctx->xch, info->ssidref,
-                                  handle, flags, domid,
-                                  xc_config);
-    if (ret < 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "domain creation fail");
-        rc = ERROR_FAIL;
-        goto out;
+    /* Valid domid here means we're soft resetting. */
+    if (!libxl_domid_valid_guest(*domid)) {
+        ret = xc_domain_create_config(ctx->xch, info->ssidref,
+                                      handle, flags, domid,
+                                      xc_config);
+        if (ret < 0) {
+            LOGE(ERROR, "domain creation fail");
+            rc = ERROR_FAIL;
+            goto out;
+        }
     }
 
     rc = libxl__arch_domain_save_config(gc, d_config, xc_config);
@@ -545,7 +544,7 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
 
     ret = xc_cpupool_movedomain(ctx->xch, info->poolid, *domid);
     if (ret < 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "domain move fail");
+        LOGE(ERROR, "domain move fail");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -558,7 +557,7 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
 
     vm_path = libxl__sprintf(gc, "/vm/%s", uuid_string);
     if (!vm_path) {
-        LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "cannot allocate create paths");
+        LOG(ERROR, "cannot allocate create paths");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -660,8 +659,7 @@ retry_transaction:
             t = 0;
             goto retry_transaction;
         }
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "domain creation "
-                         "xenstore transaction commit failed");
+        LOGE(ERROR, "domain creation ""xenstore transaction commit failed");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -771,9 +769,8 @@ static void initiate_domain_create(libxl__egc *egc,
     libxl_domain_config *const d_config = dcs->guest_config;
     libxl__domain_build_state *const state = &dcs->build_state;
     const int restore_fd = dcs->restore_fd;
-    memset(&dcs->build_state, 0, sizeof(dcs->build_state));
 
-    domid = 0;
+    domid = dcs->domid_soft_reset;
 
     if (d_config->c_info.ssid_label) {
         char *s = d_config->c_info.ssid_label;
@@ -865,6 +862,7 @@ static void initiate_domain_create(libxl__egc *egc,
      */
     if (d_config->c_info.type == LIBXL_DOMAIN_TYPE_PV &&
         d_config->b_info.num_vnuma_nodes) {
+        ret = ERROR_INVAL;
         LOG(ERROR, "PV vNUMA is not yet supported");
         goto error_out;
     }
@@ -877,7 +875,7 @@ static void initiate_domain_create(libxl__egc *egc,
 
     ret = libxl__domain_make(gc, d_config, &domid, &state->config);
     if (ret) {
-        LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "cannot make domain: %d", ret);
+        LOG(ERROR, "cannot make domain: %d", ret);
         dcs->guest_domid = domid;
         ret = ERROR_FAIL;
         goto error_out;
@@ -937,7 +935,7 @@ static void initiate_domain_create(libxl__egc *egc,
             d_config->nics[i].devid = ++last_devid;
     }
 
-    if (restore_fd >= 0) {
+    if (restore_fd >= 0 || dcs->domid_soft_reset != INVALID_DOMID) {
         LOG(DEBUG, "restoring, not running bootloader");
         domcreate_bootloader_done(egc, &dcs->bl, 0);
     } else  {
@@ -1010,7 +1008,7 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     dcs->dmss.dm.callback = domcreate_devmodel_started;
     dcs->dmss.callback = domcreate_devmodel_started;
 
-    if ( restore_fd < 0 ) {
+    if (restore_fd < 0 && dcs->domid_soft_reset == INVALID_DOMID) {
         rc = libxl__domain_build(gc, d_config, domid, state);
         domcreate_rebuild_done(egc, dcs, rc);
         return;
@@ -1030,8 +1028,10 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     dcs->srs.completion_callback = domcreate_stream_done;
     dcs->srs.checkpoint_callback = remus_checkpoint_stream_done;
 
-    libxl__stream_read_start(egc, &dcs->srs);
-    return;
+    if (restore_fd >= 0) {
+        libxl__stream_read_start(egc, &dcs->srs);
+        return;
+    }
 
  out:
     domcreate_stream_done(egc, &dcs->srs, rc);
@@ -1120,9 +1120,12 @@ out:
         libxl__file_reference_unmap(&state->pv_ramdisk);
     }
 
-    esave = errno;
-    libxl_fd_set_nonblock(ctx, fd, 0);
-    errno = esave;
+    /* fd == -1 here means we're doing soft reset. */
+    if (fd != -1) {
+        esave = errno;
+        libxl_fd_set_nonblock(ctx, fd, 0);
+        errno = esave;
+    }
     domcreate_rebuild_done(egc, dcs, ret);
 }
 
@@ -1135,10 +1138,9 @@ static void domcreate_rebuild_done(libxl__egc *egc,
     /* convenience aliases */
     const uint32_t domid = dcs->guest_domid;
     libxl_domain_config *const d_config = dcs->guest_config;
-    libxl_ctx *const ctx = CTX;
 
     if (ret) {
-        LIBXL__LOG(ctx, LIBXL__LOG_ERROR, "cannot (re-)build domain: %d", ret);
+        LOG(ERROR, "cannot (re-)build domain: %d", ret);
         ret = ERROR_FAIL;
         goto error_out;
     }
@@ -1330,15 +1332,13 @@ static void domcreate_devmodel_started(libxl__egc *egc,
 {
     libxl__domain_create_state *dcs = CONTAINER_OF(dmss, *dcs, dmss.dm);
     STATE_AO_GC(dmss->spawn.ao);
-    libxl_ctx *ctx = CTX;
     int domid = dcs->guest_domid;
 
     /* convenience aliases */
     libxl_domain_config *const d_config = dcs->guest_config;
 
     if (ret) {
-        LIBXL__LOG(ctx, LIBXL__LOG_ERROR,
-                   "device model did not start: %d", ret);
+        LOG(ERROR, "device model did not start: %d", ret);
         goto error_out;
     }
 
@@ -1406,7 +1406,6 @@ static void domcreate_attach_pci(libxl__egc *egc, libxl__multidev *multidev,
     libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
     STATE_AO_GC(dcs->ao);
     int i;
-    libxl_ctx *ctx = CTX;
     int domid = dcs->guest_domid;
 
     /* convenience aliases */
@@ -1420,8 +1419,7 @@ static void domcreate_attach_pci(libxl__egc *egc, libxl__multidev *multidev,
     for (i = 0; i < d_config->num_pcidevs; i++) {
         ret = libxl__device_pci_add(gc, domid, &d_config->pcidevs[i], 1);
         if (ret < 0) {
-            LIBXL__LOG(ctx, LIBXL__LOG_ERROR,
-                       "libxl_device_pci_add failed: %d", ret);
+            LOG(ERROR, "libxl_device_pci_add failed: %d", ret);
             goto error_out;
         }
     }
@@ -1430,8 +1428,7 @@ static void domcreate_attach_pci(libxl__egc *egc, libxl__multidev *multidev,
         ret = libxl__create_pci_backend(gc, domid, d_config->pcidevs,
             d_config->num_pcidevs);
         if (ret < 0) {
-            LIBXL__LOG(ctx, LIBXL__LOG_ERROR,
-                "libxl_create_pci_backend failed: %d", ret);
+            LOG(ERROR, "libxl_create_pci_backend failed: %d", ret);
             goto error_out;
         }
     }
@@ -1544,6 +1541,14 @@ typedef struct {
     uint32_t *domid_out;
 } libxl__app_domain_create_state;
 
+typedef struct {
+    libxl__app_domain_create_state cdcs;
+    libxl__domain_destroy_state dds;
+    libxl__domain_suspend_state dss;
+    char *toolstack_buf;
+    uint32_t toolstack_len;
+} libxl__domain_soft_reset_state;
+
 static void domain_create_cb(libxl__egc *egc,
                              libxl__domain_create_state *dcs,
                              int rc, uint32_t domid);
@@ -1556,6 +1561,7 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
 {
     AO_CREATE(ctx, 0, ao_how);
     libxl__app_domain_create_state *cdcs;
+    int rc;
 
     GCNEW(cdcs);
     cdcs->dcs.ao = ao;
@@ -1563,15 +1569,154 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
     libxl_domain_config_init(&cdcs->dcs.guest_config_saved);
     libxl_domain_config_copy(ctx, &cdcs->dcs.guest_config_saved, d_config);
     cdcs->dcs.restore_fd = cdcs->dcs.libxc_fd = restore_fd;
-    if (restore_fd > -1)
+    if (restore_fd > -1) {
         cdcs->dcs.restore_params = *params;
+        rc = libxl__fd_flags_modify_save(gc, cdcs->dcs.restore_fd,
+                                         ~(O_NONBLOCK|O_NDELAY), 0,
+                                         &cdcs->dcs.restore_fdfl);
+        if (rc < 0) goto out_err;
+    }
     cdcs->dcs.callback = domain_create_cb;
+    cdcs->dcs.domid_soft_reset = INVALID_DOMID;
     libxl__ao_progress_gethow(&cdcs->dcs.aop_console_how, aop_console_how);
     cdcs->domid_out = domid;
 
     initiate_domain_create(egc, &cdcs->dcs);
 
     return AO_INPROGRESS;
+
+ out_err:
+    return AO_CREATE_FAIL(rc);
+
+}
+
+static void domain_soft_reset_cb(libxl__egc *egc,
+                                 libxl__domain_destroy_state *dds,
+                                 int rc)
+{
+    STATE_AO_GC(dds->ao);
+    libxl__domain_soft_reset_state *srs = CONTAINER_OF(dds, *srs, dds);
+    libxl__app_domain_create_state *cdcs = &srs->cdcs;
+    char *savefile, *restorefile;
+
+    if (rc) {
+        LOG(ERROR, "destruction of domain %u failed.", dds->domid);
+        goto error;
+    }
+
+    cdcs->dcs.guest_domid = dds->domid;
+    rc = libxl__restore_emulator_xenstore_data(&cdcs->dcs, srs->toolstack_buf,
+                                               srs->toolstack_len);
+    if (rc) {
+        LOG(ERROR, "failed to restore toolstack record.");
+        goto error;
+    }
+
+    savefile = GCSPRINTF(LIBXL_DEVICE_MODEL_SAVE_FILE".%d", dds->domid);
+    restorefile = GCSPRINTF(LIBXL_DEVICE_MODEL_RESTORE_FILE".%d", dds->domid);
+    rc = rename(savefile, restorefile);
+    if (rc) {
+        LOG(ERROR, "failed to rename dm save file.");
+        goto error;
+    }
+
+    initiate_domain_create(egc, &cdcs->dcs);
+    return;
+
+error:
+    domcreate_complete(egc, &cdcs->dcs, rc);
+}
+
+static int do_domain_soft_reset(libxl_ctx *ctx,
+                                libxl_domain_config *d_config,
+                                uint32_t domid_soft_reset,
+                                const libxl_asyncop_how *ao_how,
+                                const libxl_asyncprogress_how
+                                *aop_console_how)
+{
+    AO_CREATE(ctx, 0, ao_how);
+    libxl__domain_soft_reset_state *srs;
+    libxl__app_domain_create_state *cdcs;
+    libxl__domain_create_state *dcs;
+    libxl__domain_build_state *state;
+    libxl__domain_suspend_state *dss;
+    char *dom_path, *xs_store_mfn, *xs_console_mfn;
+    uint32_t domid_out;
+    int rc;
+
+    GCNEW(srs);
+    cdcs = &srs->cdcs;
+    dcs = &cdcs->dcs;
+    state = &dcs->build_state;
+    dss = &srs->dss;
+
+    srs->cdcs.dcs.ao = ao;
+    srs->cdcs.dcs.guest_config = d_config;
+    libxl_domain_config_init(&srs->cdcs.dcs.guest_config_saved);
+    libxl_domain_config_copy(ctx, &srs->cdcs.dcs.guest_config_saved,
+                             d_config);
+    cdcs->dcs.restore_fd = -1;
+    cdcs->dcs.domid_soft_reset = domid_soft_reset;
+    cdcs->dcs.callback = domain_create_cb;
+    libxl__ao_progress_gethow(&srs->cdcs.dcs.aop_console_how,
+                              aop_console_how);
+    cdcs->domid_out = &domid_out;
+
+    dom_path = libxl__xs_get_dompath(gc, domid_soft_reset);
+    if (!dom_path) {
+        LOG(ERROR, "failed to read domain path");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    xs_store_mfn = xs_read(ctx->xsh, XBT_NULL,
+                           GCSPRINTF("%s/store/ring-ref", dom_path),
+                           NULL);
+    state->store_mfn = xs_store_mfn ? atol(xs_store_mfn): 0;
+    free(xs_store_mfn);
+
+    xs_console_mfn = xs_read(ctx->xsh, XBT_NULL,
+                             GCSPRINTF("%s/console/ring-ref", dom_path),
+                             NULL);
+    state->console_mfn = xs_console_mfn ? atol(xs_console_mfn): 0;
+    free(xs_console_mfn);
+
+    dss->ao = ao;
+    dss->domid = domid_soft_reset;
+    dss->dm_savefile = GCSPRINTF(LIBXL_DEVICE_MODEL_SAVE_FILE".%d",
+                                 domid_soft_reset);
+
+    rc = libxl__save_emulator_xenstore_data(dss, &srs->toolstack_buf,
+                                            &srs->toolstack_len);
+    if (rc) {
+        LOG(ERROR, "failed to save toolstack record.");
+        goto out;
+    }
+
+    rc = libxl__domain_suspend_device_model(gc, dss);
+    if (rc) {
+        LOG(ERROR, "failed to suspend device model.");
+        goto out;
+    }
+
+    /*
+     * Ask all backends to disconnect by removing the domain from
+     * xenstore. On the creation path the domain will be introduced to
+     * xenstore again with probably different store/console/...
+     * channels.
+     */
+    xs_release_domain(ctx->xsh, cdcs->dcs.domid_soft_reset);
+
+    srs->dds.ao = ao;
+    srs->dds.domid = domid_soft_reset;
+    srs->dds.callback = domain_soft_reset_cb;
+    srs->dds.soft_reset = true;
+    libxl__domain_destroy(egc, &srs->dds);
+
+    return AO_INPROGRESS;
+
+ out:
+    return AO_CREATE_FAIL(rc);
 }
 
 static void domain_create_cb(libxl__egc *egc,
@@ -1579,9 +1724,20 @@ static void domain_create_cb(libxl__egc *egc,
                              int rc, uint32_t domid)
 {
     libxl__app_domain_create_state *cdcs = CONTAINER_OF(dcs, *cdcs, dcs);
+    int flrc;
     STATE_AO_GC(cdcs->dcs.ao);
 
     *cdcs->domid_out = domid;
+
+    if (dcs->restore_fd > -1) {
+        flrc = libxl__fd_flags_restore(gc,
+                dcs->restore_fd, dcs->restore_fdfl);
+        /*
+         * If restore has failed already then report that error not
+         * this one.
+         */
+        if (flrc && !rc) rc = flrc;
+    }
 
     libxl__ao_complete(egc, ao, rc);
 }
@@ -1603,6 +1759,21 @@ int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
 {
     return do_domain_create(ctx, d_config, domid, restore_fd, params,
                             ao_how, aop_console_how);
+}
+
+int libxl_domain_soft_reset(libxl_ctx *ctx,
+                            libxl_domain_config *d_config,
+                            uint32_t domid,
+                            const libxl_asyncop_how *ao_how,
+                            const libxl_asyncprogress_how
+                            *aop_console_how)
+{
+    libxl_domain_build_info *const info = &d_config->b_info;
+
+    if (info->type != LIBXL_DOMAIN_TYPE_HVM) return ERROR_INVAL;
+
+    return do_domain_soft_reset(ctx, d_config, domid, ao_how,
+                                aop_console_how);
 }
 
 /*

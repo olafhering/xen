@@ -349,7 +349,8 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_get_address_size:
         domctl->u.address_size.size =
-            is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG;
+            (is_pv_32bit_domain(d) || is_pvh_32bit_domain(d)) ?
+            32 : BITS_PER_LONG;
         copyback = 1;
         break;
 
@@ -1167,12 +1168,40 @@ long arch_do_domctl(
         {
         case XEN_DOMCTL_PSR_CAT_OP_SET_L3_CBM:
             ret = psr_set_l3_cbm(d, domctl->u.psr_cat_op.target,
-                                 domctl->u.psr_cat_op.data);
+                                 domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3);
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_SET_L3_CODE:
+            ret = psr_set_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_CODE);
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_SET_L3_DATA:
+            ret = psr_set_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_DATA);
             break;
 
         case XEN_DOMCTL_PSR_CAT_OP_GET_L3_CBM:
             ret = psr_get_l3_cbm(d, domctl->u.psr_cat_op.target,
-                                 &domctl->u.psr_cat_op.data);
+                                 &domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3);
+            copyback = 1;
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_GET_L3_CODE:
+            ret = psr_get_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 &domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_CODE);
+            copyback = 1;
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_GET_L3_DATA:
+            ret = psr_get_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 &domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_DATA);
             copyback = 1;
             break;
 
@@ -1203,7 +1232,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
 {
     unsigned int i;
     const struct domain *d = v->domain;
-    bool_t compat = is_pv_32bit_domain(d);
+    bool_t compat = is_pv_32bit_domain(d) || is_pvh_32bit_domain(d);
 #define c(fld) (!compat ? (c.nat->fld) : (c.cmp->fld))
 
     if ( !is_pv_domain(d) )
@@ -1212,7 +1241,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
     c(flags = v->arch.vgc_flags & ~(VGCF_i387_valid|VGCF_in_kernel));
     if ( v->fpu_initialised )
         c(flags |= VGCF_i387_valid);
-    if ( !test_bit(_VPF_down, &v->pause_flags) )
+    if ( !(v->pause_flags & VPF_down) )
         c(flags |= VGCF_online);
     if ( !compat )
     {

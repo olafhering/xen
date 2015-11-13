@@ -21,6 +21,9 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
+/* Allow uniquely identifying static symbols in the 3 generated objects. */
+asm(".file \"" __OBJECT_FILE__ "\"");
+
 #include <xen/types.h>
 #include <xen/mm.h>
 #include <xen/paging.h>
@@ -29,30 +32,32 @@
 #include <asm/page.h>
 #include <asm/guest_pt.h>
 
+extern const uint32_t gw_page_flags[];
+#if GUEST_PAGING_LEVELS == CONFIG_PAGING_LEVELS
+const uint32_t gw_page_flags[] = {
+    /* I/F -  Usr Wr */
+    /* 0   0   0   0 */ _PAGE_PRESENT,
+    /* 0   0   0   1 */ _PAGE_PRESENT|_PAGE_RW,
+    /* 0   0   1   0 */ _PAGE_PRESENT|_PAGE_USER,
+    /* 0   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
+    /* 0   1   0   0 */ _PAGE_PRESENT,
+    /* 0   1   0   1 */ _PAGE_PRESENT|_PAGE_RW,
+    /* 0   1   1   0 */ _PAGE_PRESENT|_PAGE_USER,
+    /* 0   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
+    /* 1   0   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT,
+    /* 1   0   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
+    /* 1   0   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
+    /* 1   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
+    /* 1   1   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT,
+    /* 1   1   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
+    /* 1   1   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
+    /* 1   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
+};
+#endif
 
 /* Flags that are needed in a pagetable entry, with the sense of NX inverted */
 static uint32_t mandatory_flags(struct vcpu *v, uint32_t pfec) 
 {
-    static const uint32_t flags[] = {
-        /* I/F -  Usr Wr */
-        /* 0   0   0   0 */ _PAGE_PRESENT, 
-        /* 0   0   0   1 */ _PAGE_PRESENT|_PAGE_RW,
-        /* 0   0   1   0 */ _PAGE_PRESENT|_PAGE_USER,
-        /* 0   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
-        /* 0   1   0   0 */ _PAGE_PRESENT, 
-        /* 0   1   0   1 */ _PAGE_PRESENT|_PAGE_RW,
-        /* 0   1   1   0 */ _PAGE_PRESENT|_PAGE_USER,
-        /* 0   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
-        /* 1   0   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT, 
-        /* 1   0   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
-        /* 1   0   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
-        /* 1   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
-        /* 1   1   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT, 
-        /* 1   1   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
-        /* 1   1   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
-        /* 1   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
-    };
-
     /* Don't demand not-NX if the CPU wouldn't enforce it. */
     if ( !guest_supports_nx(v) )
         pfec &= ~PFEC_insn_fetch;
@@ -62,7 +67,7 @@ static uint32_t mandatory_flags(struct vcpu *v, uint32_t pfec)
          && !(pfec & PFEC_user_mode) )
         pfec &= ~PFEC_write_access;
 
-    return flags[(pfec & 0x1f) >> 1] | _PAGE_INVALID_BITS;
+    return gw_page_flags[(pfec & 0x1f) >> 1] | _PAGE_INVALID_BITS;
 }
 
 /* Modify a guest pagetable entry to set the Accessed and Dirty bits.
@@ -84,46 +89,6 @@ static uint32_t set_ad_bits(void *guest_p, void *walk_p, int set_dirty)
     }
     return 0;
 }
-
-/* If the map is non-NULL, we leave this function having 
- * acquired an extra ref on mfn_to_page(*mfn) */
-void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
-                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc)
-{
-    struct page_info *page;
-    void *map;
-
-    /* Translate the gfn, unsharing if shared */
-    page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), p2mt, NULL,
-                                 q);
-    if ( p2m_is_paging(*p2mt) )
-    {
-        ASSERT(p2m_is_hostp2m(p2m));
-        if ( page )
-            put_page(page);
-        p2m_mem_paging_populate(p2m->domain, gfn_x(gfn));
-        *rc = _PAGE_PAGED;
-        return NULL;
-    }
-    if ( p2m_is_shared(*p2mt) )
-    {
-        if ( page )
-            put_page(page);
-        *rc = _PAGE_SHARED;
-        return NULL;
-    }
-    if ( !page )
-    {
-        *rc |= _PAGE_PRESENT;
-        return NULL;
-    }
-    *mfn = _mfn(page_to_mfn(page));
-    ASSERT(mfn_valid(mfn_x(*mfn)));
-
-    map = map_domain_page(*mfn);
-    return map;
-}
-
 
 /* Walk the guest pagetables, after the manner of a hardware walker. */
 /* Because the walk is essentially random, it can cause a deadlock 

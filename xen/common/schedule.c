@@ -79,7 +79,7 @@ static struct scheduler __read_mostly ops;
 
 #define DOM2OP(_d)    (((_d)->cpupool == NULL) ? &ops : ((_d)->cpupool->sched))
 #define VCPU2OP(_v)   (DOM2OP((_v)->domain))
-#define VCPU2ONLINE(_v) cpupool_online_cpumask((_v)->domain->cpupool)
+#define VCPU2ONLINE(_v) cpupool_domain_cpumask((_v)->domain)
 
 static inline void trace_runstate_change(struct vcpu *v, int new_state)
 {
@@ -119,7 +119,7 @@ static inline void vcpu_urgent_count_update(struct vcpu *v)
 
     if ( unlikely(v->is_urgent) )
     {
-        if ( !test_bit(_VPF_blocked, &v->pause_flags) ||
+        if ( !(v->pause_flags & VPF_blocked) ||
              !test_bit(v->vcpu_id, v->domain->poll_mask) )
         {
             v->is_urgent = 0;
@@ -128,8 +128,8 @@ static inline void vcpu_urgent_count_update(struct vcpu *v)
     }
     else
     {
-        if ( unlikely(test_bit(_VPF_blocked, &v->pause_flags) &&
-                      test_bit(v->vcpu_id, v->domain->poll_mask)) )
+        if ( unlikely(v->pause_flags & VPF_blocked) &&
+             unlikely(test_bit(v->vcpu_id, v->domain->poll_mask)) )
         {
             v->is_urgent = 1;
             atomic_inc(&per_cpu(schedule_data,v->processor).urgent_count);
@@ -418,7 +418,7 @@ void vcpu_wake(struct vcpu *v)
             vcpu_runstate_change(v, RUNSTATE_runnable, NOW());
         SCHED_OP(VCPU2OP(v), wake, v);
     }
-    else if ( !test_bit(_VPF_blocked, &v->pause_flags) )
+    else if ( !(v->pause_flags & VPF_blocked) )
     {
         if ( v->runstate.state == RUNSTATE_blocked )
             vcpu_runstate_change(v, RUNSTATE_offline, NOW());
@@ -595,7 +595,7 @@ void vcpu_force_reschedule(struct vcpu *v)
         set_bit(_VPF_migrating, &v->pause_flags);
     vcpu_schedule_unlock_irq(lock, v);
 
-    if ( test_bit(_VPF_migrating, &v->pause_flags) )
+    if ( v->pause_flags & VPF_migrating )
     {
         vcpu_sleep_nosync(v);
         vcpu_migrate(v);
@@ -763,7 +763,7 @@ static int vcpu_set_affinity(
 
     domain_update_node_affinity(v->domain);
 
-    if ( test_bit(_VPF_migrating, &v->pause_flags) )
+    if ( v->pause_flags & VPF_migrating )
     {
         vcpu_sleep_nosync(v);
         vcpu_migrate(v);
@@ -1118,8 +1118,8 @@ long do_set_timer_op(s_time_t timeout)
          * timeout in this case can burn a lot of CPU. We therefore go for a
          * reasonable middleground of triggering a timer event in 100ms.
          */
-        gprintk(XENLOG_INFO, "Warning: huge timeout set: %"PRIx64"\n",
-                (uint64_t)timeout);
+        gdprintk(XENLOG_INFO, "Warning: huge timeout set: %"PRIx64"\n",
+                 timeout);
         set_timer(&v->singleshot_timer, NOW() + MILLISECS(100));
     }
     else
@@ -1285,7 +1285,7 @@ static void schedule(void)
 
     vcpu_runstate_change(
         prev,
-        (test_bit(_VPF_blocked, &prev->pause_flags) ? RUNSTATE_blocked :
+        ((prev->pause_flags & VPF_blocked) ? RUNSTATE_blocked :
          (vcpu_runnable(prev) ? RUNSTATE_runnable : RUNSTATE_offline)),
         now);
     prev->last_run_time = now;
@@ -1327,7 +1327,7 @@ void context_saved(struct vcpu *prev)
 
     SCHED_OP(VCPU2OP(prev), context_saved, prev);
 
-    if ( unlikely(test_bit(_VPF_migrating, &prev->pause_flags)) )
+    if ( unlikely(prev->pause_flags & VPF_migrating) )
         vcpu_migrate(prev);
 }
 
@@ -1474,7 +1474,6 @@ void __init scheduler_init(void)
         sched_ratelimit_us = SCHED_DEFAULT_RATELIMIT_US;
     }
 
-    /* There is no need of arch-specific configuration for an idle domain */
     idle_domain = domain_create(DOMID_IDLE, 0, 0, NULL);
     BUG_ON(IS_ERR(idle_domain));
     idle_domain->vcpu = idle_vcpu;

@@ -790,9 +790,9 @@ uint64_t tsc_ticks2ns(uint64_t ticks)
 static void __update_vcpu_system_time(struct vcpu *v, int force)
 {
     struct cpu_time       *t;
-    struct vcpu_time_info *u, _u;
+    struct vcpu_time_info *u, _u = {};
     struct domain *d = v->domain;
-    s_time_t tsc_stamp = 0;
+    s_time_t tsc_stamp;
 
     if ( v->vcpu_info == NULL )
         return;
@@ -816,28 +816,21 @@ static void __update_vcpu_system_time(struct vcpu *v, int force)
         }
         else
             tsc_stamp = gtime_to_gtsc(d, stime);
-    }
-    else
-    {
-        tsc_stamp = t->local_tsc_stamp;
-    }
 
-    memset(&_u, 0, sizeof(_u));
-
-    if ( d->arch.vtsc )
-    {
-        _u.tsc_timestamp     = tsc_stamp;
-        _u.system_time       = t->stime_local_stamp;
         _u.tsc_to_system_mul = d->arch.vtsc_to_ns.mul_frac;
         _u.tsc_shift         = d->arch.vtsc_to_ns.shift;
     }
     else
     {
-        _u.tsc_timestamp     = t->local_tsc_stamp;
-        _u.system_time       = t->stime_local_stamp;
+        tsc_stamp = t->local_tsc_stamp;
+
         _u.tsc_to_system_mul = t->tsc_scale.mul_frac;
         _u.tsc_shift         = (s8)t->tsc_scale.shift;
     }
+
+    _u.tsc_timestamp = tsc_stamp;
+    _u.system_time   = t->stime_local_stamp;
+
     if ( is_hvm_domain(d) )
         _u.tsc_timestamp += v->arch.hvm_vcpu.cache_tsc_offset;
 
@@ -2047,15 +2040,9 @@ static void dump_softtsc(unsigned char key)
             printk("No domains have emulated TSC\n");
 }
 
-static struct keyhandler dump_softtsc_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = dump_softtsc,
-    .desc = "dump softtsc stats"
-};
-
 static int __init setup_dump_softtsc(void)
 {
-    register_keyhandler('s', &dump_softtsc_keyhandler);
+    register_keyhandler('s', dump_softtsc, "dump softtsc stats", 1);
     return 0;
 }
 __initcall(setup_dump_softtsc);

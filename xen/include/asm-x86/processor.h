@@ -140,8 +140,15 @@
 #define PFEC_user_mode      (1U<<2)
 #define PFEC_reserved_bit   (1U<<3)
 #define PFEC_insn_fetch     (1U<<4)
-#define PFEC_page_paged     (1U<<5)
-#define PFEC_page_shared    (1U<<6)
+#define PFEC_prot_key       (1U<<5)
+/* Internally used only flags. */
+#define PFEC_page_paged     (1U<<16)
+#define PFEC_page_shared    (1U<<17)
+
+/* Other exception error code values. */
+#define X86_XEC_EXT         (_AC(1,U) << 0)
+#define X86_XEC_IDT         (_AC(1,U) << 1)
+#define X86_XEC_TI          (_AC(1,U) << 2)
 
 #define XEN_MINIMAL_CR4 (X86_CR4_PGE | X86_CR4_PAE)
 
@@ -219,7 +226,6 @@ extern void identify_cpu(struct cpuinfo_x86 *);
 extern void setup_clear_cpu_cap(unsigned int);
 extern void print_cpu_info(unsigned int cpu);
 extern unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c);
-extern void dodgy_tsc(void);
 
 extern void detect_extended_topology(struct cpuinfo_x86 *c);
 
@@ -470,10 +476,6 @@ extern idt_entry_t *idt_tables[];
 DECLARE_PER_CPU(struct tss_struct, init_tss);
 
 extern void init_int80_direct_trap(struct vcpu *v);
-
-#define set_int80_direct_trap(_ed)  ((void)0)
-
-extern int gpf_emulate_4gb(struct cpu_user_regs *regs);
 
 extern void write_ptbase(struct vcpu *v);
 

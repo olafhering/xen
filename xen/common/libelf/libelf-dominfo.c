@@ -119,6 +119,7 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
         [XEN_ELFNOTE_BSD_SYMTAB] = { "BSD_SYMTAB", 1},
         [XEN_ELFNOTE_SUSPEND_CANCEL] = { "SUSPEND_CANCEL", 0 },
         [XEN_ELFNOTE_MOD_START_PFN] = { "MOD_START_PFN", 0 },
+        [XEN_ELFNOTE_PHYS32_ENTRY] = { "PHYS32_ENTRY", 0 },
     };
 /* *INDENT-ON* */
 
@@ -172,9 +173,9 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
         break;
     case XEN_ELFNOTE_PAE_MODE:
         if ( !strcmp(str, "yes") )
-            parms->pae = 2 /* extended_cr3 */;
+            parms->pae = XEN_PAE_EXTCR3;
         if ( strstr(str, "bimodal") )
-            parms->pae = 3 /* bimodal */;
+            parms->pae = XEN_PAE_BIMODAL;
         break;
     case XEN_ELFNOTE_BSD_SYMTAB:
         if ( !strcmp(str, "yes") )
@@ -212,6 +213,9 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
                 elf, note, sizeof(*parms->f_supported), i);
         break;
 
+    case XEN_ELFNOTE_PHYS32_ENTRY:
+        parms->phys_entry = val;
+        break;
     }
     return 0;
 }
@@ -317,9 +321,9 @@ elf_errorstatus elf_xen_parse_guest_info(struct elf_binary *elf,
         if ( !strcmp(name, "PAE") )
         {
             if ( !strcmp(value, "yes[extended-cr3]") )
-                parms->pae = 2 /* extended_cr3 */;
+                parms->pae = XEN_PAE_EXTCR3;
             else if ( !strncmp(value, "yes", 3) )
-                parms->pae = 1 /* yes */;
+                parms->pae = XEN_PAE_YES;
         }
         if ( !strcmp(name, "BSD_SYMTAB") )
             parms->bsd_symtab = 1;

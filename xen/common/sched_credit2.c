@@ -418,7 +418,7 @@ __runq_insert(struct list_head *runq, struct csched2_vcpu *svc)
     /* Idle vcpus not allowed on the runqueue anymore */
     BUG_ON(is_idle_vcpu(svc->vcpu));
     BUG_ON(svc->vcpu->is_running);
-    BUG_ON(test_bit(__CSFLAG_scheduled, &svc->flags));
+    BUG_ON(svc->flags & CSFLAG_scheduled);
 
     list_for_each( iter, runq )
     {
@@ -519,8 +519,6 @@ runq_tickle(const struct scheduler *ops, unsigned int cpu, struct csched2_vcpu *
 
     for_each_cpu(i, &mask)
     {
-        struct csched2_vcpu * cur;
-
         /* Already looked at this one above */
         if ( i == cpu )
             continue;
@@ -796,7 +794,7 @@ csched2_alloc_vdata(const struct scheduler *ops, struct vcpu *vc, void *dd)
         svc->weight = 0;
     }
 
-    SCHED_STAT_CRANK(vcpu_init);
+    SCHED_STAT_CRANK(vcpu_alloc);
 
     return svc;
 }
@@ -844,7 +842,7 @@ static void
 __runq_deassign(struct csched2_vcpu *svc)
 {
     BUG_ON(__vcpu_on_runq(svc));
-    BUG_ON(test_bit(__CSFLAG_scheduled, &svc->flags));
+    BUG_ON(svc->flags & CSFLAG_scheduled);
 
     list_del_init(&svc->rqd_elem);
     update_max_weight(svc->rqd, 0, svc->weight);
@@ -891,6 +889,8 @@ csched2_vcpu_insert(const struct scheduler *ops, struct vcpu *vc)
         vcpu_schedule_unlock_irq(lock, vc);
 
         sdom->nr_vcpus++;
+
+        SCHED_STAT_CRANK(vcpu_insert);
     }
 
     CSCHED2_VCPU_CHECK(vc);
@@ -917,7 +917,7 @@ csched2_vcpu_remove(const struct scheduler *ops, struct vcpu *vc)
     {
         spinlock_t *lock;
 
-        SCHED_STAT_CRANK(vcpu_destroy);
+        SCHED_STAT_CRANK(vcpu_remove);
 
         /* Remove from runqueue */
         lock = vcpu_schedule_lock_irq(vc);
@@ -950,7 +950,7 @@ csched2_vcpu_sleep(const struct scheduler *ops, struct vcpu *vc)
         update_load(ops, svc->rqd, svc, -1, NOW());
         __runq_remove(svc);
     }
-    else if ( test_bit(__CSFLAG_delayed_runq_add, &svc->flags) )
+    else if ( svc->flags & CSFLAG_delayed_runq_add )
         clear_bit(__CSFLAG_delayed_runq_add, &svc->flags);
 }
 
@@ -986,7 +986,7 @@ csched2_vcpu_wake(const struct scheduler *ops, struct vcpu *vc)
     /* If the context hasn't been saved for this vcpu yet, we can't put it on
      * another runqueue.  Instead, we set a flag so that it will be put on the runqueue
      * after the context has been saved. */
-    if ( unlikely (test_bit(__CSFLAG_scheduled, &svc->flags) ) )
+    if ( unlikely(svc->flags & CSFLAG_scheduled) )
     {
         set_bit(__CSFLAG_delayed_runq_add, &svc->flags);
         goto out;
@@ -1202,7 +1202,7 @@ static void migrate(const struct scheduler *ops,
                     struct csched2_runqueue_data *trqd, 
                     s_time_t now)
 {
-    if ( test_bit(__CSFLAG_scheduled, &svc->flags) )
+    if ( svc->flags & CSFLAG_scheduled )
     {
         d2printk("%pv %d-%d a\n", svc->vcpu, svc->rqd->id, trqd->id);
         /* It's running; mark it to migrate. */
@@ -1346,7 +1346,7 @@ retry:
         __update_svc_load(ops, push_svc, 0, now);
 
         /* Skip this one if it's already been flagged to migrate */
-        if ( test_bit(__CSFLAG_runq_migrate_request, &push_svc->flags) )
+        if ( push_svc->flags & CSFLAG_runq_migrate_request )
             continue;
 
         list_for_each( pull_iter, &st.orqd->svc )
@@ -1359,7 +1359,7 @@ retry:
             }
         
             /* Skip this one if it's already been flagged to migrate */
-            if ( test_bit(__CSFLAG_runq_migrate_request, &pull_svc->flags) )
+            if ( pull_svc->flags & CSFLAG_runq_migrate_request )
                 continue;
 
             consider(&st, push_svc, pull_svc);
@@ -1376,7 +1376,7 @@ retry:
         struct csched2_vcpu * pull_svc = list_entry(pull_iter, struct csched2_vcpu, rqd_elem);
         
         /* Skip this one if it's already been flagged to migrate */
-        if ( test_bit(__CSFLAG_runq_migrate_request, &pull_svc->flags) )
+        if ( pull_svc->flags & CSFLAG_runq_migrate_request )
             continue;
 
         /* Consider pull only */
@@ -1931,7 +1931,7 @@ csched2_dump(const struct scheduler *ops)
         struct csched2_dom *sdom;
         sdom = list_entry(iter_sdom, struct csched2_dom, sdom_elem);
 
-        printk("\tDomain: %d w %d v %d\n\t",
+        printk("\tDomain: %d w %d v %d\n",
                sdom->dom->domain_id,
                sdom->weight,
                sdom->nr_vcpus);

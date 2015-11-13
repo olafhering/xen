@@ -171,10 +171,10 @@ struct csched_pcpu {
  * Convenience macro for accessing the per-PCPU cpumask we need for
  * implementing the two steps (soft and hard affinity) balancing logic.
  * It is stored in csched_pcpu so that serialization is not an issue,
- * as there is a csched_pcpu for each PCPU and we always hold the
- * runqueue spin-lock when using this.
+ * as there is a csched_pcpu for each PCPU, and we always hold the
+ * runqueue lock for the proper PCPU when using this.
  */
-#define csched_balance_mask (CSCHED_PCPU(smp_processor_id())->balance_mask)
+#define csched_balance_mask(c) (CSCHED_PCPU(c)->balance_mask)
 
 /*
  * Virtual CPU
@@ -252,13 +252,12 @@ __runq_elem(struct list_head *elem)
 }
 
 static inline void
-__runq_insert(unsigned int cpu, struct csched_vcpu *svc)
+__runq_insert(struct csched_vcpu *svc)
 {
-    const struct list_head * const runq = RUNQ(cpu);
+    const struct list_head * const runq = RUNQ(svc->vcpu->processor);
     struct list_head *iter;
 
     BUG_ON( __vcpu_on_runq(svc) );
-    BUG_ON( cpu != svc->vcpu->processor );
 
     list_for_each( iter, runq )
     {
@@ -309,7 +308,7 @@ __runq_remove(struct csched_vcpu *svc)
 static inline int __vcpu_has_soft_affinity(const struct vcpu *vc,
                                            const cpumask_t *mask)
 {
-    return !cpumask_subset(cpupool_online_cpumask(vc->domain->cpupool),
+    return !cpumask_subset(cpupool_domain_cpumask(vc->domain),
                            vc->cpu_soft_affinity) &&
            !cpumask_subset(vc->cpu_hard_affinity, vc->cpu_soft_affinity) &&
            cpumask_intersects(vc->cpu_soft_affinity, mask);
@@ -372,9 +371,7 @@ __runq_tickle(unsigned int cpu, struct csched_vcpu *new)
     ASSERT(cur);
     cpumask_clear(&mask);
 
-    /* cpu is vc->processor, so it must be in a cpupool. */
-    ASSERT(per_cpu(cpupool, cpu) != NULL);
-    online = cpupool_online_cpumask(per_cpu(cpupool, cpu));
+    online = cpupool_domain_cpumask(new->sdom->dom);
     cpumask_and(&idle_mask, prv->idlers, online);
     idlers_empty = cpumask_empty(&idle_mask);
 
@@ -412,9 +409,10 @@ __runq_tickle(unsigned int cpu, struct csched_vcpu *new)
 
             /* Are there idlers suitable for new (for this balance step)? */
             csched_balance_cpumask(new->vcpu, balance_step,
-                                   csched_balance_mask);
-            cpumask_and(csched_balance_mask, csched_balance_mask, &idle_mask);
-            new_idlers_empty = cpumask_empty(csched_balance_mask);
+                                   csched_balance_mask(cpu));
+            cpumask_and(csched_balance_mask(cpu),
+                        csched_balance_mask(cpu), &idle_mask);
+            new_idlers_empty = cpumask_empty(csched_balance_mask(cpu));
 
             /*
              * Let's not be too harsh! If there aren't idlers suitable
@@ -427,9 +425,10 @@ __runq_tickle(unsigned int cpu, struct csched_vcpu *new)
 
             /*
              * If there are no suitable idlers for new, and it's higher
-             * priority than cur, ask the scheduler to migrate cur away.
-             * We have to act like this (instead of just waking some of
-             * the idlers suitable for cur) because cur is running.
+             * priority than cur, check whether we can migrate cur away.
+             * (We have to do it indirectly, via _VPF_migrating, instead
+             * of just tickling any idler suitable for cur) because cur
+             * is running.)
              *
              * If there are suitable idlers for new, no matter priorities,
              * leave cur alone (as it is running and is, likely, cache-hot)
@@ -438,11 +437,18 @@ __runq_tickle(unsigned int cpu, struct csched_vcpu *new)
              */
             if ( new_idlers_empty && new->pri > cur->pri )
             {
+                csched_balance_cpumask(cur->vcpu, balance_step,
+                                       csched_balance_mask(cpu));
+                if ( cpumask_intersects(csched_balance_mask(cpu),
+                                        &idle_mask) )
+                {
+                    SCHED_VCPU_STAT_CRANK(cur, kicked_away);
+                    SCHED_VCPU_STAT_CRANK(cur, migrate_r);
+                    SCHED_STAT_CRANK(migrate_kicked_away);
+                    set_bit(_VPF_migrating, &cur->vcpu->pause_flags);
+                }
+                /* Tickle cpu anyway, to let new preempt cur. */
                 SCHED_STAT_CRANK(tickle_idlers_none);
-                SCHED_VCPU_STAT_CRANK(cur, kicked_away);
-                SCHED_VCPU_STAT_CRANK(cur, migrate_r);
-                SCHED_STAT_CRANK(migrate_kicked_away);
-                set_bit(_VPF_migrating, &cur->vcpu->pause_flags);
                 __cpumask_set_cpu(cpu, &mask);
             }
             else if ( !new_idlers_empty )
@@ -641,7 +647,7 @@ _csched_cpu_pick(const struct scheduler *ops, struct vcpu *vc, bool_t commit)
     int balance_step;
 
     /* Store in cpus the mask of online cpus on which the domain can run */
-    online = cpupool_scheduler_cpumask(vc->domain->cpupool);
+    online = cpupool_domain_cpumask(vc->domain);
     cpumask_and(&cpus, vc->cpu_hard_affinity, online);
 
     for_each_csched_balance_step( balance_step )
@@ -896,7 +902,7 @@ csched_alloc_vdata(const struct scheduler *ops, struct vcpu *vc, void *dd)
     svc->pri = is_idle_domain(vc->domain) ?
         CSCHED_PRI_IDLE : CSCHED_PRI_TS_UNDER;
     SCHED_VCPU_STATS_RESET(svc);
-    SCHED_STAT_CRANK(vcpu_init);
+    SCHED_STAT_CRANK(vcpu_alloc);
     return svc;
 }
 
@@ -906,7 +912,9 @@ csched_vcpu_insert(const struct scheduler *ops, struct vcpu *vc)
     struct csched_vcpu *svc = vc->sched_priv;
 
     if ( !__vcpu_on_runq(svc) && vcpu_runnable(vc) && !vc->is_running )
-        __runq_insert(vc->processor, svc);
+        __runq_insert(svc);
+
+    SCHED_STAT_CRANK(vcpu_insert);
 }
 
 static void
@@ -925,9 +933,10 @@ csched_vcpu_remove(const struct scheduler *ops, struct vcpu *vc)
     struct csched_private *prv = CSCHED_PRIV(ops);
     struct csched_vcpu * const svc = CSCHED_VCPU(vc);
     struct csched_dom * const sdom = svc->sdom;
-    unsigned long flags;
 
-    SCHED_STAT_CRANK(vcpu_destroy);
+    SCHED_STAT_CRANK(vcpu_remove);
+
+    ASSERT(!__vcpu_on_runq(svc));
 
     if ( test_and_clear_bit(CSCHED_FLAG_VCPU_PARKED, &svc->flags) )
     {
@@ -935,18 +944,14 @@ csched_vcpu_remove(const struct scheduler *ops, struct vcpu *vc)
         vcpu_unpause(svc->vcpu);
     }
 
-    if ( __vcpu_on_runq(svc) )
-        __runq_remove(svc);
-
-    spin_lock_irqsave(&(prv->lock), flags);
+    spin_lock_irq(&prv->lock);
 
     if ( !list_empty(&svc->active_vcpu_elem) )
         __csched_vcpu_acct_stop_locked(prv, svc);
 
-    spin_unlock_irqrestore(&(prv->lock), flags);
+    spin_unlock_irq(&prv->lock);
 
     BUG_ON( sdom == NULL );
-    BUG_ON( !list_empty(&svc->runq_elem) );
 }
 
 static void
@@ -1015,7 +1020,7 @@ csched_vcpu_wake(const struct scheduler *ops, struct vcpu *vc)
     }
 
     /* Put the VCPU on the runq and tickle CPUs */
-    __runq_insert(cpu, svc);
+    __runq_insert(svc);
     __runq_tickle(cpu, svc);
 }
 
@@ -1491,8 +1496,9 @@ csched_runq_steal(int peer_cpu, int cpu, int pri, int balance_step)
                  && !__vcpu_has_soft_affinity(vc, vc->cpu_hard_affinity) )
                 continue;
 
-            csched_balance_cpumask(vc, balance_step, csched_balance_mask);
-            if ( __csched_vcpu_is_migrateable(vc, cpu, csched_balance_mask) )
+            csched_balance_cpumask(vc, balance_step, csched_balance_mask(cpu));
+            if ( __csched_vcpu_is_migrateable(vc, cpu,
+                                              csched_balance_mask(cpu)) )
             {
                 /* We got a candidate. Grab it! */
                 TRACE_3D(TRC_CSCHED_STOLEN_VCPU, peer_cpu,
@@ -1679,7 +1685,7 @@ csched_schedule(
      * Select next runnable local VCPU (ie top of local runq)
      */
     if ( vcpu_runnable(current) )
-        __runq_insert(cpu, scurr);
+        __runq_insert(scurr);
     else
         BUG_ON( is_idle_vcpu(current) || list_empty(runq) );
 

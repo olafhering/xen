@@ -76,6 +76,7 @@
 #define GICC_HPPIR      (0x0018)
 #define GICC_APR        (0x00D0)
 #define GICC_NSAPR      (0x00E0)
+#define GICC_IIDR       (0x00FC)
 #define GICC_DIR        (0x1000)
 
 #define GICH_HCR        (0x00)
@@ -350,13 +351,14 @@ struct gic_hw_operations {
     unsigned int (*read_apr)(int apr_reg);
     /* Secondary CPU init */
     int (*secondary_init)(void);
+    /* Create GIC node for the hardware domain */
     int (*make_hwdom_dt_node)(const struct domain *d,
-                              const struct dt_device_node *node, void *fdt);
+                              const struct dt_device_node *gic, void *fdt);
 };
 
 void register_gic_ops(const struct gic_hw_operations *ops);
 int gic_make_hwdom_dt_node(const struct domain *d,
-                           const struct dt_device_node *node,
+                           const struct dt_device_node *gic,
                            void *fdt);
 
 #endif /* __ASSEMBLY__ */

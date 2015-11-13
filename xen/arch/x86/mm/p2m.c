@@ -36,17 +36,15 @@
 #include <asm/hvm/nestedhvm.h>
 #include <asm/altp2m.h>
 #include <asm/hvm/svm/amd-iommu-proto.h>
+#include <asm/vm_event.h>
 #include <xsm/xsm.h>
 
 #include "mm-locks.h"
 
-/* turn on/off 1GB host page table support for hap, default on */
-bool_t __read_mostly opt_hap_1gb = 1;
+/* Turn on/off host superpage page table support for hap, default on. */
+bool_t __initdata opt_hap_1gb = 1, __initdata opt_hap_2mb = 1;
 boolean_param("hap_1gb", opt_hap_1gb);
-
-bool_t __read_mostly opt_hap_2mb = 1;
 boolean_param("hap_2mb", opt_hap_2mb);
-
 
 /* Override macros from asm/page.h to make them work with mfn_t */
 #undef mfn_to_page
@@ -60,6 +58,7 @@ boolean_param("hap_2mb", opt_hap_2mb);
 /* Init the datastructures for later use by the p2m code */
 static int p2m_initialise(struct domain *d, struct p2m_domain *p2m)
 {
+    unsigned int i;
     int ret = 0;
 
     mm_rwlock_init(&p2m->lock);
@@ -74,6 +73,9 @@ static int p2m_initialise(struct domain *d, struct p2m_domain *p2m)
     p2m->p2m_class = p2m_host;
 
     p2m->np2m_base = P2M_BASE_EADDR;
+
+    for ( i = 0; i < ARRAY_SIZE(p2m->pod.mrp.list); ++i )
+        p2m->pod.mrp.list[i] = INVALID_GFN;
 
     if ( hap_enabled(d) && cpu_has_vmx )
         ret = ept_p2m_init(p2m);
@@ -450,10 +452,12 @@ int p2m_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
     while ( todo )
     {
         if ( hap_enabled(d) )
-            order = ( (((gfn | mfn_x(mfn) | todo) & ((1ul << PAGE_ORDER_1G) - 1)) == 0) &&
-                      hvm_hap_has_1gb(d) && opt_hap_1gb ) ? PAGE_ORDER_1G :
-                      ((((gfn | mfn_x(mfn) | todo) & ((1ul << PAGE_ORDER_2M) - 1)) == 0) &&
-                      hvm_hap_has_2mb(d) && opt_hap_2mb) ? PAGE_ORDER_2M : PAGE_ORDER_4K;
+            order = (!((gfn | mfn_x(mfn) | todo) &
+                       ((1ul << PAGE_ORDER_1G) - 1)) &&
+                     hap_has_1gb) ? PAGE_ORDER_1G :
+                    (!((gfn | mfn_x(mfn) | todo) &
+                       ((1ul << PAGE_ORDER_2M) - 1)) &&
+                     hap_has_2mb) ? PAGE_ORDER_2M : PAGE_ORDER_4K;
         else
             order = 0;
 
@@ -912,7 +916,7 @@ static int set_typed_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn,
     omfn = p2m->get_entry(p2m, gfn, &ot, &a, 0, NULL, NULL);
     if ( p2m_is_grant(ot) || p2m_is_foreign(ot) )
     {
-        p2m_unlock(p2m);
+        gfn_unlock(p2m, gfn, 0);
         domain_crash(d);
         return -ENOENT;
     }
@@ -925,11 +929,19 @@ static int set_typed_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn,
     P2M_DEBUG("set %d %lx %lx\n", gfn_p2mt, gfn, mfn_x(mfn));
     rc = p2m_set_entry(p2m, gfn, mfn, PAGE_ORDER_4K, gfn_p2mt,
                        access);
-    gfn_unlock(p2m, gfn, 0);
     if ( rc )
         gdprintk(XENLOG_ERR,
                  "p2m_set_entry failed! mfn=%08lx rc:%d\n",
                  mfn_x(get_gfn_query_unlocked(p2m->domain, gfn, &ot)), rc);
+    else if ( p2m_is_pod(ot) )
+    {
+        pod_lock(p2m);
+        p2m->pod.entry_count--;
+        BUG_ON(p2m->pod.entry_count < 0);
+        pod_unlock(p2m);
+    }
+    gfn_unlock(p2m, gfn, 0);
+
     return rc;
 }
 
@@ -971,7 +983,16 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn,
         ret = p2m_set_entry(p2m, gfn, _mfn(gfn), PAGE_ORDER_4K,
                             p2m_mmio_direct, p2ma);
     else if ( mfn_x(mfn) == gfn && p2mt == p2m_mmio_direct && a == p2ma )
+    {
         ret = 0;
+        /*
+         * PVH fixme: during Dom0 PVH construction, p2m entries are being set
+         * but iomem regions are not mapped with IOMMU. This makes sure that
+         * RMRRs are correctly mapped with IOMMU.
+         */
+        if ( is_hardware_domain(d) && !iommu_use_hap_pt(d) )
+            ret = iommu_map_page(d, gfn, gfn, IOMMUF_readable|IOMMUF_writable);
+    }
     else
     {
         if ( flag & XEN_DOMCTL_DEV_RDM_RELAXED )
@@ -1270,7 +1291,7 @@ void p2m_mem_paging_drop_page(struct domain *d, unsigned long gfn,
 }
 
 /**
- * p2m_mem_paging_populate - Tell pager to populete a paged page
+ * p2m_mem_paging_populate - Tell pager to populate a paged page
  * @d: guest domain
  * @gfn: guest page in paging state
  *
@@ -1591,11 +1612,10 @@ void p2m_mem_access_emulate_check(struct vcpu *v,
             }
         }
 
-        v->arch.vm_event.emulate_flags = violation ? rsp->flags : 0;
+        v->arch.vm_event->emulate_flags = violation ? rsp->flags : 0;
 
-        if ( (rsp->flags & VM_EVENT_FLAG_SET_EMUL_READ_DATA) &&
-             v->arch.vm_event.emul_read_data )
-            *v->arch.vm_event.emul_read_data = rsp->data.emul_read_data;
+        if ( (rsp->flags & VM_EVENT_FLAG_SET_EMUL_READ_DATA) )
+            v->arch.vm_event->emul_read_data = rsp->data.emul_read_data;
     }
 }
 
@@ -1678,34 +1698,35 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
     }
 
     /* The previous vm_event reply does not match the current state. */
-    if ( v->arch.vm_event.gpa != gpa || v->arch.vm_event.eip != eip )
+    if ( unlikely(v->arch.vm_event) &&
+         (v->arch.vm_event->gpa != gpa || v->arch.vm_event->eip != eip) )
     {
         /* Don't emulate the current instruction, send a new vm_event. */
-        v->arch.vm_event.emulate_flags = 0;
+        v->arch.vm_event->emulate_flags = 0;
 
         /*
          * Make sure to mark the current state to match it again against
          * the new vm_event about to be sent.
          */
-        v->arch.vm_event.gpa = gpa;
-        v->arch.vm_event.eip = eip;
+        v->arch.vm_event->gpa = gpa;
+        v->arch.vm_event->eip = eip;
     }
 
-    if ( v->arch.vm_event.emulate_flags )
+    if ( unlikely(v->arch.vm_event) && v->arch.vm_event->emulate_flags )
     {
         enum emul_kind kind = EMUL_KIND_NORMAL;
 
-        if ( v->arch.vm_event.emulate_flags &
+        if ( v->arch.vm_event->emulate_flags &
              VM_EVENT_FLAG_SET_EMUL_READ_DATA )
             kind = EMUL_KIND_SET_CONTEXT;
-        else if ( v->arch.vm_event.emulate_flags &
+        else if ( v->arch.vm_event->emulate_flags &
                   VM_EVENT_FLAG_EMULATE_NOWRITE )
             kind = EMUL_KIND_NOWRITE;
 
         hvm_mem_access_emulate_one(kind, TRAP_invalid_op,
                                    HVM_DELIVER_NO_ERROR_CODE);
 
-        v->arch.vm_event.emulate_flags = 0;
+        v->arch.vm_event->emulate_flags = 0;
         return 1;
     }
 
@@ -1890,7 +1911,7 @@ p2m_flush_table(struct p2m_domain *p2m)
 {
     struct page_info *top, *pg;
     struct domain *d = p2m->domain;
-    void *p;
+    mfn_t mfn;
 
     p2m_lock(p2m);
 
@@ -1911,15 +1932,14 @@ p2m_flush_table(struct p2m_domain *p2m)
     p2m->np2m_base = P2M_BASE_EADDR;
     
     /* Zap the top level of the trie */
-    top = mfn_to_page(pagetable_get_mfn(p2m_get_pagetable(p2m)));
-    p = __map_domain_page(top);
-    clear_page(p);
-    unmap_domain_page(p);
+    mfn = pagetable_get_mfn(p2m_get_pagetable(p2m));
+    clear_domain_page(mfn);
 
     /* Make sure nobody else is using this p2m table */
     nestedhvm_vmcx_flushtlb(p2m);
 
     /* Free the rest of the trie pages back to the paging pool */
+    top = mfn_to_page(mfn);
     while ( (pg = page_list_remove_head(&p2m->pages)) )
         if ( pg != top ) 
             d->arch.paging.free_page(d, pg);
@@ -2035,6 +2055,44 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
     }
 
     return hostmode->gva_to_gfn(v, hostp2m, va, pfec);
+}
+
+/*
+ * If the map is non-NULL, we leave this function having
+ * acquired an extra ref on mfn_to_page(*mfn).
+ */
+void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
+                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc)
+{
+    struct page_info *page;
+
+    /* Translate the gfn, unsharing if shared. */
+    page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), p2mt, NULL, q);
+    if ( p2m_is_paging(*p2mt) )
+    {
+        ASSERT(p2m_is_hostp2m(p2m));
+        if ( page )
+            put_page(page);
+        p2m_mem_paging_populate(p2m->domain, gfn_x(gfn));
+        *rc = _PAGE_PAGED;
+        return NULL;
+    }
+    if ( p2m_is_shared(*p2mt) )
+    {
+        if ( page )
+            put_page(page);
+        *rc = _PAGE_SHARED;
+        return NULL;
+    }
+    if ( !page )
+    {
+        *rc |= _PAGE_PRESENT;
+        return NULL;
+    }
+    *mfn = page_to_mfn(page);
+    ASSERT(mfn_valid(*mfn));
+
+    return map_domain_page(*mfn);
 }
 
 int map_mmio_regions(struct domain *d,

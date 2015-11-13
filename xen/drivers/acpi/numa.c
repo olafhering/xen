@@ -124,10 +124,11 @@ static int __init
 acpi_parse_x2apic_affinity(struct acpi_subtable_header *header,
 			   const unsigned long end)
 {
-	struct acpi_srat_x2apic_cpu_affinity *processor_affinity;
+	const struct acpi_srat_x2apic_cpu_affinity *processor_affinity
+		= container_of(header, struct acpi_srat_x2apic_cpu_affinity,
+			       header);
 
-	processor_affinity = (struct acpi_srat_x2apic_cpu_affinity *)header;
-	if (!processor_affinity)
+	if (!header)
 		return -EINVAL;
 
 	acpi_table_print_srat_entry(header);
@@ -139,13 +140,13 @@ acpi_parse_x2apic_affinity(struct acpi_subtable_header *header,
 }
 
 static int __init
-acpi_parse_processor_affinity(struct acpi_subtable_header * header,
+acpi_parse_processor_affinity(struct acpi_subtable_header *header,
 			      const unsigned long end)
 {
-	struct acpi_srat_cpu_affinity *processor_affinity
+	const struct acpi_srat_cpu_affinity *processor_affinity
 		= container_of(header, struct acpi_srat_cpu_affinity, header);
 
-	if (!processor_affinity)
+	if (!header)
 		return -EINVAL;
 
 	acpi_table_print_srat_entry(header);
@@ -157,13 +158,13 @@ acpi_parse_processor_affinity(struct acpi_subtable_header * header,
 }
 
 static int __init
-acpi_parse_memory_affinity(struct acpi_subtable_header * header,
+acpi_parse_memory_affinity(struct acpi_subtable_header *header,
 			   const unsigned long end)
 {
-	struct acpi_srat_mem_affinity *memory_affinity
+	const struct acpi_srat_mem_affinity *memory_affinity
 		= container_of(header, struct acpi_srat_mem_affinity, header);
 
-	if (!memory_affinity)
+	if (!header)
 		return -EINVAL;
 
 	acpi_table_print_srat_entry(header);
@@ -198,9 +199,9 @@ int __init acpi_numa_init(void)
 	/* SRAT: Static Resource Affinity Table */
 	if (!acpi_table_parse(ACPI_SIG_SRAT, acpi_parse_srat)) {
 		acpi_table_parse_srat(ACPI_SRAT_TYPE_X2APIC_CPU_AFFINITY,
-				      acpi_parse_x2apic_affinity, NR_CPUS);
+				      acpi_parse_x2apic_affinity, 0);
 		acpi_table_parse_srat(ACPI_SRAT_TYPE_CPU_AFFINITY,
-				      acpi_parse_processor_affinity, NR_CPUS);
+				      acpi_parse_processor_affinity, 0);
 		acpi_table_parse_srat(ACPI_SRAT_TYPE_MEMORY_AFFINITY,
 				      acpi_parse_memory_affinity,
 				      NR_NODE_MEMBLKS);

@@ -615,6 +615,9 @@ static void do_trap(struct cpu_user_regs *regs, int use_error_code)
     unsigned int trapnr = regs->entry_vector;
     unsigned long fixup;
 
+    if ( regs->error_code & X86_XEC_EXT )
+        goto hardware_trap;
+
     DEBUGGER_trap_entry(trapnr, regs);
 
     if ( guest_mode(regs) )
@@ -641,6 +644,7 @@ static void do_trap(struct cpu_user_regs *regs, int use_error_code)
         return;
     }
 
+ hardware_trap:
     DEBUGGER_trap_fatal(trapnr, regs);
 
     show_execution_state(regs);
@@ -935,10 +939,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
             goto unsupported;
         if ( regs->_ecx == 1 )
         {
-            a &= XSTATE_FEATURE_XSAVEOPT |
-                 XSTATE_FEATURE_XSAVEC |
-                 (cpu_has_xgetbv1 ? XSTATE_FEATURE_XGETBV1 : 0) |
-                 (cpu_has_xsaves ? XSTATE_FEATURE_XSAVES : 0);
+            a &= boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_XSAVEOPT)];
             if ( !cpu_has_xsaves )
                 b = c = d = 0;
         }
@@ -967,6 +968,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
         __clear_bit(X86_FEATURE_LWP % 32, &c);
         __clear_bit(X86_FEATURE_NODEID_MSR % 32, &c);
         __clear_bit(X86_FEATURE_TOPOEXT % 32, &c);
+        __clear_bit(X86_FEATURE_MWAITX % 32, &c);
         break;
 
     case 0x0000000a: /* Architectural Performance Monitor Features (Intel) */
@@ -1264,13 +1266,14 @@ static int handle_gdt_ldt_mapping_fault(
             tb = propagate_page_fault(curr->arch.pv_vcpu.ldt_base + offset,
                                       regs->error_code);
             if ( tb )
-                tb->error_code = ((u16)offset & ~3) | 4;
+                tb->error_code = (offset & ~(X86_XEC_EXT | X86_XEC_IDT)) |
+                                 X86_XEC_TI;
         }
     }
     else
     {
         /* GDT fault: handle the fault as #GP(selector). */
-        regs->error_code = (u16)offset & ~7;
+        regs->error_code = offset & ~(X86_XEC_EXT | X86_XEC_IDT | X86_XEC_TI);
         (void)do_general_protection(regs);
     }
 
@@ -1983,8 +1986,6 @@ static inline uint64_t guest_misc_enable(uint64_t val)
     }                                                                       \
     (eip) += sizeof(_x); _x; })
 
-#define read_sreg(regs, sr) read_segment_register(sr)
-
 static int is_cpufreq_controller(struct domain *d)
 {
     return ((cpufreq_controller == FREQCTL_dom0_kernel) &&
@@ -2031,7 +2032,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         goto fail;
 
     /* emulating only opcodes not allowing SS to be default */
-    data_sel = read_sreg(regs, ds);
+    data_sel = read_sreg(ds);
 
     /* Legacy prefixes. */
     for ( i = 0; i < 8; i++, rex == opcode || (rex = 0) )
@@ -2049,17 +2050,17 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
             data_sel = regs->cs;
             continue;
         case 0x3e: /* DS override */
-            data_sel = read_sreg(regs, ds);
+            data_sel = read_sreg(ds);
             continue;
         case 0x26: /* ES override */
-            data_sel = read_sreg(regs, es);
+            data_sel = read_sreg(es);
             continue;
         case 0x64: /* FS override */
-            data_sel = read_sreg(regs, fs);
+            data_sel = read_sreg(fs);
             lm_ovr = lm_seg_fs;
             continue;
         case 0x65: /* GS override */
-            data_sel = read_sreg(regs, gs);
+            data_sel = read_sreg(gs);
             lm_ovr = lm_seg_gs;
             continue;
         case 0x36: /* SS override */
@@ -2106,7 +2107,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
 
         if ( !(opcode & 2) )
         {
-            data_sel = read_sreg(regs, es);
+            data_sel = read_sreg(es);
             lm_ovr = lm_seg_none;
         }
 
@@ -2914,22 +2915,22 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
             ASSERT(opnd_sel);
             continue;
         case 0x3e: /* DS override */
-            opnd_sel = read_sreg(regs, ds);
+            opnd_sel = read_sreg(ds);
             if ( !opnd_sel )
                 opnd_sel = dpl;
             continue;
         case 0x26: /* ES override */
-            opnd_sel = read_sreg(regs, es);
+            opnd_sel = read_sreg(es);
             if ( !opnd_sel )
                 opnd_sel = dpl;
             continue;
         case 0x64: /* FS override */
-            opnd_sel = read_sreg(regs, fs);
+            opnd_sel = read_sreg(fs);
             if ( !opnd_sel )
                 opnd_sel = dpl;
             continue;
         case 0x65: /* GS override */
-            opnd_sel = read_sreg(regs, gs);
+            opnd_sel = read_sreg(gs);
             if ( !opnd_sel )
                 opnd_sel = dpl;
             continue;
@@ -2982,7 +2983,7 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
                             switch ( modrm & 7 )
                             {
                             default:
-                                opnd_sel = read_sreg(regs, ds);
+                                opnd_sel = read_sreg(ds);
                                 break;
                             case 4: case 5:
                                 opnd_sel = regs->ss;
@@ -3010,7 +3011,7 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
                             break;
                         }
                         if ( !opnd_sel )
-                            opnd_sel = read_sreg(regs, ds);
+                            opnd_sel = read_sreg(ds);
                         switch ( modrm & 7 )
                         {
                         case 0: case 2: case 4:
@@ -3225,7 +3226,7 @@ void do_general_protection(struct cpu_user_regs *regs)
 
     DEBUGGER_trap_entry(TRAP_gp_fault, regs);
 
-    if ( regs->error_code & 1 )
+    if ( regs->error_code & X86_XEC_EXT )
         goto hardware_gp;
 
     if ( !guest_mode(regs) )
@@ -3244,14 +3245,15 @@ void do_general_protection(struct cpu_user_regs *regs)
      * 
      * Instead, a GPF occurs with the faulting IDT vector in the error code.
      * Bit 1 is set to indicate that an IDT entry caused the fault. Bit 0 is 
-     * clear to indicate that it's a software fault, not hardware.
+     * clear (which got already checked above) to indicate that it's a software
+     * fault, not a hardware one.
      * 
      * NOTE: Vectors 3 and 4 are dealt with from their own handler. This is
      * okay because they can only be triggered by an explicit DPL-checked
      * instruction. The DPL specified by the guest OS for these vectors is NOT
      * CHECKED!!
      */
-    if ( (regs->error_code & 3) == 2 )
+    if ( regs->error_code & X86_XEC_IDT )
     {
         /* This fault must be due to <INT n> instruction. */
         const struct trap_info *ti;
@@ -3293,9 +3295,9 @@ void do_general_protection(struct cpu_user_regs *regs)
         return;
     }
 
+ hardware_gp:
     DEBUGGER_trap_fatal(TRAP_gp_fault, regs);
 
- hardware_gp:
     show_execution_state(regs);
     panic("GENERAL PROTECTION FAULT\n[error_code=%04x]", regs->error_code);
 }

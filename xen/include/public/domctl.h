@@ -208,6 +208,13 @@ struct xen_domctl_getpageframeinfo3 {
   */
 #define XEN_DOMCTL_SHADOW_ENABLE_EXTERNAL  (1 << 4)
 
+/* Mode flags for XEN_DOMCTL_SHADOW_OP_{CLEAN,PEEK}. */
+ /*
+  * This is the final iteration: Requesting to include pages mapped
+  * writably by the hypervisor in the dirty bitmap.
+  */
+#define XEN_DOMCTL_SHADOW_LOGDIRTY_FINAL   (1 << 0)
+
 struct xen_domctl_shadow_op_stats {
     uint32_t fault_count;
     uint32_t dirty_count;
@@ -219,8 +226,9 @@ struct xen_domctl_shadow_op {
     /* IN variables. */
     uint32_t       op;       /* XEN_DOMCTL_SHADOW_OP_* */
 
-    /* OP_ENABLE */
-    uint32_t       mode;     /* XEN_DOMCTL_SHADOW_ENABLE_* */
+    /* OP_ENABLE: XEN_DOMCTL_SHADOW_ENABLE_* */
+    /* OP_PEAK / OP_CLEAN: XEN_DOMCTL_SHADOW_LOGDIRTY_* */
+    uint32_t       mode;
 
     /* OP_GET_ALLOCATION / OP_SET_ALLOCATION */
     uint32_t       mb;       /* Shadow memory allocation in MB */
@@ -1007,6 +1015,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_psr_cmt_op_t);
 #define XEN_DOMCTL_MONITOR_OP_ENABLE            0
 #define XEN_DOMCTL_MONITOR_OP_DISABLE           1
 #define XEN_DOMCTL_MONITOR_OP_GET_CAPABILITIES  2
+#define XEN_DOMCTL_MONITOR_OP_EMULATE_EACH_REP  3
 
 #define XEN_DOMCTL_MONITOR_EVENT_WRITE_CTRLREG         0
 #define XEN_DOMCTL_MONITOR_EVENT_MOV_TO_MSR            1
@@ -1056,6 +1065,10 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_monitor_op_t);
 struct xen_domctl_psr_cat_op {
 #define XEN_DOMCTL_PSR_CAT_OP_SET_L3_CBM     0
 #define XEN_DOMCTL_PSR_CAT_OP_GET_L3_CBM     1
+#define XEN_DOMCTL_PSR_CAT_OP_SET_L3_CODE    2
+#define XEN_DOMCTL_PSR_CAT_OP_SET_L3_DATA    3
+#define XEN_DOMCTL_PSR_CAT_OP_GET_L3_CODE    4
+#define XEN_DOMCTL_PSR_CAT_OP_GET_L3_DATA    5
     uint32_t cmd;       /* IN: XEN_DOMCTL_PSR_CAT_OP_* */
     uint32_t target;    /* IN */
     uint64_t data;      /* IN/OUT */
@@ -1139,6 +1152,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_psr_cmt_op                    75
 #define XEN_DOMCTL_monitor_op                    77
 #define XEN_DOMCTL_psr_cat_op                    78
+#define XEN_DOMCTL_soft_reset                    79
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002

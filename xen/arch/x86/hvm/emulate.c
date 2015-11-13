@@ -22,6 +22,7 @@
 #include <asm/hvm/trace.h>
 #include <asm/hvm/support.h>
 #include <asm/hvm/svm/svm.h>
+#include <asm/vm_event.h>
 
 static void hvmtrace_io_assist(const ioreq_t *p)
 {
@@ -71,12 +72,12 @@ static int set_context_data(void *buffer, unsigned int size)
 {
     struct vcpu *curr = current;
 
-    if ( curr->arch.vm_event.emul_read_data )
+    if ( curr->arch.vm_event )
     {
         unsigned int safe_size =
-            min(size, curr->arch.vm_event.emul_read_data->size);
+            min(size, curr->arch.vm_event->emul_read_data.size);
 
-        memcpy(buffer, curr->arch.vm_event.emul_read_data->data, safe_size);
+        memcpy(buffer, curr->arch.vm_event->emul_read_data.data, safe_size);
         memset(buffer + safe_size, 0, size - safe_size);
         return X86EMUL_OKAY;
     }
@@ -446,7 +447,7 @@ static int hvmemul_linear_to_phys(
     }
     else if ( (pfn = paging_gva_to_gfn(curr, addr, &pfec)) == INVALID_GFN )
     {
-        if ( pfec == PFEC_page_paged || pfec == PFEC_page_shared )
+        if ( pfec & (PFEC_page_paged | PFEC_page_shared) )
             return X86EMUL_RETRY;
         hvm_inject_page_fault(pfec, addr);
         return X86EMUL_EXCEPTION;
@@ -463,7 +464,7 @@ static int hvmemul_linear_to_phys(
         /* Is it contiguous with the preceding PFNs? If not then we're done. */
         if ( (npfn == INVALID_GFN) || (npfn != (pfn + (reverse ? -i : i))) )
         {
-            if ( pfec == PFEC_page_paged || pfec == PFEC_page_shared )
+            if ( pfec & (PFEC_page_paged | PFEC_page_shared) )
                 return X86EMUL_RETRY;
             done /= bytes_per_rep;
             if ( done == 0 )
@@ -513,7 +514,7 @@ static int hvmemul_virtual_to_linear(
      * being triggered for repeated writes to a whole page.
      */
     *reps = min_t(unsigned long, *reps,
-                  unlikely(current->domain->arch.mem_access_emulate_enabled)
+                  unlikely(current->domain->arch.mem_access_emulate_each_rep)
                            ? 1 : 4096);
 
     reg = hvmemul_get_seg_reg(seg, hvmemul_ctxt);
@@ -1541,8 +1542,7 @@ static int hvmemul_get_fpu(
             return X86EMUL_UNHANDLEABLE;
         break;
     case X86EMUL_FPU_xmm:
-        if ( !cpu_has_xmm ||
-             (curr->arch.hvm_vcpu.guest_cr[0] & X86_CR0_EM) ||
+        if ( (curr->arch.hvm_vcpu.guest_cr[0] & X86_CR0_EM) ||
              !(curr->arch.hvm_vcpu.guest_cr[4] & X86_CR4_OSFXSR) )
             return X86EMUL_UNHANDLEABLE;
         break;

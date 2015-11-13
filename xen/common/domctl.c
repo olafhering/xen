@@ -170,7 +170,7 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
         vcpu_runstate_get(v, &runstate);
         cpu_time += runstate.time[RUNSTATE_running];
         info->max_vcpu_id = v->vcpu_id;
-        if ( !test_bit(_VPF_down, &v->pause_flags) )
+        if ( !(v->pause_flags & VPF_down) )
         {
             if ( !(v->pause_flags & VPF_blocked) )
                 flags &= ~XEN_DOMINF_blocked;
@@ -231,7 +231,7 @@ static unsigned int default_vcpu0_location(cpumask_t *online)
         rcu_read_lock(&domlist_read_lock);
         for_each_domain ( d )
             for_each_vcpu ( d, v )
-                if ( !test_bit(_VPF_down, &v->pause_flags)
+                if ( !(v->pause_flags & VPF_down)
                      && ((cpu = v->processor) < nr_cpus) )
                     cnt[cpu]++;
         rcu_read_unlock(&domlist_read_lock);
@@ -664,7 +664,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             goto maxvcpu_out;
 
         ret = -ENOMEM;
-        online = cpupool_online_cpumask(d->cpupool);
+        online = cpupool_domain_cpumask(d);
         if ( max > d->max_vcpus )
         {
             struct vcpu **vcpus;
@@ -703,6 +703,15 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         domain_unpause(d);
         break;
     }
+
+    case XEN_DOMCTL_soft_reset:
+        if ( d == current->domain )
+        {
+            ret = -EINVAL;
+            break;
+        }
+        ret = domain_soft_reset(d);
+        break;
 
     case XEN_DOMCTL_destroydomain:
         ret = domain_kill(d);
@@ -748,7 +757,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( op->cmd == XEN_DOMCTL_setvcpuaffinity )
         {
             cpumask_var_t new_affinity, old_affinity;
-            cpumask_t *online = cpupool_online_cpumask(v->domain->cpupool);;
+            cpumask_t *online = cpupool_domain_cpumask(v->domain);;
 
             /*
              * We want to be able to restore hard affinity if we are trying
@@ -935,8 +944,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
         vcpu_runstate_get(v, &runstate);
 
-        op->u.getvcpuinfo.online   = !test_bit(_VPF_down, &v->pause_flags);
-        op->u.getvcpuinfo.blocked  = test_bit(_VPF_blocked, &v->pause_flags);
+        op->u.getvcpuinfo.online   = !(v->pause_flags & VPF_down);
+        op->u.getvcpuinfo.blocked  = !!(v->pause_flags & VPF_blocked);
         op->u.getvcpuinfo.running  = v->is_running;
         op->u.getvcpuinfo.cpu_time = runstate.time[RUNSTATE_running];
         op->u.getvcpuinfo.cpu      = v->processor;
@@ -1049,7 +1058,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
         if ( add )
         {
-            printk(XENLOG_G_INFO
+            printk(XENLOG_G_DEBUG
                    "memory_map:add: dom%d gfn=%lx mfn=%lx nr=%lx\n",
                    d->domain_id, gfn, mfn, nr_mfns);
 
@@ -1061,7 +1070,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         }
         else
         {
-            printk(XENLOG_G_INFO
+            printk(XENLOG_G_DEBUG
                    "memory_map:remove: dom%d gfn=%lx mfn=%lx nr=%lx\n",
                    d->domain_id, gfn, mfn, nr_mfns);
 

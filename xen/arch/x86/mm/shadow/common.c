@@ -84,7 +84,9 @@ void shadow_vcpu_init(struct vcpu *v)
     }
 #endif
 
-    v->arch.paging.mode = &SHADOW_INTERNAL_NAME(sh_paging_mode, 3);
+    v->arch.paging.mode = is_pv_vcpu(v) ?
+                          &SHADOW_INTERNAL_NAME(sh_paging_mode, 4) :
+                          &SHADOW_INTERNAL_NAME(sh_paging_mode, 3);
 }
 
 #if SHADOW_AUDIT
@@ -97,14 +99,9 @@ static void shadow_audit_key(unsigned char key)
            __func__, shadow_audit_enable);
 }
 
-static struct keyhandler shadow_audit_keyhandler = {
-    .u.fn = shadow_audit_key,
-    .desc = "toggle shadow audits"
-};
-
 static int __init shadow_audit_key_init(void)
 {
-    register_keyhandler('O', &shadow_audit_keyhandler);
+    register_keyhandler('O', shadow_audit_key, "toggle shadow audits", 0);
     return 0;
 }
 __initcall(shadow_audit_key_init);
@@ -1133,38 +1130,6 @@ sh_validate_guest_pt_write(struct vcpu *v, mfn_t gmfn,
     }
 }
 
-int shadow_write_guest_entry(struct vcpu *v, intpte_t *p,
-                             intpte_t new, mfn_t gmfn)
-/* Write a new value into the guest pagetable, and update the shadows
- * appropriately.  Returns 0 if we page-faulted, 1 for success. */
-{
-    int failed;
-    paging_lock(v->domain);
-    failed = __copy_to_user(p, &new, sizeof(new));
-    if ( failed != sizeof(new) )
-        sh_validate_guest_entry(v, gmfn, p, sizeof(new));
-    paging_unlock(v->domain);
-    return (failed == 0);
-}
-
-int shadow_cmpxchg_guest_entry(struct vcpu *v, intpte_t *p,
-                               intpte_t *old, intpte_t new, mfn_t gmfn)
-/* Cmpxchg a new value into the guest pagetable, and update the shadows
- * appropriately. Returns 0 if we page-faulted, 1 if not.
- * N.B. caller should check the value of "old" to see if the
- * cmpxchg itself was successful. */
-{
-    int failed;
-    intpte_t t = *old;
-    paging_lock(v->domain);
-    failed = cmpxchg_user(p, t, new);
-    if ( t == *old )
-        sh_validate_guest_entry(v, gmfn, p, sizeof(new));
-    *old = t;
-    paging_unlock(v->domain);
-    return (failed == 0);
-}
-
 
 /**************************************************************************/
 /* Memory management for shadow pages. */
@@ -1409,15 +1374,10 @@ static void shadow_blow_all_tables(unsigned char c)
     rcu_read_unlock(&domlist_read_lock);
 }
 
-static struct keyhandler shadow_blow_all_tables_keyhandler = {
-    .u.fn = shadow_blow_all_tables,
-    .desc = "reset shadow pagetables"
-};
-
 /* Register this function in the Xen console keypress table */
 static __init int shadow_blow_tables_keyhandler_init(void)
 {
-    register_keyhandler('S', &shadow_blow_all_tables_keyhandler);
+    register_keyhandler('S', shadow_blow_all_tables, "reset shadow pagetables", 1);
     return 0;
 }
 __initcall(shadow_blow_tables_keyhandler_init);
@@ -1447,8 +1407,7 @@ mfn_t shadow_alloc(struct domain *d,
     unsigned int pages = shadow_size(shadow_type);
     struct page_list_head tmp_list;
     cpumask_t mask;
-    void *p;
-    int i;
+    unsigned int i;
 
     ASSERT(paging_locked_by_me(d));
     ASSERT(shadow_type != SH_type_none);
@@ -1494,10 +1453,7 @@ mfn_t shadow_alloc(struct domain *d,
             flush_tlb_mask(&mask);
         }
         /* Now safe to clear the page for reuse */
-        p = __map_domain_page(sp);
-        ASSERT(p != NULL);
-        clear_page(p);
-        unmap_domain_page(p);
+        clear_domain_page(page_to_mfn(sp));
         INIT_PAGE_LIST_ENTRY(&sp->list);
         page_list_add(sp, &tmp_list);
         sp->u.sh.type = shadow_type;
@@ -1590,7 +1546,7 @@ shadow_alloc_p2m_page(struct domain *d)
         if ( !d->arch.paging.p2m_alloc_failed )
         {
             d->arch.paging.p2m_alloc_failed = 1;
-            dprintk(XENLOG_ERR, "d%i failed to allocate from shadow pool",
+            dprintk(XENLOG_ERR, "d%i failed to allocate from shadow pool\n",
                     d->domain_id);
         }
         paging_unlock(d);
@@ -2796,14 +2752,7 @@ static void sh_update_paging_modes(struct vcpu *v)
     if ( v->arch.paging.mode )
         v->arch.paging.mode->shadow.detach_old_tables(v);
 
-    if ( is_pv_domain(d) )
-    {
-        ///
-        /// PV guest
-        ///
-        v->arch.paging.mode = &SHADOW_INTERNAL_NAME(sh_paging_mode, 4);
-    }
-    else
+    if ( !is_pv_domain(d) )
     {
         ///
         /// HVM guest

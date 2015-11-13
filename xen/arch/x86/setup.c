@@ -200,7 +200,7 @@ void __devinit srat_detect_node(int cpu)
     nodeid_t node;
     u32 apicid = x86_cpu_to_apicid[cpu];
 
-    node = apicid_to_node[apicid];
+    node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;
     if ( node == NUMA_NO_NODE )
         node = 0;
 
@@ -481,6 +481,7 @@ static void __init parse_video_info(void)
 
 static void __init kexec_reserve_area(struct e820map *e820)
 {
+#ifdef CONFIG_KEXEC
     unsigned long kdump_start = kexec_crash_area.start;
     unsigned long kdump_size  = kexec_crash_area.size;
     static bool_t __initdata is_reserved = 0;
@@ -503,6 +504,7 @@ static void __init kexec_reserve_area(struct e820map *e820)
         printk("Kdump: %luMB (%lukB) at %#lx\n",
                kdump_size >> 20, kdump_size >> 10, kdump_start);
     }
+#endif
 }
 
 static void noinline init_done(void)
@@ -580,6 +582,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         .parity    = 'n',
         .stop_bits = 1
     };
+    struct xen_arch_domainconfig config = { .emulation_flags = 0 };
 
     /* Critical region without IDT or TSS.  Any fault is deadly! */
 
@@ -623,8 +626,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     parse_video_info();
 
-    if ( cpu_has_efer )
-        rdmsrl(MSR_EFER, this_cpu(efer));
+    rdmsrl(MSR_EFER, this_cpu(efer));
     asm volatile ( "mov %%cr4,%0" : "=r" (this_cpu(cr4)) );
 
     /* We initialise the serial devices very early so we can get debugging. */
@@ -973,6 +975,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             }
         }
 
+#ifdef CONFIG_KEXEC
         /* Don't overlap with modules. */
         e = consider_modules(s, e, PAGE_ALIGN(kexec_crash_area.size),
                              mod, mbi->mods_count, -1);
@@ -981,6 +984,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             e = (e - kexec_crash_area.size) & PAGE_MASK;
             kexec_crash_area.start = e;
         }
+#endif
     }
 
     if ( modules_headroom && !mod->reserved )
@@ -1125,6 +1129,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                          PFN_UP(mod[i].mod_end), PAGE_HYPERVISOR);
     }
 
+#ifdef CONFIG_KEXEC
     if ( kexec_crash_area.size )
     {
         unsigned long s = PFN_DOWN(kexec_crash_area.start);
@@ -1135,6 +1140,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             map_pages_to_xen((unsigned long)__va(kexec_crash_area.start),
                              s, e - s, PAGE_HYPERVISOR);
     }
+#endif
 
     xen_virt_end = ((unsigned long)_end + (1UL << L2_PAGETABLE_SHIFT) - 1) &
                    ~((1UL << L2_PAGETABLE_SHIFT) - 1);
@@ -1289,10 +1295,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     identify_cpu(&boot_cpu_data);
 
-    if ( cpu_has_fxsr )
-        set_in_cr4(X86_CR4_OSFXSR);
-    if ( cpu_has_xmm )
-        set_in_cr4(X86_CR4_OSXMMEXCPT);
+    set_in_cr4(X86_CR4_OSFXSR | X86_CR4_OSXMMEXCPT);
 
     if ( disable_smep )
         setup_clear_cpu_cap(X86_FEATURE_SMEP);
@@ -1388,7 +1391,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
      * x86 doesn't support arch-configuration. So it's fine to pass
      * NULL.
      */
-    dom0 = domain_create(0, domcr_flags, 0, NULL);
+    dom0 = domain_create(0, domcr_flags, 0, &config);
     if ( IS_ERR(dom0) || (alloc_dom0_vcpu0(dom0) == NULL) )
         panic("Error creating domain 0");
 

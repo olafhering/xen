@@ -27,22 +27,14 @@ int vm_event_init_domain(struct domain *d)
 {
     struct vcpu *v;
 
-    if ( !d->arch.event_write_data )
-        d->arch.event_write_data =
-            vzalloc(sizeof(struct monitor_write_data) * d->max_vcpus);
-
-    if ( !d->arch.event_write_data )
-        return -ENOMEM;
-
     for_each_vcpu ( d, v )
     {
-        if ( v->arch.vm_event.emul_read_data )
+        if ( v->arch.vm_event )
             continue;
 
-        v->arch.vm_event.emul_read_data =
-            xzalloc(struct vm_event_emul_read_data);
+        v->arch.vm_event = xzalloc(struct arch_vm_event);
 
-        if ( !v->arch.vm_event.emul_read_data )
+        if ( !v->arch.vm_event )
             return -ENOMEM;
     }
 
@@ -57,14 +49,13 @@ void vm_event_cleanup_domain(struct domain *d)
 {
     struct vcpu *v;
 
-    vfree(d->arch.event_write_data);
-    d->arch.event_write_data = NULL;
-
     for_each_vcpu ( d, v )
     {
-        xfree(v->arch.vm_event.emul_read_data);
-        v->arch.vm_event.emul_read_data = NULL;
+        xfree(v->arch.vm_event);
+        v->arch.vm_event = NULL;
     }
+
+    d->arch.mem_access_emulate_each_rep = 0;
 }
 
 void vm_event_toggle_singlestep(struct domain *d, struct vcpu *v)
@@ -79,10 +70,9 @@ void vm_event_register_write_resume(struct vcpu *v, vm_event_response_t *rsp)
 {
     if ( rsp->flags & VM_EVENT_FLAG_DENY )
     {
-        struct monitor_write_data *w =
-            &v->domain->arch.event_write_data[v->vcpu_id];
+        struct monitor_write_data *w = &v->arch.vm_event->write_data;
 
-        ASSERT(v->domain->arch.event_write_data != NULL);
+        ASSERT(w);
 
         switch ( rsp->reason )
         {
@@ -105,6 +95,30 @@ void vm_event_register_write_resume(struct vcpu *v, vm_event_response_t *rsp)
             break;
         }
     }
+}
+
+void vm_event_set_registers(struct vcpu *v, vm_event_response_t *rsp)
+{
+    v->arch.user_regs.eax = rsp->data.regs.x86.rax;
+    v->arch.user_regs.ebx = rsp->data.regs.x86.rbx;
+    v->arch.user_regs.ecx = rsp->data.regs.x86.rcx;
+    v->arch.user_regs.edx = rsp->data.regs.x86.rdx;
+    v->arch.user_regs.esp = rsp->data.regs.x86.rsp;
+    v->arch.user_regs.ebp = rsp->data.regs.x86.rbp;
+    v->arch.user_regs.esi = rsp->data.regs.x86.rsi;
+    v->arch.user_regs.edi = rsp->data.regs.x86.rdi;
+
+    v->arch.user_regs.r8 = rsp->data.regs.x86.r8;
+    v->arch.user_regs.r9 = rsp->data.regs.x86.r9;
+    v->arch.user_regs.r10 = rsp->data.regs.x86.r10;
+    v->arch.user_regs.r11 = rsp->data.regs.x86.r11;
+    v->arch.user_regs.r12 = rsp->data.regs.x86.r12;
+    v->arch.user_regs.r13 = rsp->data.regs.x86.r13;
+    v->arch.user_regs.r14 = rsp->data.regs.x86.r14;
+    v->arch.user_regs.r15 = rsp->data.regs.x86.r15;
+
+    v->arch.user_regs.eflags = rsp->data.regs.x86.rflags;
+    v->arch.user_regs.eip = rsp->data.regs.x86.rip;
 }
 
 /*

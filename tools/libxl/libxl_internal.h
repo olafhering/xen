@@ -90,6 +90,7 @@
 /* QEMU may be slow to load and start due to a bug in Linux where the I/O
  * subsystem sometime produce high latency under load. */
 #define LIBXL_DEVICE_MODEL_START_TIMEOUT 60
+#define LIBXL_DEVICE_MODEL_SAVE_FILE "/var/lib/xen/qemu-save" /* .$domid */
 #define LIBXL_DEVICE_MODEL_RESTORE_FILE "/var/lib/xen/qemu-resume" /* .$domid */
 #define LIBXL_STUBDOM_START_TIMEOUT 30
 #define LIBXL_QEMU_BODGE_TIMEOUT 2
@@ -110,6 +111,7 @@
 #define STUBDOM_SPECIAL_CONSOLES 3
 #define TAP_DEVICE_SUFFIX "-emu"
 #define DOMID_XS_PATH "domid"
+#define INVALID_DOMID ~0
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
@@ -630,6 +632,17 @@ _hidden int libxl__pipe_nonblock(libxl_ctx *ctx, int fds[2]);
  * `not open'.  Ignores any errors.  Sets fds[] to -1. */
 _hidden void libxl__pipe_close(int fds[2]);
 
+/* Change the flags for the file description associated with fd to
+ *    (flags & mask) | val.
+ * If r_oldflags != NULL then sets *r_oldflags to the original set of
+ * flags.
+ */
+_hidden int libxl__fd_flags_modify_save(libxl__gc *gc, int fd,
+                                        int mask, int val, int *r_oldflags);
+/* Restores the flags for the file description associated with fd to
+ * to the previous value (returned by libxl__fd_flags_modify_save)
+ */
+_hidden int libxl__fd_flags_restore(libxl__gc *gc, int fd, int old_flags);
 
 /* Each of these logs errors and returns a libxl error code.
  * They do not mind if path is already removed.
@@ -1331,6 +1344,8 @@ _hidden int libxl__device_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pc
 _hidden int libxl__create_pci_backend(libxl__gc *gc, uint32_t domid,
                                       libxl_device_pci *pcidev, int num);
 _hidden int libxl__device_pci_destroy_all(libxl__gc *gc, uint32_t domid);
+_hidden bool libxl__is_igd_vga_passthru(libxl__gc *gc,
+                                        const libxl_domain_config *d_config);
 
 /* from libxl_dtdev */
 
@@ -1594,7 +1609,7 @@ _hidden int libxl__need_xenpv_qemu(libxl__gc *gc,
 _hidden int libxl__domain_device_construct_rdm(libxl__gc *gc,
                                    libxl_domain_config *d_config,
                                    uint64_t rdm_mem_guard,
-                                   struct xc_hvm_build_args *args);
+                                   struct xc_dom_image *dom);
 
 /*
  * This function will cause the whole libxl process to hang
@@ -1622,6 +1637,7 @@ _hidden const libxl_vnc_info *libxl__dm_vnc(const libxl_domain_config *g_cfg);
 _hidden char *libxl__abs_path(libxl__gc *gc, const char *s, const char *path);
 
 #define LIBXL__LOG_DEBUG   XTL_DEBUG
+#define LIBXL__LOG_VERBOSE XTL_VERBOSE
 #define LIBXL__LOG_INFO    XTL_INFO
 #define LIBXL__LOG_WARNING XTL_WARN
 #define LIBXL__LOG_ERROR   XTL_ERROR
@@ -3053,6 +3069,7 @@ struct libxl__domain_suspend_state {
 
     uint32_t domid;
     int fd;
+    int fdfl; /* original flags on fd */
     libxl_domain_type type;
     int live;
     int debug;
@@ -3217,6 +3234,7 @@ struct libxl__destroy_domid_state {
     /* private to implementation */
     libxl__devices_remove_state drs;
     libxl__ev_child destroyer;
+    bool soft_reset;
 };
 
 struct libxl__domain_destroy_state {
@@ -3231,6 +3249,7 @@ struct libxl__domain_destroy_state {
     int stubdom_finished;
     libxl__destroy_domid_state domain;
     int domain_finished;
+    bool soft_reset;
 };
 
 /*
@@ -3398,7 +3417,9 @@ struct libxl__domain_create_state {
     libxl_domain_config *guest_config;
     libxl_domain_config guest_config_saved; /* vanilla config */
     int restore_fd, libxc_fd;
+    int restore_fdfl; /* original flags of restore_fd */
     libxl_domain_restore_params restore_params;
+    uint32_t domid_soft_reset;
     libxl__domain_create_cb *callback;
     libxl_asyncprogress_how aop_console_how;
     /* private to domain_create */
@@ -3760,7 +3781,7 @@ int libxl__vnuma_build_vmemrange_hvm(libxl__gc *gc,
                                      uint32_t domid,
                                      libxl_domain_build_info *b_info,
                                      libxl__domain_build_state *state,
-                                     struct xc_hvm_build_args *args);
+                                     struct xc_dom_image *dom);
 bool libxl__vnuma_configured(const libxl_domain_build_info *b_info);
 
 _hidden int libxl__ms_vm_genid_set(libxl__gc *gc, uint32_t domid,

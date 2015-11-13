@@ -49,9 +49,10 @@ for inclusion in xen-unstable.
 Please see http://wiki.xen.org/wiki/Xen_Maintenance_Releases for more
 information.
 
-Remember to copy the appropriate stable branch maintainer who will be
-listed in this section of the MAINTAINERS file in the appropriate
-branch.
+Backport requests should be made on the xen-devel@lists.xenproject.org
+list. Remember to copy the appropriate stable branch maintainer who
+will be listed in this section of the MAINTAINERS file in the
+appropriate branch.
 
 	Unstable Subsystem Maintainers
 	==============================
@@ -144,6 +145,7 @@ F:	xen/arch/arm/gic-hip04.c
 
 CPU POOLS
 M:	Juergen Gross <jgross@suse.com>
+M:	Dario Faggioli <dario.faggioli@citrix.com>
 S:	Supported
 F:	xen/common/cpupool.c
 
@@ -198,11 +200,10 @@ F:	xen/drivers/passthrough/vtd/
 
 INTEL(R) VT FOR X86 (VT-X)
 M:	Jun Nakajima <jun.nakajima@intel.com>
-M:	Eddie Dong <eddie.dong@intel.com>
 M:	Kevin Tian <kevin.tian@intel.com>
 S:	Supported
 F:	xen/arch/x86/hvm/vmx/
-F:	xen/arch/x86/mm/hap/p2m-ept.c
+F:	xen/arch/x86/mm/p2m-ept.c
 F:	xen/include/asm-x86/hvm/vmx/
 
 IOMMU VENDOR INDEPENDENT CODE
@@ -287,6 +288,7 @@ F:	xen/common/sched_rt.c
 
 SCHEDULING
 M:	George Dunlap <george.dunlap@eu.citrix.com>
+M:	Dario Faggioli <dario.faggioli@citrix.com>
 S:	Supported
 F:	xen/common/sched*
 
@@ -344,6 +346,7 @@ F:	drivers/xen/usb*/
 
 VTPM
 M:	Daniel De Graaf <dgdegra@tycho.nsa.gov>
+M:	Quan Xu <quan.xu@intel.com>
 S:	Supported
 F:	extras/mini-os/tpm*
 F:	extras/mini-os/include/tpm*
@@ -367,10 +370,14 @@ M:	George Dunlap <george.dunlap@eu.citrix.com>
 S:	Supported
 F:	xen/arch/x86/mm/
 
-X86 MEMORY SHARING AND PAGING
+X86 MEMORY PAGING
 S:	Orphaned
-F:	xen/arch/x86/mm/mem_sharing.c
 F:	xen/arch/x86/mm/mem_paging.c
+
+X86 MEMORY SHARING
+M:	Tamas K Lengyel <tamas@tklengyel.com>
+S:	Odd Fixes
+F:	xen/arch/x86/mm/mem_sharing.c
 F:	tools/memshr
 
 X86 SHADOW PAGETABLES

@@ -1224,16 +1224,10 @@ static void vmx_update_host_cr3(struct vcpu *v)
 
 void vmx_update_debug_state(struct vcpu *v)
 {
-    unsigned long mask;
-
-    mask = 1u << TRAP_int3;
-    if ( !cpu_has_monitor_trap_flag )
-        mask |= 1u << TRAP_debug;
-
     if ( v->arch.hvm_vcpu.debug_state_latch )
-        v->arch.hvm_vmx.exception_bitmap |= mask;
+        v->arch.hvm_vmx.exception_bitmap |= 1U << TRAP_int3;
     else
-        v->arch.hvm_vmx.exception_bitmap &= ~mask;
+        v->arch.hvm_vmx.exception_bitmap &= ~(1U << TRAP_int3);
 
     vmx_vmcs_enter(v);
     vmx_update_exception_bitmap(v);
@@ -1886,6 +1880,24 @@ static bool_t vmx_vcpu_emulate_ve(struct vcpu *v)
     return rc;
 }
 
+static int vmx_set_mode(struct vcpu *v, int mode)
+{
+    unsigned long attr;
+
+    if ( !is_pvh_vcpu(v) )
+        return 0;
+
+    ASSERT((mode == 4) || (mode == 8));
+
+    attr = (mode == 4) ? 0xc09b : 0xa09b;
+
+    vmx_vmcs_enter(v);
+    __vmwrite(GUEST_CS_AR_BYTES, attr);
+    vmx_vmcs_exit(v);
+
+    return 0;
+}
+
 static struct hvm_function_table __initdata vmx_function_table = {
     .name                 = "VMX",
     .cpu_up_prepare       = vmx_cpu_up_prepare,
@@ -1945,6 +1957,7 @@ static struct hvm_function_table __initdata vmx_function_table = {
     .hypervisor_cpuid_leaf = vmx_hypervisor_cpuid_leaf,
     .enable_msr_exit_interception = vmx_enable_msr_exit_interception,
     .is_singlestep_supported = vmx_is_singlestep_supported,
+    .set_mode = vmx_set_mode,
     .altp2m_vcpu_update_p2m = vmx_vcpu_update_eptp,
     .altp2m_vcpu_update_vmfunc_ve = vmx_vcpu_update_vmfunc_ve,
     .altp2m_vcpu_emulate_ve = vmx_vcpu_emulate_ve,
@@ -2736,43 +2749,6 @@ void vmx_enter_realmode(struct cpu_user_regs *regs)
     regs->eflags |= (X86_EFLAGS_VM | X86_EFLAGS_IOPL);
 }
 
-static void vmx_vmexit_ud_intercept(struct cpu_user_regs *regs)
-{
-    struct hvm_emulate_ctxt ctxt;
-    int rc;
-
-    if ( opt_hvm_fep )
-    {
-        char sig[5]; /* ud2; .ascii "xen" */
-
-        if ( (hvm_fetch_from_guest_virt_nofault(
-                  sig, regs->eip, sizeof(sig), 0) == HVMCOPY_okay) &&
-             (memcmp(sig, "\xf\xbxen", sizeof(sig)) == 0) )
-        {
-            regs->eip += sizeof(sig);
-            regs->eflags &= ~X86_EFLAGS_RF;
-        }
-    }
-
-    hvm_emulate_prepare(&ctxt, regs);
-
-    rc = hvm_emulate_one(&ctxt);
-
-    switch ( rc )
-    {
-    case X86EMUL_UNHANDLEABLE:
-        hvm_inject_hw_exception(TRAP_invalid_op, HVM_DELIVER_NO_ERROR_CODE);
-        break;
-    case X86EMUL_EXCEPTION:
-        if ( ctxt.exn_pending )
-            hvm_inject_trap(&ctxt.trap);
-        /* fall through */
-    default:
-        hvm_emulate_writeback(&ctxt);
-        break;
-    }
-}
-
 static int vmx_handle_eoi_write(void)
 {
     unsigned long exit_qualification;
@@ -3041,9 +3017,10 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
             __vmread(EXIT_QUALIFICATION, &exit_qualification);
             HVMTRACE_1D(TRAP_DEBUG, exit_qualification);
             write_debugreg(6, exit_qualification | DR_STATUS_RESERVED_ONE);
-            if ( !v->domain->debugger_attached || cpu_has_monitor_trap_flag )
-                goto exit_and_crash;
-            domain_pause_for_debugger();
+            if ( !v->domain->debugger_attached )
+                hvm_inject_hw_exception(vector, HVM_DELIVER_NO_ERROR_CODE);
+            else
+                domain_pause_for_debugger();
             break;
         case TRAP_int3: 
         {
@@ -3108,6 +3085,11 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
 
             hvm_inject_page_fault(regs->error_code, exit_qualification);
             break;
+        case TRAP_alignment_check:
+            HVMTRACE_1D(TRAP, vector);
+            __vmread(VM_EXIT_INTR_ERROR_CODE, &ecode);
+            hvm_inject_hw_exception(vector, ecode);
+            break;
         case TRAP_nmi:
             if ( MASK_EXTR(intr_info, INTR_INFO_INTR_TYPE_MASK) !=
                  X86_EVENTTYPE_NMI )
@@ -3121,7 +3103,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
             break;
         case TRAP_invalid_op:
             HVMTRACE_1D(TRAP, vector);
-            vmx_vmexit_ud_intercept(regs);
+            hvm_ud_intercept(regs);
             break;
         default:
             HVMTRACE_1D(TRAP, vector);

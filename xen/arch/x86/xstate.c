@@ -14,11 +14,6 @@
 #include <asm/xstate.h>
 #include <asm/asm_defns.h>
 
-static bool_t __read_mostly cpu_has_xsaveopt;
-static bool_t __read_mostly cpu_has_xsavec;
-bool_t __read_mostly cpu_has_xgetbv1;
-bool_t __read_mostly cpu_has_xsaves;
-
 /*
  * Maximum size (in byte) of the XSAVE/XRSTOR save area required by all
  * the supported and enabled features on the processor, including the
@@ -63,6 +58,25 @@ bool_t set_xcr0(u64 xfeatures)
 uint64_t get_xcr0(void)
 {
     return this_cpu(xcr0);
+}
+
+/* Cached xss for fast read */
+static DEFINE_PER_CPU(uint64_t, xss);
+
+void set_msr_xss(u64 xss)
+{
+    u64 *this_xss = &this_cpu(xss);
+
+    if ( *this_xss != xss )
+    {
+        wrmsrl(MSR_IA32_XSS, xss);
+        *this_xss = xss;
+    }
+}
+
+uint64_t get_msr_xss(void)
+{
+    return this_cpu(xss);
 }
 
 void xsave(struct vcpu *v, uint64_t mask)
@@ -281,8 +295,9 @@ unsigned int xstate_ctxt_size(u64 xcr0)
 }
 
 /* Collect the information of processor's extended state */
-void xstate_init(bool_t bsp)
+void xstate_init(struct cpuinfo_x86 *c)
 {
+    bool_t bsp = c == &boot_cpu_data;
     u32 eax, ebx, ecx, edx;
     u64 feature_mask;
 
@@ -325,20 +340,14 @@ void xstate_init(bool_t bsp)
 
     /* Check extended XSAVE features. */
     cpuid_count(XSTATE_CPUID, 1, &eax, &ebx, &ecx, &edx);
-    if ( bsp )
-    {
-        cpu_has_xsaveopt = !!(eax & XSTATE_FEATURE_XSAVEOPT);
-        cpu_has_xsavec = !!(eax & XSTATE_FEATURE_XSAVEC);
-        /* XXX cpu_has_xgetbv1 = !!(eax & XSTATE_FEATURE_XGETBV1); */
-        /* XXX cpu_has_xsaves = !!(eax & XSTATE_FEATURE_XSAVES); */
-    }
-    else
-    {
-        BUG_ON(!cpu_has_xsaveopt != !(eax & XSTATE_FEATURE_XSAVEOPT));
-        BUG_ON(!cpu_has_xsavec != !(eax & XSTATE_FEATURE_XSAVEC));
-        /* XXX BUG_ON(!cpu_has_xgetbv1 != !(eax & XSTATE_FEATURE_XGETBV1)); */
-        /* XXX BUG_ON(!cpu_has_xsaves != !(eax & XSTATE_FEATURE_XSAVES)); */
-    }
+
+    /* Mask out features not currently understood by Xen. */
+    eax &= (cpufeat_mask(X86_FEATURE_XSAVEOPT) |
+            cpufeat_mask(X86_FEATURE_XSAVEC));
+
+    c->x86_capability[cpufeat_word(X86_FEATURE_XSAVEOPT)] = eax;
+
+    BUG_ON(eax != boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_XSAVEOPT)]);
 }
 
 static bool_t valid_xcr0(u64 xcr0)

@@ -639,8 +639,8 @@ static int __init gicv3_populate_rdist(void)
     {
         void __iomem *ptr = gicv3.rdist_regions[i].map_base;
 
-        reg = readl_relaxed(ptr + GICR_PIDR2) & GICR_PIDR2_ARCH_REV_MASK;
-        if ( (reg >> GICR_PIDR2_ARCH_REV_SHIFT) != GICR_PIDR2_ARCH_GICV3 )
+        reg = readl_relaxed(ptr + GICR_PIDR2) & GIC_PIDR2_ARCH_MASK;
+        if ( reg != GIC_PIDR2_ARCH_GICv3 && reg != GIC_PIDR2_ARCH_GICv4 )
         {
             dprintk(XENLOG_ERR,
                     "GICv3: No redistributor present @%"PRIpaddr"\n",
@@ -1054,10 +1054,9 @@ static void gicv3_irq_set_affinity(struct irq_desc *desc, const cpumask_t *mask)
 }
 
 static int gicv3_make_hwdom_dt_node(const struct domain *d,
-                                    const struct dt_device_node *node,
+                                    const struct dt_device_node *gic,
                                     void *fdt)
 {
-    const struct dt_device_node *gic = dt_interrupt_controller;
     const void *compatible = NULL;
     uint32_t len;
     __be32 *new_cells, *tmp;
@@ -1084,7 +1083,7 @@ static int gicv3_make_hwdom_dt_node(const struct domain *d,
     if ( res )
         return res;
 
-    len = dt_cells_to_size(dt_n_addr_cells(node) + dt_n_size_cells(node));
+    len = dt_cells_to_size(dt_n_addr_cells(gic) + dt_n_size_cells(gic));
     /*
      * GIC has two memory regions: Distributor + rdist regions
      * CPU interface and virtual cpu interfaces accessesed as System registers
@@ -1097,10 +1096,10 @@ static int gicv3_make_hwdom_dt_node(const struct domain *d,
 
     tmp = new_cells;
 
-    dt_set_range(&tmp, node, d->arch.vgic.dbase, SZ_64K);
+    dt_set_range(&tmp, gic, d->arch.vgic.dbase, SZ_64K);
 
     for ( i = 0; i < d->arch.vgic.nr_regions; i++ )
-        dt_set_range(&tmp, node, d->arch.vgic.rdist_regions[i].base,
+        dt_set_range(&tmp, gic, d->arch.vgic.rdist_regions[i].base,
                      d->arch.vgic.rdist_regions[i].size);
 
     res = fdt_property(fdt, "reg", new_cells, len);
@@ -1144,26 +1143,41 @@ static void __init gicv3_init_v2(const struct dt_device_node *node,
                                  paddr_t dbase)
 {
     int res;
-    paddr_t cbase, vbase;
+    paddr_t cbase, csize;
+    paddr_t vbase, vsize;
 
     /*
      * For GICv3 supporting GICv2, GICC and GICV base address will be
      * provided.
      */
     res = dt_device_get_address(node, 1 + gicv3.rdist_count,
-                                &cbase, NULL);
+                                &cbase, &csize);
     if ( res )
         return;
 
     res = dt_device_get_address(node, 1 + gicv3.rdist_count + 2,
-                                &vbase, NULL);
+                                &vbase, &vsize);
     if ( res )
         return;
+
+    /*
+     * We emulate a vGICv2 using a GIC CPU interface of GUEST_GICC_SIZE.
+     * So only support GICv2 on GICv3 when the virtual CPU interface is
+     * at least GUEST_GICC_SIZE.
+     */
+    if ( vsize < GUEST_GICC_SIZE )
+    {
+        printk(XENLOG_WARNING
+               "GICv3: WARNING: Not enabling support for GICv2 compat mode.\n"
+               "Size of GICV (%#"PRIpaddr") must at least be %#llx.\n",
+               vsize, GUEST_GICC_SIZE);
+        return;
+    }
 
     printk("GICv3 compatible with GICv2 cbase %#"PRIpaddr" vbase %#"PRIpaddr"\n",
            cbase, vbase);
 
-    vgic_v2_setup_hw(dbase, cbase, vbase);
+    vgic_v2_setup_hw(dbase, cbase, csize, vbase, 0);
 }
 
 /* Set up the GIC */
@@ -1193,8 +1207,8 @@ static int __init gicv3_init(void)
     if ( !gicv3.map_dbase )
         panic("GICv3: Failed to ioremap for GIC distributor\n");
 
-    reg = readl_relaxed(GICD + GICD_PIDR2) & GICD_PIDR2_ARCH_REV_MASK;
-    if ( ((reg >> GICD_PIDR2_ARCH_REV_SHIFT) != GICD_PIDR2_ARCH_GICV3) )
+    reg = readl_relaxed(GICD + GICD_PIDR2) & GIC_PIDR2_ARCH_MASK;
+    if ( reg != GIC_PIDR2_ARCH_GICv3 && reg != GIC_PIDR2_ARCH_GICv4 )
          panic("GICv3: no distributor detected\n");
 
     if ( !dt_property_read_u32(node, "#redistributor-regions",
