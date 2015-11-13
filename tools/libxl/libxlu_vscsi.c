@@ -179,7 +179,7 @@ static bool xlu__vscsi_compare_udev(struct xlu__vscsi_target *tgt)
     read_sz = read(fd, &tgt->udev_path, sizeof(tgt->udev_path) - 1);
     close(fd);
 
-    if (read_sz < 0 || read_sz > sizeof(tgt->udev_path) - 1) {
+    if (read_sz <= 0 || read_sz > sizeof(tgt->udev_path) - 1) {
         ret = false;
         goto out;
     }
