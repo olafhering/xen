@@ -424,8 +424,8 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
 }
 
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
-                             libxl_device_vscsi *new_host,
-                             libxl_vscsi_dev *new_dev)
+                    libxl_device_vscsictrl *new_host,
+                    libxl_vscsi_dev *new_dev)
 {
     int rc;
     char *tmp, *pdev, *vdev, *fhost;
@@ -482,7 +482,7 @@ out:
 }
 
 
-static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsi *hst,
+static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
                                 libxl_vscsi_dev *dev)
 {
     int rc, num;
@@ -512,10 +512,10 @@ out:
 }
 
 int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
-                       const char *str, libxl_device_vscsi *vscsi_host)
+                       const char *str, libxl_device_vscsictrl *vscsi_host)
 {
     libxl_vscsi_dev *new_dev = NULL;
-    libxl_device_vscsi *new_host, *vscsi_hosts = NULL, *tmp;
+    libxl_device_vscsictrl *new_host, *vscsi_hosts = NULL, *tmp;
     int rc, found_host = -1, i;
     int num_hosts;
 
@@ -525,7 +525,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         rc = ERROR_NOMEM;
         goto out;
     }
-    libxl_device_vscsi_init(new_host);
+    libxl_device_vscsictrl_init(new_host);
     libxl_vscsi_dev_init(new_dev);
 
     rc = xlu_vscsi_parse(cfg, ctx, str, new_host, new_dev);
@@ -533,7 +533,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         goto out;
 
     /* Look for existing vscsi_host for given domain */
-    vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
+    vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
     if (vscsi_hosts) {
         for (i = 0; i < num_hosts; ++i) {
             if (vscsi_hosts[i].v_hst == new_host->v_hst) {
@@ -573,7 +573,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         }
     }
 
-    libxl_device_vscsi_copy(ctx, vscsi_host, tmp);
+    libxl_device_vscsictrl_copy(ctx, vscsi_host, tmp);
     rc = xlu_vscsi_append_dev(ctx, vscsi_host, new_dev);
     if (rc)
         goto out;
@@ -583,11 +583,11 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 out:
     if (vscsi_hosts) {
         for (i = 0; i < num_hosts; ++i)
-            libxl_device_vscsi_dispose(&vscsi_hosts[i]);
+            libxl_device_vscsictrl_dispose(&vscsi_hosts[i]);
         free(vscsi_hosts);
     }
     libxl_vscsi_dev_dispose(new_dev);
-    libxl_device_vscsi_dispose(new_host);
+    libxl_device_vscsictrl_dispose(new_host);
     free(new_dev);
     free(new_host);
     return rc;
@@ -596,11 +596,11 @@ out:
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
     libxl_vscsi_dev v_dev = { }, *vd;
-    libxl_device_vscsi v_hst = { }, *vh, *vscsi_hosts;
+    libxl_device_vscsictrl v_hst = { }, *vh, *vscsi_hosts;
     int num_hosts, h, d, found = 0;
     char *tmp = NULL;
 
-    libxl_device_vscsi_init(&v_hst);
+    libxl_device_vscsictrl_init(&v_hst);
     libxl_vscsi_dev_init(&v_dev);
 
     /* Create a dummy cfg */
@@ -612,7 +612,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     if (xlu_vscsi_parse(cfg, ctx, tmp, &v_hst, &v_dev))
         goto out;
 
-    vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts);
+    vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
     if (!vscsi_hosts)
         goto out;
 
@@ -624,20 +624,20 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
             if (!found && vd->vscsi_dev_id != -1 &&
                 CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 vd->remove = true;
-                libxl_device_vscsi_remove(ctx, domid, vh, NULL);
+                libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
                 found = 1;
             }
 #undef CMP
             libxl_vscsi_dev_dispose(vd);
         }
-        libxl_device_vscsi_dispose(vh);
+        libxl_device_vscsictrl_dispose(vh);
     }
     free(vscsi_hosts);
 
 out:
     free(tmp);
     libxl_vscsi_dev_dispose(&v_dev);
-    libxl_device_vscsi_dispose(&v_hst);
+    libxl_device_vscsictrl_dispose(&v_hst);
     return found;
 }
 
@@ -645,11 +645,11 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
                          libxl_ctx *ctx,
                          const char *str,
                          int *num_vscsis,
-                         libxl_device_vscsi **vscsis)
+                         libxl_device_vscsictrl **vscsis)
 {
     int rc, i;
     libxl_vscsi_dev v_dev = { };
-    libxl_device_vscsi *tmp, v_hst = { };
+    libxl_device_vscsictrl *tmp, v_hst = { };
     bool hst_found = false;
 
     /*
@@ -660,7 +660,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
      * Note: v_hst does not represent the index named "num_vscsis",
      *       it is a private index used just in the config file
      */
-    libxl_device_vscsi_init(&v_hst);
+    libxl_device_vscsictrl_init(&v_hst);
     libxl_vscsi_dev_init(&v_dev);
 
     rc = xlu_vscsi_parse(cfg, ctx, str, &v_hst, &v_dev);
@@ -691,10 +691,10 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
         }
         *vscsis = tmp;
         tmp = *vscsis + *num_vscsis;
-        libxl_device_vscsi_init(tmp);
+        libxl_device_vscsictrl_init(tmp);
 
         v_hst.devid = *num_vscsis;
-        libxl_device_vscsi_copy(ctx, tmp, &v_hst);
+        libxl_device_vscsictrl_copy(ctx, tmp, &v_hst);
 
         rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
         if (rc) {
@@ -708,7 +708,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
     rc = 0;
 out:
     libxl_vscsi_dev_dispose(&v_dev);
-    libxl_device_vscsi_dispose(&v_hst);
+    libxl_device_vscsictrl_dispose(&v_hst);
     return rc;
 }
 #else /* ! __linux__ */
@@ -716,7 +716,7 @@ int xlu_vscsi_get_host(XLU_Config *config,
                        libxl_ctx *ctx,
                        uint32_t domid,
                        const char *str,
-                       libxl_device_vscsi *vscsi_host)
+                       libxl_device_vscsictrl *vscsi_host)
 {
     return ERROR_INVAL;
 }
@@ -724,7 +724,7 @@ int xlu_vscsi_get_host(XLU_Config *config,
 int xlu_vscsi_parse(XLU_Config *cfg,
                     libxl_ctx *ctx,
                     const char *str,
-                    libxl_device_vscsi *new_host,
+                    libxl_device_vscsictrl *new_host,
                     libxl_vscsi_dev *new_dev)
 {
     return ERROR_INVAL;
@@ -742,7 +742,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
                          libxl_ctx *ctx,
                          const char *str,
                          int *num_vscsis,
-                         libxl_device_vscsi **vscsis)
+                         libxl_device_vscsictrl **vscsis)
 {
     return ERROR_INVAL;
 }

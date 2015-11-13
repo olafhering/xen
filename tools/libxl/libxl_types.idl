@@ -656,7 +656,7 @@ libxl_vscsi_dev = Struct("vscsi_dev", [
     ("vdev",             libxl_vscsi_hctl),
     ])
 
-libxl_device_vscsi = Struct("device_vscsi", [
+libxl_device_vscsictrl = Struct("device_vscsictrl", [
     ("backend_domid",    libxl_domid),
     ("devid",            libxl_devid),
     ("v_hst",            uint32),
@@ -675,7 +675,7 @@ libxl_domain_config = Struct("domain_config", [
     ("dtdevs", Array(libxl_device_dtdev, "num_dtdevs")),
     ("vfbs", Array(libxl_device_vfb, "num_vfbs")),
     ("vkbs", Array(libxl_device_vkb, "num_vkbs")),
-    ("vscsis", Array(libxl_device_vscsi, "num_vscsis")),
+    ("vscsictrls", Array(libxl_device_vscsictrl, "num_vscsictrls")),
     ("vtpms", Array(libxl_device_vtpm, "num_vtpms")),
     # a channel manifests as a console with a name,
     # see docs/misc/channels.txt

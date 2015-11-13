@@ -2562,9 +2562,9 @@ _hidden void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_nic *nic,
                                    libxl__ao_device *aodev);
 
-_hidden void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
-                                     libxl_device_vscsi *vscsi,
-                                     libxl__ao_device *aodev);
+_hidden void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
+                                         libxl_device_vscsictrl *vscsi,
+                                         libxl__ao_device *aodev);
 
 _hidden void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_vtpm *vtpm,
@@ -3284,9 +3284,9 @@ _hidden void libxl__add_nics(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
                              libxl__multidev *multidev);
 
-_hidden void libxl__add_vscsis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
-                               libxl_domain_config *d_config,
-                               libxl__multidev *multidev);
+_hidden void libxl__add_vscsictrls(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+                                   libxl_domain_config *d_config,
+                                   libxl__multidev *multidev);
 
 _hidden void libxl__add_vtpms(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
@@ -3949,8 +3949,8 @@ static inline void libxl__update_config_nic(libxl__gc *gc,
 }
 
 static inline void libxl__update_config_vscsi(libxl__gc *gc,
-                                             libxl_device_vscsi *dst,
-                                             libxl_device_vscsi *src)
+                                              libxl_device_vscsictrl *dst,
+                                              libxl_device_vscsictrl *src)
 {
     dst->devid = src->devid;
 }

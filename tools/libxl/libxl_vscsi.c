@@ -89,7 +89,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
                                    const char *devs_path,
                                    char **dev_dirs,
                                    unsigned int ndev_dirs,
-                                   libxl_device_vscsi *v_hst)
+                                   libxl_device_vscsictrl *v_hst)
 {
     libxl_vscsi_dev *v_dev;
     bool parsed_ok;
@@ -149,11 +149,12 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
     }
 }
 
-libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
-                                            int *num)
+libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
+                                                    uint32_t domid,
+                                                    int *num)
 {
     GC_INIT(ctx);
-    libxl_device_vscsi *v_hst, *vscsi_hosts = NULL;
+    libxl_device_vscsictrl *v_hst, *vscsi_hosts = NULL;
     char *fe_path, *tmp;
     char **dir, **dev_dirs;
     const char *devs_path, *be_path;
@@ -171,7 +172,7 @@ libxl_device_vscsi *libxl_device_vscsi_list(libxl_ctx *ctx, uint32_t domid,
 
     /* Fill each host */
     for (v_hst = vscsi_hosts; v_hst < vscsi_hosts + ndirs; ++v_hst, ++dir) {
-        libxl_device_vscsi_init(v_hst);
+        libxl_device_vscsictrl_init(v_hst);
 
         v_hst->devid = atoi(*dir);
 
@@ -208,10 +209,10 @@ out:
     return vscsi_hosts;
 }
 
-int libxl_device_vscsi_getinfo(libxl_ctx *ctx, uint32_t domid,
-                               libxl_device_vscsi *vscsi_host,
-                               libxl_vscsi_dev *vscsi_dev,
-                               libxl_vscsiinfo *vscsiinfo)
+int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
+                                   libxl_device_vscsictrl *vscsi_host,
+                                   libxl_vscsi_dev *vscsi_dev,
+                                   libxl_vscsiinfo *vscsiinfo)
 {
     GC_INIT(ctx);
     char *dompath, *vscsipath;

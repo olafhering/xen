@@ -1263,7 +1263,7 @@ static void parse_config_data(const char *config_source,
     const char *buf;
     long l, vcpus = 0;
     XLU_Config *config;
-    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsis;
+    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsictrls;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
@@ -1793,12 +1793,12 @@ static void parse_config_data(const char *config_source,
         }
     }
 
-    if (!xlu_cfg_get_list(config, "vscsi", &vscsis, 0, 0)) {
+    if (!xlu_cfg_get_list(config, "vscsi", &vscsictrls, 0, 0)) {
         int num_vscsi_items = 0;
-        d_config->num_vscsis = 0;
-        d_config->vscsis = NULL;
-        while ((buf = xlu_cfg_get_listitem (vscsis, num_vscsi_items)) != NULL) {
-            if (xlu_vscsi_config_add(config, ctx, buf, &d_config->num_vscsis, &d_config->vscsis))
+        d_config->num_vscsictrls = 0;
+        d_config->vscsictrls = NULL;
+        while ((buf = xlu_cfg_get_listitem (vscsictrls, num_vscsi_items)) != NULL) {
+            if (xlu_vscsi_config_add(config, ctx, buf, &d_config->num_vscsictrls, &d_config->vscsictrls))
                 exit(1);
             num_vscsi_items++;
         }
@@ -6754,7 +6754,7 @@ int main_vscsiattach(int argc, char **argv)
     uint32_t domid;
     int opt, rc;
     XLU_Config *config = NULL;
-    libxl_device_vscsi *vscsi_host = NULL;
+    libxl_device_vscsictrl *vscsi_host = NULL;
     char *str = NULL, *feat_buf = NULL;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
@@ -6787,7 +6787,7 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     vscsi_host = xmalloc(sizeof(*vscsi_host));
-    libxl_device_vscsi_init(vscsi_host);
+    libxl_device_vscsictrl_init(vscsi_host);
 
     config = xlu_cfg_init(stderr, "command line");
     if (!config) {
@@ -6802,7 +6802,7 @@ int main_vscsiattach(int argc, char **argv)
         goto out;
 
     if (dryrun_only) {
-        char *json = libxl_device_vscsi_to_json(ctx, vscsi_host);
+        char *json = libxl_device_vscsictrl_to_json(ctx, vscsi_host);
         printf("vscsi: %s\n", json);
         free(json);
         if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
@@ -6811,8 +6811,8 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Finally add the device */
-    if (libxl_device_vscsi_add(ctx, domid, vscsi_host, NULL)) {
-        fprintf(stderr, "libxl_device_vscsi_add failed.\n");
+    if (libxl_device_vscsictrl_add(ctx, domid, vscsi_host, NULL)) {
+        fprintf(stderr, "libxl_device_vscsictrl_add failed.\n");
         rc = 1;
         goto out;
     }
@@ -6821,7 +6821,7 @@ int main_vscsiattach(int argc, char **argv)
 out:
     if (config)
         xlu_cfg_destroy(config);
-    libxl_device_vscsi_dispose(vscsi_host);
+    libxl_device_vscsictrl_dispose(vscsi_host);
     free(vscsi_host);
     free(str);
     free(feat_buf);
@@ -6832,7 +6832,7 @@ int main_vscsilist(int argc, char **argv)
 {
     int opt;
     uint32_t domid;
-    libxl_device_vscsi *vscsi_hosts;
+    libxl_device_vscsictrl *vscsi_hosts;
     libxl_vscsiinfo vscsiinfo;
     int num_hosts, h, d;
 
@@ -6852,12 +6852,12 @@ int main_vscsilist(int argc, char **argv)
             fprintf(stderr, "%s is an invalid domain identifier\n", *argv);
             continue;
         }
-        if (!(vscsi_hosts = libxl_device_vscsi_list(ctx, domid, &num_hosts))) {
+        if (!(vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts))) {
             continue;
         }
         for (h = 0; h < num_hosts; ++h) {
             for (d = 0; d < vscsi_hosts[h].num_vscsi_devs; d++) {
-                if (!libxl_device_vscsi_getinfo(ctx, domid, &vscsi_hosts[h],
+                if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsi_hosts[h],
                                                 &vscsi_hosts[h].vscsi_devs[d],
                                                 &vscsiinfo)) {
                     char pdev[64], vdev[64];
@@ -6894,7 +6894,7 @@ int main_vscsilist(int argc, char **argv)
                 }
                 libxl_vscsiinfo_dispose(&vscsiinfo);
             }
-            libxl_device_vscsi_dispose(&vscsi_hosts[h]);
+            libxl_device_vscsictrl_dispose(&vscsi_hosts[h]);
         }
         free(vscsi_hosts);
 

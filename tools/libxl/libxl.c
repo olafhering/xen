@@ -2129,7 +2129,7 @@ out:
 
 static int libxl__device_vscsi_new_backend(libxl__egc *egc,
                                            libxl__ao_device *aodev,
-                                           libxl_device_vscsi *vscsi,
+                                           libxl_device_vscsictrl *vscsi,
                                            libxl_domain_config *d_config)
 {
     STATE_AO_GC(aodev->ao);
@@ -2201,7 +2201,7 @@ out:
 
 static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
                                            libxl__ao_device *aodev,
-                                           libxl_device_vscsi *vscsi,
+                                           libxl_device_vscsictrl *vscsi,
                                            libxl_domain_config *d_config,
                                            const char *be_path,
                                            int *dev_wait)
@@ -2307,9 +2307,9 @@ out:
     return rc;
 }
 
-static int libxl__device_from_vscsi(libxl__gc *gc, uint32_t domid,
-                                    libxl_device_vscsi *vscsi,
-                                    libxl__device *device)
+static int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
+                                        libxl_device_vscsictrl *vscsi,
+                                        libxl__device *device)
 {
     device->backend_domid = vscsi->backend_domid;
     device->devid         = vscsi->devid;
@@ -2320,9 +2320,9 @@ static int libxl__device_from_vscsi(libxl__gc *gc, uint32_t domid,
     return 0;
 }
 
-void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
-                             libxl_device_vscsi *vscsi,
-                             libxl__ao_device *aodev)
+void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
+                                 libxl_device_vscsictrl *vscsi,
+                                 libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
     libxl__device *device;
@@ -2330,13 +2330,13 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     unsigned int be_dirs = 0;
     int rc;
     libxl_domain_config d_config;
-    libxl_device_vscsi vscsi_saved;
+    libxl_device_vscsictrl vscsi_saved;
     libxl__domain_userdata_lock *lock = NULL;
 
     libxl_domain_config_init(&d_config);
 
-    libxl_device_vscsi_init(&vscsi_saved);
-    libxl_device_vscsi_copy(CTX, &vscsi_saved, vscsi);
+    libxl_device_vscsictrl_init(&vscsi_saved);
+    libxl_device_vscsictrl_copy(CTX, &vscsi_saved, vscsi);
 
     if (vscsi->devid == -1) {
         if ((vscsi->devid = libxl__device_nextid(gc, domid, "vscsi")) < 0) {
@@ -2349,7 +2349,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     libxl__update_config_vscsi(gc, &vscsi_saved, vscsi);
 
     GCNEW(device);
-    rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
     if (rc) goto out;
 
     if (aodev->update_json) {
@@ -2363,7 +2363,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
         if (rc) goto out;
 
         /* Replace or append the copy to the domain config */
-        DEVICE_ADD(vscsi, vscsis, domid, &vscsi_saved, COMPARE_VSCSI, &d_config);
+        DEVICE_ADD(vscsictrl, vscsictrls, domid, &vscsi_saved, COMPARE_VSCSI, &d_config);
     }
 
     aodev->dev = device;
@@ -2384,7 +2384,7 @@ void libxl__device_vscsi_add(libxl__egc *egc, uint32_t domid,
     rc = 0;
 out:
     if (lock) libxl__unlock_domain_userdata(lock);
-    libxl_device_vscsi_dispose(&vscsi_saved);
+    libxl_device_vscsictrl_dispose(&vscsi_saved);
     libxl_domain_config_dispose(&d_config);
     aodev->rc = rc;
     if (rc) aodev->callback(egc, aodev);
@@ -2392,7 +2392,7 @@ out:
 }
 
 static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
-                                       libxl_device_vscsi *vscsi,
+                                       libxl_device_vscsictrl *vscsi,
                                        libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
@@ -2422,7 +2422,7 @@ static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
         if (rc) goto out;
 
         /* Replace the item in the domain config */
-        DEVICE_ADD(vscsi, vscsis, aodev->dev->domid, vscsi, COMPARE_VSCSI, &d_config);
+        DEVICE_ADD(vscsictrl, vscsictrls, aodev->dev->domid, vscsi, COMPARE_VSCSI, &d_config);
     }
 
     be_path = libxl__device_backend_path(gc, aodev->dev);
@@ -2455,9 +2455,9 @@ out:
 }
 
 /* Extended variant of DEFINE_DEVICE_REMOVE to handle reconfigure */
-int libxl_device_vscsi_remove(libxl_ctx *ctx, uint32_t domid,
-                              libxl_device_vscsi *vscsi,
-                              const libxl_asyncop_how *ao_how)
+int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
+                                  libxl_device_vscsictrl *vscsi,
+                                  const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
     libxl__device *device;
@@ -2466,7 +2466,7 @@ int libxl_device_vscsi_remove(libxl_ctx *ctx, uint32_t domid,
     unsigned int remaining = vscsi->num_vscsi_devs;
 
     GCNEW(device);
-    rc = libxl__device_from_vscsi(gc, domid, vscsi, device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
     if (rc != 0) goto out;
 
     GCNEW(aodev);
@@ -4583,7 +4583,7 @@ out:
  * libxl_device_disk_destroy
  * libxl_device_nic_remove
  * libxl_device_nic_destroy
- * libxl_device_vscsi_destroy
+ * libxl_device_vscsictrl_destroy
  * libxl_device_vtpm_remove
  * libxl_device_vtpm_destroy
  * libxl_device_vkb_remove
@@ -4629,7 +4629,7 @@ DEFINE_DEVICE_REMOVE(nic, remove, 0)
 DEFINE_DEVICE_REMOVE(nic, destroy, 1)
 
 /* vscsi */
-DEFINE_DEVICE_REMOVE(vscsi, destroy, 1)
+DEFINE_DEVICE_REMOVE(vscsictrl, destroy, 1)
 
 /* vkb */
 DEFINE_DEVICE_REMOVE(vkb, remove, 0)
@@ -4656,7 +4656,7 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
 /* The following functions are defined:
  * libxl_device_disk_add
  * libxl_device_nic_add
- * libxl_device_vscsi_add
+ * libxl_device_vscsictrl_add
  * libxl_device_vtpm_add
  */
 
@@ -4687,7 +4687,7 @@ DEFINE_DEVICE_ADD(disk)
 DEFINE_DEVICE_ADD(nic)
 
 /* vscsi */
-DEFINE_DEVICE_ADD(vscsi)
+DEFINE_DEVICE_ADD(vscsictrl)
 
 /* vtpm */
 DEFINE_DEVICE_ADD(vtpm)
@@ -7229,7 +7229,7 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
 
     MERGE(nic, nics, COMPARE_DEVID, {});
 
-    MERGE(vscsi, vscsis, COMPARE_VSCSI, {});
+    MERGE(vscsictrl, vscsictrls, COMPARE_VSCSI, {});
 
     MERGE(vtpm, vtpms, COMPARE_DEVID, {});
 
