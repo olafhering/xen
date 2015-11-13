@@ -16,8 +16,7 @@
  * GNU General Public License for more details.
  * 
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef _XEN_SHADOW_H
@@ -74,7 +73,7 @@ int shadow_domctl(struct domain *d,
                   XEN_GUEST_HANDLE_PARAM(void) u_domctl);
 
 /* Call when destroying a domain */
-void shadow_teardown(struct domain *d);
+void shadow_teardown(struct domain *d, int *preempted);
 
 /* Call once all of the references to the domain have gone away */
 void shadow_final_teardown(struct domain *d);
@@ -86,7 +85,7 @@ void shadow_blow_tables_per_domain(struct domain *d);
 
 #else /* !CONFIG_SHADOW_PAGING */
 
-#define shadow_teardown(d) ASSERT(is_pv_domain(d))
+#define shadow_teardown(d, p) ASSERT(is_pv_domain(d))
 #define shadow_final_teardown(d) ASSERT(is_pv_domain(d))
 #define shadow_enable(d, mode) \
     ({ ASSERT(is_pv_domain(d)); -EOPNOTSUPP; })

@@ -632,6 +632,7 @@ systemd
 remus_netbuf
 LIBNL3_LIBS
 LIBNL3_CFLAGS
+argp_ldflags
 libiconv
 PTYFUNCS_LIBS
 PTHREAD_LIBS
@@ -699,12 +700,13 @@ PREPEND_INCLUDES
 EXTRA_QEMUU_CONFIGURE_ARGS
 ovmf_path
 seabios_path
+qemu_xen_systemd
+qemu_xen_path
 qemu_xen
 rombios
 qemu_traditional
 blktap2
 LINUX_BACKEND_MODULES
-debug
 seabios
 ovmf
 xsmpolicy
@@ -795,7 +797,6 @@ enable_ocamltools
 enable_xsmpolicy
 enable_ovmf
 enable_seabios
-enable_debug
 with_linux_backend_modules
 enable_blktap2
 enable_qemu_traditional
@@ -1470,7 +1471,6 @@ Optional Features:
   --disable-xsmpolicy     Disable XSM policy compilation (default is ENABLED)
   --enable-ovmf           Enable OVMF (default is DISABLED)
   --disable-seabios       Disable SeaBIOS (default is ENABLED)
-  --disable-debug         Disable debug build of tools (default is ENABLED)
   --enable-blktap2        Enable blktap2, (DEFAULT is on for Linux, otherwise
                           off)
   --enable-qemu-traditional
@@ -2402,7 +2402,7 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
-ac_config_files="$ac_config_files ../config/Tools.mk hotplug/FreeBSD/rc.d/xencommons hotplug/Linux/init.d/sysconfig.xencommons hotplug/Linux/init.d/xen-watchdog hotplug/Linux/init.d/xencommons hotplug/Linux/init.d/xendomains hotplug/Linux/vif-setup hotplug/Linux/xen-backend.rules hotplug/Linux/xen-hotplug-common.sh hotplug/Linux/xendomains hotplug/NetBSD/rc.d/xencommons libxl/xenlight.pc.in libxl/xlutil.pc.in"
+ac_config_files="$ac_config_files ../config/Tools.mk hotplug/FreeBSD/rc.d/xencommons hotplug/FreeBSD/rc.d/xendriverdomain hotplug/Linux/init.d/sysconfig.xencommons hotplug/Linux/init.d/xen-watchdog hotplug/Linux/init.d/xencommons hotplug/Linux/init.d/xendomains hotplug/Linux/init.d/xendriverdomain hotplug/Linux/vif-setup hotplug/Linux/xen-hotplug-common.sh hotplug/Linux/xendomains hotplug/NetBSD/rc.d/xencommons hotplug/NetBSD/rc.d/xendriverdomain libxl/xenlight.pc.in libxl/xlutil.pc.in"
 
 ac_config_headers="$ac_config_headers config.h"
 
@@ -3342,7 +3342,7 @@ else
     We can't simply define LARGE_OFF_T to be 9223372036854775807,
     since some C++ compilers masquerading as C compilers
     incorrectly reject 9223372036854775807.  */
-#define LARGE_OFF_T (((off_t) 1 << 62) - 1 + ((off_t) 1 << 62))
+#define LARGE_OFF_T ((((off_t) 1 << 31) << 31) - 1 + (((off_t) 1 << 31) << 31))
   int off_t_is_large[(LARGE_OFF_T % 2147483629 == 721
 		       && LARGE_OFF_T % 2147483647 == 1)
 		      ? 1 : -1];
@@ -3388,7 +3388,7 @@ else
     We can't simply define LARGE_OFF_T to be 9223372036854775807,
     since some C++ compilers masquerading as C compilers
     incorrectly reject 9223372036854775807.  */
-#define LARGE_OFF_T (((off_t) 1 << 62) - 1 + ((off_t) 1 << 62))
+#define LARGE_OFF_T ((((off_t) 1 << 31) << 31) - 1 + (((off_t) 1 << 31) << 31))
   int off_t_is_large[(LARGE_OFF_T % 2147483629 == 721
 		       && LARGE_OFF_T % 2147483647 == 1)
 		      ? 1 : -1];
@@ -3412,7 +3412,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
     We can't simply define LARGE_OFF_T to be 9223372036854775807,
     since some C++ compilers masquerading as C compilers
     incorrectly reject 9223372036854775807.  */
-#define LARGE_OFF_T (((off_t) 1 << 62) - 1 + ((off_t) 1 << 62))
+#define LARGE_OFF_T ((((off_t) 1 << 31) << 31) - 1 + (((off_t) 1 << 31) << 31))
   int off_t_is_large[(LARGE_OFF_T % 2147483629 == 721
 		       && LARGE_OFF_T % 2147483647 == 1)
 		      ? 1 : -1];
@@ -3457,7 +3457,7 @@ else
     We can't simply define LARGE_OFF_T to be 9223372036854775807,
     since some C++ compilers masquerading as C compilers
     incorrectly reject 9223372036854775807.  */
-#define LARGE_OFF_T (((off_t) 1 << 62) - 1 + ((off_t) 1 << 62))
+#define LARGE_OFF_T ((((off_t) 1 << 31) << 31) - 1 + (((off_t) 1 << 31) << 31))
   int off_t_is_large[(LARGE_OFF_T % 2147483629 == 721
 		       && LARGE_OFF_T % 2147483647 == 1)
 		      ? 1 : -1];
@@ -3481,7 +3481,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
     We can't simply define LARGE_OFF_T to be 9223372036854775807,
     since some C++ compilers masquerading as C compilers
     incorrectly reject 9223372036854775807.  */
-#define LARGE_OFF_T (((off_t) 1 << 62) - 1 + ((off_t) 1 << 62))
+#define LARGE_OFF_T ((((off_t) 1 << 31) << 31) - 1 + (((off_t) 1 << 31) << 31))
   int off_t_is_large[(LARGE_OFF_T % 2147483629 == 721
 		       && LARGE_OFF_T % 2147483647 == 1)
 		      ? 1 : -1];
@@ -3594,8 +3594,7 @@ esac
 # General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+# along with this program; If not, see <http://www.gnu.org/licenses/>.
 #
 # As a special exception to the GNU General Public License, if you
 # distribute this file as part of a program that contains a
@@ -3804,8 +3803,7 @@ esac
 # General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software Foundation, Inc.,
-# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+# along with this program; If not, see <http://www.gnu.org/licenses/>.
 
 
 
@@ -4113,29 +4111,6 @@ seabios=$ax_cv_seabios
 
 
 
-# Check whether --enable-debug was given.
-if test "${enable_debug+set}" = set; then :
-  enableval=$enable_debug;
-fi
-
-
-if test "x$enable_debug" = "xno"; then :
-
-    ax_cv_debug="n"
-
-elif test "x$enable_debug" = "xyes"; then :
-
-    ax_cv_debug="y"
-
-elif test -z $ax_cv_debug; then :
-
-    ax_cv_debug="y"
-
-fi
-debug=$ax_cv_debug
-
-
-
 
 # Check whether --with-linux-backend-modules was given.
 if test "${with_linux_backend_modules+set}" = set; then :
@@ -4263,9 +4238,14 @@ fi
 if test "${with_system_qemu+set}" = set; then :
   withval=$with_system_qemu;
     case $withval in
-    yes) qemu_xen=n ; qemu_xen_path=qemu ;;
-    no)  qemu_xen=y ; qemu_xen_path= ;;
-    *)   qemu_xen=n ; qemu_xen_path=$withval ;;
+        yes)
+            qemu_xen=n ; qemu_xen_path="qemu-system-i386"
+            qemu_xen_systemd="/usr/bin/env $qemu_xen_path" ;;
+        no)
+            qemu_xen=y ;;
+        *)
+            qemu_xen=n ; qemu_xen_path="$withval" ;
+            qemu_xen_systemd="$qemu_xen_path" ;;
     esac
 
 else
@@ -4280,15 +4260,19 @@ else
 
 fi
 
-if test "x$qemu_xen" = "xn"; then :
+if test "x$qemu_xen" = "xy"; then :
 
+    qemu_xen_path="$LIBEXEC_BIN/qemu-system-i386"
+    qemu_xen_systemd="$qemu_xen_path"
+
+fi
 
 cat >>confdefs.h <<_ACEOF
 #define QEMU_XEN_PATH "$qemu_xen_path"
 _ACEOF
 
 
-fi
+
 
 
 
@@ -8793,6 +8777,56 @@ else
 fi
 
 
+ac_fn_c_check_header_mongrel "$LINENO" "argp.h" "ac_cv_header_argp_h" "$ac_includes_default"
+if test "x$ac_cv_header_argp_h" = xyes; then :
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for argp_usage in -largp" >&5
+$as_echo_n "checking for argp_usage in -largp... " >&6; }
+if ${ac_cv_lib_argp_argp_usage+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-largp  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char argp_usage ();
+int
+main ()
+{
+return argp_usage ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_argp_argp_usage=yes
+else
+  ac_cv_lib_argp_argp_usage=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_argp_argp_usage" >&5
+$as_echo "$ac_cv_lib_argp_argp_usage" >&6; }
+if test "x$ac_cv_lib_argp_argp_usage" = xyes; then :
+  argp_ldflags="-largp"
+fi
+
+
+else
+  as_fn_error $? "Could not find argp" "$LINENO" 5
+fi
+
+
+
 
 # FDT is needed only on ARM
 case "$host_cpu" in
@@ -8904,6 +8938,21 @@ fi
 
 cat >>confdefs.h <<_ACEOF
 #define HAVE_DECL_FDT_NEXT_SUBNODE $ac_have_decl
+_ACEOF
+
+
+# The helper fdt_property_u32 is only present in libfdt >= 1.4.0
+# It's an inline function, so only check if the declaration is present
+ac_fn_c_check_decl "$LINENO" "fdt_property_u32" "ac_cv_have_decl_fdt_property_u32" "#include <libfdt.h>
+"
+if test "x$ac_cv_have_decl_fdt_property_u32" = xyes; then :
+  ac_have_decl=1
+else
+  ac_have_decl=0
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_DECL_FDT_PROPERTY_U32 $ac_have_decl
 _ACEOF
 
 esac
@@ -9979,15 +10028,17 @@ do
   case $ac_config_target in
     "../config/Tools.mk") CONFIG_FILES="$CONFIG_FILES ../config/Tools.mk" ;;
     "hotplug/FreeBSD/rc.d/xencommons") CONFIG_FILES="$CONFIG_FILES hotplug/FreeBSD/rc.d/xencommons" ;;
+    "hotplug/FreeBSD/rc.d/xendriverdomain") CONFIG_FILES="$CONFIG_FILES hotplug/FreeBSD/rc.d/xendriverdomain" ;;
     "hotplug/Linux/init.d/sysconfig.xencommons") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/init.d/sysconfig.xencommons" ;;
     "hotplug/Linux/init.d/xen-watchdog") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/init.d/xen-watchdog" ;;
     "hotplug/Linux/init.d/xencommons") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/init.d/xencommons" ;;
     "hotplug/Linux/init.d/xendomains") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/init.d/xendomains" ;;
+    "hotplug/Linux/init.d/xendriverdomain") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/init.d/xendriverdomain" ;;
     "hotplug/Linux/vif-setup") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/vif-setup" ;;
-    "hotplug/Linux/xen-backend.rules") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/xen-backend.rules" ;;
     "hotplug/Linux/xen-hotplug-common.sh") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/xen-hotplug-common.sh" ;;
     "hotplug/Linux/xendomains") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/xendomains" ;;
     "hotplug/NetBSD/rc.d/xencommons") CONFIG_FILES="$CONFIG_FILES hotplug/NetBSD/rc.d/xencommons" ;;
+    "hotplug/NetBSD/rc.d/xendriverdomain") CONFIG_FILES="$CONFIG_FILES hotplug/NetBSD/rc.d/xendriverdomain" ;;
     "libxl/xenlight.pc.in") CONFIG_FILES="$CONFIG_FILES libxl/xenlight.pc.in" ;;
     "libxl/xlutil.pc.in") CONFIG_FILES="$CONFIG_FILES libxl/xlutil.pc.in" ;;
     "config.h") CONFIG_HEADERS="$CONFIG_HEADERS config.h" ;;

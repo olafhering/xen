@@ -253,22 +253,22 @@ QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-unstable.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= a065efc7c7ce8bb3e5cb3e463099d023d4a92927
-QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= edfd5aae6ec5ba7d0a8834a3e9dfe5e69424150a
-# Thu Mar 12 19:08:05 2015 +0100
-# Fix accidentally removed brace causing a build error.
+OVMF_UPSTREAM_REVISION ?= cb9a7ebabcd6b8a49dc0854b2f9592d732b5afbd
+QEMU_UPSTREAM_REVISION ?= qemu-xen-4.6.0-rc3
+MINIOS_UPSTREAM_REVISION ?= b36bcb370d611ad7f41e8c21d061e6291e088c58
+# Fri Jun 26 11:58:40 2015 +0100
+# Correct printf formatting for tpm_tis message.
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.8.0
-# Wed Feb 18 12:49:59 2015 -0500
-# docs: Note v1.8.0 release
+SEABIOS_UPSTREAM_REVISION ?= rel-1.8.2
+# Tue Mar 17 10:52:16 2015 -0400
+# vgabios: On bda_save_restore() the saved vbe_mode also has flags in it
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= 38609ae72b0a9e09b42be94f469fef928a1049fa
-# Tue Jun 9 16:13:11 2015 +0100
-# ... by default. Add a per-device "permissive" mode similar to pciback's
+QEMU_TRADITIONAL_REVISION ?= 5cdde31eacdd288359746019ad05cac8ed5d9f70
+# Fri Aug 28 15:53:40 2015 +0100
+# HVM: atomically access pointers in bufioreq handling
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

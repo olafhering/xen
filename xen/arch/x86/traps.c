@@ -14,8 +14,7 @@
  * GNU General Public License for more details.
  * 
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -72,6 +71,7 @@
 #include <asm/apic.h>
 #include <asm/mc146818rtc.h>
 #include <asm/hpet.h>
+#include <asm/vpmu.h>
 #include <public/arch-x86/cpuid.h>
 #include <xsm/xsm.h>
 
@@ -124,7 +124,7 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
     if ( is_hvm_vcpu(v) )
         return;
 
-    if ( is_pv_32on64_vcpu(v) )
+    if ( is_pv_32bit_vcpu(v) )
     {
         compat_show_guest_stack(v, regs, debug_stack_lines);
         return;
@@ -749,16 +749,16 @@ int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val)
 int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
                uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
 {
-    struct domain *d = current->domain;
+    struct domain *currd = current->domain;
     /* Optionally shift out of the way of Viridian architectural leaves. */
-    uint32_t base = is_viridian_domain(d) ? 0x40000100 : 0x40000000;
+    uint32_t base = is_viridian_domain(currd) ? 0x40000100 : 0x40000000;
     uint32_t limit, dummy;
 
     idx -= base;
     if ( idx > XEN_CPUID_MAX_NUM_LEAVES )
         return 0; /* Avoid unnecessary pass through domain_cpuid() */
 
-    domain_cpuid(d, base, 0, &limit, &dummy, &dummy, &dummy);
+    domain_cpuid(currd, base, 0, &limit, &dummy, &dummy, &dummy);
     if ( limit == 0 )
         /* Default number of leaves */
         limit = XEN_CPUID_MAX_NUM_LEAVES;
@@ -794,11 +794,11 @@ int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
     case 2:
         *eax = 1;          /* Number of hypercall-transfer pages */
         *ebx = 0x40000000; /* MSR base address */
-        if ( is_viridian_domain(d) )
+        if ( is_viridian_domain(currd) )
             *ebx = 0x40000200;
         *ecx = 0;          /* Features 1 */
         *edx = 0;          /* Features 2 */
-        if ( is_pv_vcpu(current) )
+        if ( is_pv_domain(currd) )
             *ecx |= XEN_CPUID_FEAT1_MMU_PT_UPDATE_PRESERVE_AD;
         break;
 
@@ -822,18 +822,19 @@ void pv_cpuid(struct cpu_user_regs *regs)
 {
     uint32_t a, b, c, d;
     struct vcpu *curr = current;
+    struct domain *currd = curr->domain;
 
     a = regs->eax;
     b = regs->ebx;
     c = regs->ecx;
     d = regs->edx;
 
-    if ( !is_control_domain(curr->domain) && !is_hardware_domain(curr->domain) )
+    if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
     {
         unsigned int cpuid_leaf = a, sub_leaf = c;
 
         if ( !cpuid_hypervisor_leaves(a, c, &a, &b, &c, &d) )
-            domain_cpuid(curr->domain, a, c, &a, &b, &c, &d);
+            domain_cpuid(currd, a, c, &a, &b, &c, &d);
 
         switch ( cpuid_leaf )
         {
@@ -849,7 +850,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
                 {
                     if ( !(curr->arch.xcr0 & (1ULL << sub_leaf)) )
                         continue;
-                    domain_cpuid(curr->domain, cpuid_leaf, sub_leaf,
+                    domain_cpuid(currd, cpuid_leaf, sub_leaf,
                                  &_eax, &_ebx, &_ecx, &_edx);
                     if ( (_eax + _ebx) > b )
                         b = _eax + _ebx;
@@ -869,7 +870,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
         if ( !cpu_has_apic )
             __clear_bit(X86_FEATURE_APIC, &d);
 
-        if ( !is_pvh_vcpu(curr) )
+        if ( !is_pvh_domain(currd) )
         {
             __clear_bit(X86_FEATURE_PSE, &d);
             __clear_bit(X86_FEATURE_PGE, &d);
@@ -887,7 +888,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
         __clear_bit(X86_FEATURE_DS, &d);
         __clear_bit(X86_FEATURE_ACC, &d);
         __clear_bit(X86_FEATURE_PBE, &d);
-        if ( is_pvh_vcpu(curr) )
+        if ( is_pvh_domain(currd) )
             __clear_bit(X86_FEATURE_MTRR, &d);
 
         __clear_bit(X86_FEATURE_DTES64 % 32, &c);
@@ -896,7 +897,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
         __clear_bit(X86_FEATURE_VMXE % 32, &c);
         __clear_bit(X86_FEATURE_SMXE % 32, &c);
         __clear_bit(X86_FEATURE_TM2 % 32, &c);
-        if ( is_pv_32bit_vcpu(curr) )
+        if ( is_pv_32bit_domain(currd) )
             __clear_bit(X86_FEATURE_CX16 % 32, &c);
         __clear_bit(X86_FEATURE_XTPR % 32, &c);
         __clear_bit(X86_FEATURE_PDCM % 32, &c);
@@ -945,12 +946,12 @@ void pv_cpuid(struct cpu_user_regs *regs)
 
     case 0x80000001:
         /* Modify Feature Information. */
-        if ( is_pv_32bit_vcpu(curr) )
+        if ( is_pv_32bit_domain(currd) )
         {
             __clear_bit(X86_FEATURE_LM % 32, &d);
             __clear_bit(X86_FEATURE_LAHF_LM % 32, &c);
         }
-        if ( is_pv_32on64_vcpu(curr) &&
+        if ( is_pv_32bit_domain(currd) &&
              boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
             __clear_bit(X86_FEATURE_SYSCALL % 32, &d);
         __clear_bit(X86_FEATURE_PAGE1GB % 32, &d);
@@ -968,8 +969,10 @@ void pv_cpuid(struct cpu_user_regs *regs)
         __clear_bit(X86_FEATURE_TOPOEXT % 32, &c);
         break;
 
+    case 0x0000000a: /* Architectural Performance Monitor Features (Intel) */
+        break;
+
     case 0x00000005: /* MONITOR/MWAIT */
-    case 0x0000000a: /* Architectural Performance Monitor Features */
     case 0x0000000b: /* Extended Topology Enumeration */
     case 0x8000000a: /* SVM revision and features */
     case 0x8000001b: /* Instruction Based Sampling */
@@ -985,6 +988,9 @@ void pv_cpuid(struct cpu_user_regs *regs)
     }
 
  out:
+    /* VPMU may decide to modify some of the leaves */
+    vpmu_do_cpuid(regs->eax, &a, &b, &c, &d);
+
     regs->eax = a;
     regs->ebx = b;
     regs->ecx = c;
@@ -1318,7 +1324,7 @@ static enum pf_type __page_fault_type(
 
     mfn = cr3 >> PAGE_SHIFT;
 
-    l4t = map_domain_page(mfn);
+    l4t = map_domain_page(_mfn(mfn));
     l4e = l4e_read_atomic(&l4t[l4_table_offset(addr)]);
     mfn = l4e_get_pfn(l4e);
     unmap_domain_page(l4t);
@@ -1327,7 +1333,7 @@ static enum pf_type __page_fault_type(
         return real_fault;
     page_user &= l4e_get_flags(l4e);
 
-    l3t  = map_domain_page(mfn);
+    l3t  = map_domain_page(_mfn(mfn));
     l3e = l3e_read_atomic(&l3t[l3_table_offset(addr)]);
     mfn = l3e_get_pfn(l3e);
     unmap_domain_page(l3t);
@@ -1338,7 +1344,7 @@ static enum pf_type __page_fault_type(
     if ( l3e_get_flags(l3e) & _PAGE_PSE )
         goto leaf;
 
-    l2t = map_domain_page(mfn);
+    l2t = map_domain_page(_mfn(mfn));
     l2e = l2e_read_atomic(&l2t[l2_table_offset(addr)]);
     mfn = l2e_get_pfn(l2e);
     unmap_domain_page(l2t);
@@ -1349,7 +1355,7 @@ static enum pf_type __page_fault_type(
     if ( l2e_get_flags(l2e) & _PAGE_PSE )
         goto leaf;
 
-    l1t = map_domain_page(mfn);
+    l1t = map_domain_page(_mfn(mfn));
     l1e = l1e_read_atomic(&l1t[l1_table_offset(addr)]);
     mfn = l1e_get_pfn(l1e);
     unmap_domain_page(l1t);
@@ -1551,8 +1557,8 @@ void do_page_fault(struct cpu_user_regs *regs)
  */
 void __init do_early_page_fault(struct cpu_user_regs *regs)
 {
-    static int stuck;
-    static unsigned long prev_eip, prev_cr2;
+    static unsigned int __initdata stuck;
+    static unsigned long __initdata prev_eip, prev_cr2;
     unsigned long cr2 = read_cr2();
 
     BUG_ON(smp_processor_id() != 0);
@@ -1770,15 +1776,18 @@ static bool_t admin_io_okay(unsigned int port, unsigned int bytes,
     return ioports_access_permitted(d, port, port + bytes - 1);
 }
 
-static bool_t pci_cfg_ok(struct domain *currd, bool_t write, unsigned int size)
+static bool_t pci_cfg_ok(struct domain *currd, unsigned int start,
+                         unsigned int size, uint32_t *write)
 {
     uint32_t machine_bdf;
-    unsigned int start;
 
     if ( !is_hardware_domain(currd) )
         return 0;
 
-    machine_bdf = (currd->arch.pci_cf8 >> 8) & 0xFFFF;
+    if ( !CF8_ENABLED(currd->arch.pci_cf8) )
+        return 1;
+
+    machine_bdf = CF8_BDF(currd->arch.pci_cf8);
     if ( write )
     {
         const unsigned long *ro_map = pci_get_ro_map(0);
@@ -1786,9 +1795,9 @@ static bool_t pci_cfg_ok(struct domain *currd, bool_t write, unsigned int size)
         if ( ro_map && test_bit(machine_bdf, ro_map) )
             return 0;
     }
-    start = currd->arch.pci_cf8 & 0xFF;
+    start |= CF8_ADDR_LO(currd->arch.pci_cf8);
     /* AMD extended configuration space access? */
-    if ( (currd->arch.pci_cf8 & 0x0F000000) &&
+    if ( CF8_ADDR_HI(currd->arch.pci_cf8) &&
          boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
          boot_cpu_data.x86 >= 0x10 && boot_cpu_data.x86 <= 0x17 )
     {
@@ -1797,11 +1806,15 @@ static bool_t pci_cfg_ok(struct domain *currd, bool_t write, unsigned int size)
         if ( rdmsr_safe(MSR_AMD64_NB_CFG, msr_val) )
             return 0;
         if ( msr_val & (1ULL << AMD64_NB_CFG_CF8_EXT_ENABLE_BIT) )
-            start |= (currd->arch.pci_cf8 >> 16) & 0xF00;
+            start |= CF8_ADDR_HI(currd->arch.pci_cf8);
     }
 
-    return !xsm_pci_config_permission(XSM_HOOK, currd, machine_bdf,
-                                      start, start + size - 1, write);
+    if ( xsm_pci_config_permission(XSM_HOOK, currd, machine_bdf,
+                                   start, start + size - 1, !!write) != 0 )
+         return 0;
+
+    return !write ||
+           pci_conf_write_intercept(0, machine_bdf, start, size, write) >= 0;
 }
 
 uint32_t guest_io_read(unsigned int port, unsigned int bytes,
@@ -1853,7 +1866,7 @@ uint32_t guest_io_read(unsigned int port, unsigned int bytes,
             size = min(bytes, 4 - (port & 3));
             if ( size == 3 )
                 size = 2;
-            if ( pci_cfg_ok(currd, 0, size) )
+            if ( pci_cfg_ok(currd, port & 3, size, NULL) )
                 sub_data = pci_conf_read(currd->arch.pci_cf8, port & 3, size);
         }
 
@@ -1924,7 +1937,7 @@ void guest_io_write(unsigned int port, unsigned int bytes, uint32_t data,
             size = min(bytes, 4 - (port & 3));
             if ( size == 3 )
                 size = 2;
-            if ( pci_cfg_ok(currd, 1, size) )
+            if ( pci_cfg_ok(currd, port & 3, size, &data) )
                 pci_conf_write(currd->arch.pci_cf8, port & 3, size, data);
         }
 
@@ -2004,6 +2017,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
     char *io_emul_stub = NULL;
     void (*io_emul)(struct cpu_user_regs *) __attribute__((__regparm__(1)));
     uint64_t val;
+    bool_t vpmu_msr;
 
     if ( !read_descriptor(regs->cs, v, regs,
                           &code_base, &code_limit, &ar,
@@ -2190,7 +2204,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
      * context. This is needed for some systems which (ab)use IN/OUT
      * to communicate with BIOS code in system-management mode.
      */
-    io_emul_stub = map_domain_page(this_cpu(stubs.mfn)) +
+    io_emul_stub = map_domain_page(_mfn(this_cpu(stubs.mfn))) +
                    (this_cpu(stubs.addr) & ~PAGE_MASK) +
                    STUB_BUF_SIZE / 2;
     /* movq $host_to_guest_gpr_switch,%rcx */
@@ -2378,7 +2392,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         {
             unsigned long mfn;
             
-            if ( !is_pv_32on64_vcpu(v) )
+            if ( !is_pv_32bit_domain(currd) )
             {
                 mfn = pagetable_get_pfn(v->arch.guest_table);
                 *reg = xen_pfn_to_cr3(mfn_to_gmfn(currd, mfn));
@@ -2386,7 +2400,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
             else
             {
                 l4_pgentry_t *pl4e =
-                    map_domain_page(pagetable_get_pfn(v->arch.guest_table));
+                    map_domain_page(_mfn(pagetable_get_pfn(v->arch.guest_table)));
 
                 mfn = l4e_get_pfn(*pl4e);
                 unmap_domain_page(pl4e);
@@ -2448,7 +2462,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
             unsigned long gfn;
             struct page_info *page;
 
-            gfn = !is_pv_32on64_vcpu(v)
+            gfn = !is_pv_32bit_domain(currd)
                 ? xen_cr3_to_pfn(*reg) : compat_cr3_to_pfn(*reg);
             page = get_page_from_gfn(currd, gfn, NULL, P2M_ALLOC);
             if ( page )
@@ -2496,23 +2510,23 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         uint32_t eax = regs->eax;
         uint32_t edx = regs->edx;
         uint64_t msr_content = ((uint64_t)edx << 32) | eax;
-
+        vpmu_msr = 0;
         switch ( regs->_ecx )
         {
         case MSR_FS_BASE:
-            if ( is_pv_32on64_vcpu(v) )
+            if ( is_pv_32bit_domain(currd) )
                 goto fail;
             wrfsbase(msr_content);
             v->arch.pv_vcpu.fs_base = msr_content;
             break;
         case MSR_GS_BASE:
-            if ( is_pv_32on64_vcpu(v) )
+            if ( is_pv_32bit_domain(currd) )
                 goto fail;
             wrgsbase(msr_content);
             v->arch.pv_vcpu.gs_base_kernel = msr_content;
             break;
         case MSR_SHADOW_GS_BASE:
-            if ( is_pv_32on64_vcpu(v) )
+            if ( is_pv_32bit_domain(currd) )
                 goto fail;
             if ( wrmsr_safe(MSR_SHADOW_GS_BASE, msr_content) )
                 goto fail;
@@ -2633,6 +2647,26 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
             if ( v->arch.debugreg[7] & DR7_ACTIVE_MASK )
                 wrmsrl(regs->_ecx, msr_content);
             break;
+        case MSR_P6_PERFCTR(0)...MSR_P6_PERFCTR(7):
+        case MSR_P6_EVNTSEL(0)...MSR_P6_EVNTSEL(3):
+        case MSR_CORE_PERF_FIXED_CTR0...MSR_CORE_PERF_FIXED_CTR2:
+        case MSR_CORE_PERF_FIXED_CTR_CTRL...MSR_CORE_PERF_GLOBAL_OVF_CTRL:
+            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+            {
+                vpmu_msr = 1;
+        case MSR_AMD_FAM15H_EVNTSEL0...MSR_AMD_FAM15H_PERFCTR5:
+                if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
+                {
+                    if ( (vpmu_mode & XENPMU_MODE_ALL) &&
+                         !is_hardware_domain(v->domain) )
+                        break;
+
+                    if ( vpmu_do_wrmsr(regs->ecx, msr_content, 0) )
+                        goto fail;
+                }
+                break;
+            }
+            /*FALLTHROUGH*/
 
         default:
             if ( wrmsr_hypervisor_regs(regs->ecx, msr_content) == 1 )
@@ -2668,21 +2702,22 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         break;
 
     case 0x32: /* RDMSR */
+        vpmu_msr = 0;
         switch ( regs->_ecx )
         {
         case MSR_FS_BASE:
-            if ( is_pv_32on64_vcpu(v) )
+            if ( is_pv_32bit_domain(currd) )
                 goto fail;
             val = cpu_has_fsgsbase ? __rdfsbase() : v->arch.pv_vcpu.fs_base;
             goto rdmsr_writeback;
         case MSR_GS_BASE:
-            if ( is_pv_32on64_vcpu(v) )
+            if ( is_pv_32bit_domain(currd) )
                 goto fail;
             val = cpu_has_fsgsbase ? __rdgsbase()
                                    : v->arch.pv_vcpu.gs_base_kernel;
             goto rdmsr_writeback;
         case MSR_SHADOW_GS_BASE:
-            if ( is_pv_32on64_vcpu(v) )
+            if ( is_pv_32bit_domain(currd) )
                 goto fail;
             val = v->arch.pv_vcpu.gs_base_user;
             goto rdmsr_writeback;
@@ -2735,6 +2770,38 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
                             [regs->_ecx - MSR_AMD64_DR1_ADDRESS_MASK + 1];
             regs->edx = 0;
             break;
+        case MSR_IA32_PERF_CAPABILITIES:
+            /* No extra capabilities are supported */
+            regs->eax = regs->edx = 0;
+            break;
+        case MSR_P6_PERFCTR(0)...MSR_P6_PERFCTR(7):
+        case MSR_P6_EVNTSEL(0)...MSR_P6_EVNTSEL(3):
+        case MSR_CORE_PERF_FIXED_CTR0...MSR_CORE_PERF_FIXED_CTR2:
+        case MSR_CORE_PERF_FIXED_CTR_CTRL...MSR_CORE_PERF_GLOBAL_OVF_CTRL:
+            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+            {
+                vpmu_msr = 1;
+        case MSR_AMD_FAM15H_EVNTSEL0...MSR_AMD_FAM15H_PERFCTR5:
+                if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
+                {
+
+                    if ( (vpmu_mode & XENPMU_MODE_ALL) &&
+                         !is_hardware_domain(v->domain) )
+                    {
+                        /* Don't leak PMU MSRs to unprivileged domains */
+                        regs->eax = regs->edx = 0;
+                        break;
+                    }
+
+                    if ( vpmu_do_rdmsr(regs->ecx, &val) )
+                        goto fail;
+
+                    regs->eax = (uint32_t)val;
+                    regs->edx = (uint32_t)(val >> 32);
+                }
+                break;
+            }
+            /*FALLTHROUGH*/
 
         default:
             if ( rdmsr_hypervisor_regs(regs->ecx, &val) )
@@ -3197,7 +3264,7 @@ void do_general_protection(struct cpu_user_regs *regs)
             return;
         }
     }
-    else if ( is_pv_32on64_vcpu(v) && regs->error_code )
+    else if ( is_pv_32bit_vcpu(v) && regs->error_code )
     {
         emulate_gate_op(regs);
         return;
@@ -3671,7 +3738,7 @@ long register_guest_nmi_callback(unsigned long address)
 
     t->vector  = TRAP_nmi;
     t->flags   = 0;
-    t->cs      = (is_pv_32on64_domain(d) ?
+    t->cs      = (is_pv_32bit_domain(d) ?
                   FLAT_COMPAT_KERNEL_CS : FLAT_KERNEL_CS);
     t->address = address;
     TI_SET_IF(t, 1);

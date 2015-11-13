@@ -20,8 +20,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/iommu.h>
@@ -35,6 +34,7 @@
 #include <asm/hvm/vmx/vmx.h> /* ept_p2m_init() */
 #include <asm/mem_sharing.h>
 #include <asm/hvm/nestedhvm.h>
+#include <asm/altp2m.h>
 #include <asm/hvm/svm/amd-iommu-proto.h>
 #include <xsm/xsm.h>
 
@@ -183,6 +183,43 @@ static void p2m_teardown_nestedp2m(struct domain *d)
     }
 }
 
+static void p2m_teardown_altp2m(struct domain *d)
+{
+    unsigned int i;
+    struct p2m_domain *p2m;
+
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        if ( !d->arch.altp2m_p2m[i] )
+            continue;
+        p2m = d->arch.altp2m_p2m[i];
+        d->arch.altp2m_p2m[i] = NULL;
+        p2m_free_one(p2m);
+    }
+}
+
+static int p2m_init_altp2m(struct domain *d)
+{
+    unsigned int i;
+    struct p2m_domain *p2m;
+
+    mm_lock_init(&d->arch.altp2m_list_lock);
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        d->arch.altp2m_p2m[i] = p2m = p2m_init_one(d);
+        if ( p2m == NULL )
+        {
+            p2m_teardown_altp2m(d);
+            return -ENOMEM;
+        }
+        p2m->p2m_class = p2m_alternate;
+        p2m->access_required = 1;
+        _atomic_set(&p2m->active_vcpus, 0);
+    }
+
+    return 0;
+}
+
 int p2m_init(struct domain *d)
 {
     int rc;
@@ -196,7 +233,17 @@ int p2m_init(struct domain *d)
      * (p2m_init runs too early for HVM_PARAM_* options) */
     rc = p2m_init_nestedp2m(d);
     if ( rc )
+    {
         p2m_teardown_hostp2m(d);
+        return rc;
+    }
+
+    rc = p2m_init_altp2m(d);
+    if ( rc )
+    {
+        p2m_teardown_hostp2m(d);
+        p2m_teardown_nestedp2m(d);
+    }
 
     return rc;
 }
@@ -297,7 +344,7 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
         /* Grab the lock here, don't release until put_gfn */
         gfn_lock(p2m, gfn, 0);
 
-    mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order);
+    mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order, NULL);
 
     if ( (q & P2M_UNSHARE) && p2m_is_shared(*t) )
     {
@@ -306,7 +353,7 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
          * sleeping. */
         if ( mem_sharing_unshare_page(p2m->domain, gfn, 0) < 0 )
             (void)mem_sharing_notify_enomem(p2m->domain, gfn, 0);
-        mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order);
+        mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order, NULL);
     }
 
     if (unlikely((p2m_is_broken(*t))))
@@ -410,7 +457,7 @@ int p2m_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
         else
             order = 0;
 
-        set_rc = p2m->set_entry(p2m, gfn, mfn, order, p2mt, p2ma);
+        set_rc = p2m->set_entry(p2m, gfn, mfn, order, p2mt, p2ma, -1);
         if ( set_rc )
             rc = set_rc;
 
@@ -574,7 +621,7 @@ p2m_remove_page(struct p2m_domain *p2m, unsigned long gfn, unsigned long mfn,
     {
         for ( i = 0; i < (1UL << page_order); i++ )
         {
-            mfn_return = p2m->get_entry(p2m, gfn + i, &t, &a, 0, NULL);
+            mfn_return = p2m->get_entry(p2m, gfn + i, &t, &a, 0, NULL, NULL);
             if ( !p2m_is_grant(t) && !p2m_is_shared(t) && !p2m_is_foreign(t) )
                 set_gpfn_from_mfn(mfn+i, INVALID_M2P_ENTRY);
             ASSERT( !p2m_is_valid(t) || mfn + i == mfn_x(mfn_return) );
@@ -584,14 +631,16 @@ p2m_remove_page(struct p2m_domain *p2m, unsigned long gfn, unsigned long mfn,
                          p2m->default_access);
 }
 
-void
+int
 guest_physmap_remove_page(struct domain *d, unsigned long gfn,
                           unsigned long mfn, unsigned int page_order)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    int rc;
     gfn_lock(p2m, gfn, page_order);
-    p2m_remove_page(p2m, gfn, mfn, page_order);
+    rc = p2m_remove_page(p2m, gfn, mfn, page_order);
     gfn_unlock(p2m, gfn, page_order);
+    return rc;
 }
 
 int
@@ -637,7 +686,7 @@ guest_physmap_add_entry(struct domain *d, unsigned long gfn,
     /* First, remove m->p mappings for existing p->m mappings */
     for ( i = 0; i < (1UL << page_order); i++ )
     {
-        omfn = p2m->get_entry(p2m, gfn + i, &ot, &a, 0, NULL);
+        omfn = p2m->get_entry(p2m, gfn + i, &ot, &a, 0, NULL, NULL);
         if ( p2m_is_shared(ot) )
         {
             /* Do an unshare to cleanly take care of all corner 
@@ -661,7 +710,7 @@ guest_physmap_add_entry(struct domain *d, unsigned long gfn,
                 (void)mem_sharing_notify_enomem(p2m->domain, gfn + i, 0);
                 return rc;
             }
-            omfn = p2m->get_entry(p2m, gfn + i, &ot, &a, 0, NULL);
+            omfn = p2m->get_entry(p2m, gfn + i, &ot, &a, 0, NULL, NULL);
             ASSERT(!p2m_is_shared(ot));
         }
         if ( p2m_is_grant(ot) || p2m_is_foreign(ot) )
@@ -709,7 +758,7 @@ guest_physmap_add_entry(struct domain *d, unsigned long gfn,
              * address */
             P2M_DEBUG("aliased! mfn=%#lx, old gfn=%#lx, new gfn=%#lx\n",
                       mfn + i, ogfn, gfn + i);
-            omfn = p2m->get_entry(p2m, ogfn, &ot, &a, 0, NULL);
+            omfn = p2m->get_entry(p2m, ogfn, &ot, &a, 0, NULL, NULL);
             if ( p2m_is_ram(ot) && !p2m_is_paged(ot) )
             {
                 ASSERT(mfn_valid(omfn));
@@ -776,7 +825,7 @@ int p2m_change_type_one(struct domain *d, unsigned long gfn,
 
     gfn_lock(p2m, gfn, 0);
 
-    mfn = p2m->get_entry(p2m, gfn, &pt, &a, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn, &pt, &a, 0, NULL, NULL);
     rc = likely(pt == ot)
          ? p2m_set_entry(p2m, gfn, mfn, PAGE_ORDER_4K, nt,
                          p2m->default_access)
@@ -860,7 +909,7 @@ static int set_typed_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn,
         return -EIO;
 
     gfn_lock(p2m, gfn, 0);
-    omfn = p2m->get_entry(p2m, gfn, &ot, &a, 0, NULL);
+    omfn = p2m->get_entry(p2m, gfn, &ot, &a, 0, NULL, NULL);
     if ( p2m_is_grant(ot) || p2m_is_foreign(ot) )
     {
         p2m_unlock(p2m);
@@ -898,6 +947,47 @@ int set_mmio_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn,
     return set_typed_p2m_entry(d, gfn, mfn, p2m_mmio_direct, access);
 }
 
+int set_identity_p2m_entry(struct domain *d, unsigned long gfn,
+                           p2m_access_t p2ma, unsigned int flag)
+{
+    p2m_type_t p2mt;
+    p2m_access_t a;
+    mfn_t mfn;
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    int ret;
+
+    if ( !paging_mode_translate(p2m->domain) )
+    {
+        if ( !need_iommu(d) )
+            return 0;
+        return iommu_map_page(d, gfn, gfn, IOMMUF_readable|IOMMUF_writable);
+    }
+
+    gfn_lock(p2m, gfn, 0);
+
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
+
+    if ( p2mt == p2m_invalid || p2mt == p2m_mmio_dm )
+        ret = p2m_set_entry(p2m, gfn, _mfn(gfn), PAGE_ORDER_4K,
+                            p2m_mmio_direct, p2ma);
+    else if ( mfn_x(mfn) == gfn && p2mt == p2m_mmio_direct && a == p2ma )
+        ret = 0;
+    else
+    {
+        if ( flag & XEN_DOMCTL_DEV_RDM_RELAXED )
+            ret = 0;
+        else
+            ret = -EBUSY;
+        printk(XENLOG_G_WARNING
+               "Cannot setup identity map d%d:%lx,"
+               " gfn already mapped to %lx.\n",
+               d->domain_id, gfn, mfn_x(mfn));
+    }
+
+    gfn_unlock(p2m, gfn, 0);
+    return ret;
+}
+
 /* Returns: 0 for success, -errno for failure */
 int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn)
 {
@@ -911,7 +1001,7 @@ int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn)
         return -EIO;
 
     gfn_lock(p2m, gfn, 0);
-    actual_mfn = p2m->get_entry(p2m, gfn, &t, &a, 0, NULL);
+    actual_mfn = p2m->get_entry(p2m, gfn, &t, &a, 0, NULL, NULL);
 
     /* Do not use mfn_valid() here as it will usually fail for MMIO pages. */
     if ( (INVALID_MFN == mfn_x(actual_mfn)) || (t != p2m_mmio_direct) )
@@ -933,6 +1023,42 @@ int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn)
     return rc;
 }
 
+int clear_identity_p2m_entry(struct domain *d, unsigned long gfn)
+{
+    p2m_type_t p2mt;
+    p2m_access_t a;
+    mfn_t mfn;
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    int ret;
+
+    if ( !paging_mode_translate(d) )
+    {
+        if ( !need_iommu(d) )
+            return 0;
+        return iommu_unmap_page(d, gfn);
+    }
+
+    gfn_lock(p2m, gfn, 0);
+
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
+    if ( p2mt == p2m_mmio_direct && mfn_x(mfn) == gfn )
+    {
+        ret = p2m_set_entry(p2m, gfn, _mfn(INVALID_MFN), PAGE_ORDER_4K,
+                            p2m_invalid, p2m->default_access);
+        gfn_unlock(p2m, gfn, 0);
+    }
+    else
+    {
+        gfn_unlock(p2m, gfn, 0);
+        printk(XENLOG_G_WARNING
+               "non-identity map d%d:%lx not cleared (mapped to %lx)\n",
+               d->domain_id, gfn, mfn_x(mfn));
+        ret = 0;
+    }
+
+    return ret;
+}
+
 /* Returns: 0 for success, -errno for failure */
 int set_shared_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn)
 {
@@ -947,7 +1073,7 @@ int set_shared_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn)
         return -EIO;
 
     gfn_lock(p2m, gfn, 0);
-    omfn = p2m->get_entry(p2m, gfn, &ot, &a, 0, NULL);
+    omfn = p2m->get_entry(p2m, gfn, &ot, &a, 0, NULL, NULL);
     /* At the moment we only allow p2m change if gfn has already been made
      * sharable first */
     ASSERT(p2m_is_shared(ot));
@@ -999,7 +1125,7 @@ int p2m_mem_paging_nominate(struct domain *d, unsigned long gfn)
 
     gfn_lock(p2m, gfn, 0);
 
-    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
 
     /* Check if mfn is valid */
     if ( !mfn_valid(mfn) )
@@ -1061,7 +1187,7 @@ int p2m_mem_paging_evict(struct domain *d, unsigned long gfn)
     gfn_lock(p2m, gfn, 0);
 
     /* Get mfn */
-    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
     if ( unlikely(!mfn_valid(mfn)) )
         goto out;
 
@@ -1193,7 +1319,7 @@ void p2m_mem_paging_populate(struct domain *d, unsigned long gfn)
 
     /* Fix p2m mapping */
     gfn_lock(p2m, gfn, 0);
-    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
     /* Allow only nominated or evicted pages to enter page-in path */
     if ( p2mt == p2m_ram_paging_out || p2mt == p2m_ram_paged )
     {
@@ -1255,7 +1381,7 @@ int p2m_mem_paging_prep(struct domain *d, unsigned long gfn, uint64_t buffer)
 
     gfn_lock(p2m, gfn, 0);
 
-    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
 
     ret = -ENOENT;
     /* Allow missing pages */
@@ -1285,7 +1411,7 @@ int p2m_mem_paging_prep(struct domain *d, unsigned long gfn, uint64_t buffer)
         int rc;
 
         ASSERT( mfn_valid(mfn) );
-        guest_map = map_domain_page(mfn_x(mfn));
+        guest_map = map_domain_page(mfn);
         rc = copy_from_user(guest_map, user_ptr, PAGE_SIZE);
         unmap_domain_page(guest_map);
         if ( rc )
@@ -1343,7 +1469,7 @@ void p2m_mem_paging_resume(struct domain *d, vm_event_response_t *rsp)
         unsigned long gfn = rsp->u.mem_access.gfn;
 
         gfn_lock(p2m, gfn, 0);
-        mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL);
+        mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
         /*
          * Allow only pages which were prepared properly, or pages which
          * were nominated but not evicted.
@@ -1369,62 +1495,62 @@ static void p2m_vm_event_fill_regs(vm_event_request_t *req)
     /* Architecture-specific vmcs/vmcb bits */
     hvm_funcs.save_cpu_ctxt(curr, &ctxt);
 
-    req->regs.x86.rax = regs->eax;
-    req->regs.x86.rcx = regs->ecx;
-    req->regs.x86.rdx = regs->edx;
-    req->regs.x86.rbx = regs->ebx;
-    req->regs.x86.rsp = regs->esp;
-    req->regs.x86.rbp = regs->ebp;
-    req->regs.x86.rsi = regs->esi;
-    req->regs.x86.rdi = regs->edi;
+    req->data.regs.x86.rax = regs->eax;
+    req->data.regs.x86.rcx = regs->ecx;
+    req->data.regs.x86.rdx = regs->edx;
+    req->data.regs.x86.rbx = regs->ebx;
+    req->data.regs.x86.rsp = regs->esp;
+    req->data.regs.x86.rbp = regs->ebp;
+    req->data.regs.x86.rsi = regs->esi;
+    req->data.regs.x86.rdi = regs->edi;
 
-    req->regs.x86.r8  = regs->r8;
-    req->regs.x86.r9  = regs->r9;
-    req->regs.x86.r10 = regs->r10;
-    req->regs.x86.r11 = regs->r11;
-    req->regs.x86.r12 = regs->r12;
-    req->regs.x86.r13 = regs->r13;
-    req->regs.x86.r14 = regs->r14;
-    req->regs.x86.r15 = regs->r15;
+    req->data.regs.x86.r8  = regs->r8;
+    req->data.regs.x86.r9  = regs->r9;
+    req->data.regs.x86.r10 = regs->r10;
+    req->data.regs.x86.r11 = regs->r11;
+    req->data.regs.x86.r12 = regs->r12;
+    req->data.regs.x86.r13 = regs->r13;
+    req->data.regs.x86.r14 = regs->r14;
+    req->data.regs.x86.r15 = regs->r15;
 
-    req->regs.x86.rflags = regs->eflags;
-    req->regs.x86.rip    = regs->eip;
+    req->data.regs.x86.rflags = regs->eflags;
+    req->data.regs.x86.rip    = regs->eip;
 
-    req->regs.x86.dr7 = curr->arch.debugreg[7];
-    req->regs.x86.cr0 = ctxt.cr0;
-    req->regs.x86.cr2 = ctxt.cr2;
-    req->regs.x86.cr3 = ctxt.cr3;
-    req->regs.x86.cr4 = ctxt.cr4;
+    req->data.regs.x86.dr7 = curr->arch.debugreg[7];
+    req->data.regs.x86.cr0 = ctxt.cr0;
+    req->data.regs.x86.cr2 = ctxt.cr2;
+    req->data.regs.x86.cr3 = ctxt.cr3;
+    req->data.regs.x86.cr4 = ctxt.cr4;
 
-    req->regs.x86.sysenter_cs = ctxt.sysenter_cs;
-    req->regs.x86.sysenter_esp = ctxt.sysenter_esp;
-    req->regs.x86.sysenter_eip = ctxt.sysenter_eip;
+    req->data.regs.x86.sysenter_cs = ctxt.sysenter_cs;
+    req->data.regs.x86.sysenter_esp = ctxt.sysenter_esp;
+    req->data.regs.x86.sysenter_eip = ctxt.sysenter_eip;
 
-    req->regs.x86.msr_efer = ctxt.msr_efer;
-    req->regs.x86.msr_star = ctxt.msr_star;
-    req->regs.x86.msr_lstar = ctxt.msr_lstar;
+    req->data.regs.x86.msr_efer = ctxt.msr_efer;
+    req->data.regs.x86.msr_star = ctxt.msr_star;
+    req->data.regs.x86.msr_lstar = ctxt.msr_lstar;
 
     hvm_get_segment_register(curr, x86_seg_fs, &seg);
-    req->regs.x86.fs_base = seg.base;
+    req->data.regs.x86.fs_base = seg.base;
 
     hvm_get_segment_register(curr, x86_seg_gs, &seg);
-    req->regs.x86.gs_base = seg.base;
+    req->data.regs.x86.gs_base = seg.base;
 
     hvm_get_segment_register(curr, x86_seg_cs, &seg);
-    req->regs.x86.cs_arbytes = seg.attr.bytes;
+    req->data.regs.x86.cs_arbytes = seg.attr.bytes;
 }
 
 void p2m_mem_access_emulate_check(struct vcpu *v,
                                   const vm_event_response_t *rsp)
 {
     /* Mark vcpu for skipping one instruction upon rescheduling. */
-    if ( rsp->flags & MEM_ACCESS_EMULATE )
+    if ( rsp->flags & VM_EVENT_FLAG_EMULATE )
     {
         xenmem_access_t access;
         bool_t violation = 1;
         const struct vm_event_mem_access *data = &rsp->u.mem_access;
 
-        if ( p2m_get_mem_access(v->domain, data->gfn, &access) == 0 )
+        if ( p2m_get_mem_access(v->domain, _gfn(data->gfn), &access) == 0 )
         {
             switch ( access )
             {
@@ -1466,7 +1592,17 @@ void p2m_mem_access_emulate_check(struct vcpu *v,
         }
 
         v->arch.vm_event.emulate_flags = violation ? rsp->flags : 0;
+
+        if ( (rsp->flags & VM_EVENT_FLAG_SET_EMUL_READ_DATA) &&
+             v->arch.vm_event.emul_read_data )
+            *v->arch.vm_event.emul_read_data = rsp->data.emul_read_data;
     }
+}
+
+void p2m_altp2m_check(struct vcpu *v, uint16_t idx)
+{
+    if ( altp2m_active(v->domain) )
+        p2m_switch_vcpu_altp2m_by_id(v, idx);
 }
 
 bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
@@ -1476,7 +1612,7 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
     struct vcpu *v = current;
     unsigned long gfn = gpa >> PAGE_SHIFT;
     struct domain *d = v->domain;    
-    struct p2m_domain* p2m = p2m_get_hostp2m(d);
+    struct p2m_domain *p2m = NULL;
     mfn_t mfn;
     p2m_type_t p2mt;
     p2m_access_t p2ma;
@@ -1484,15 +1620,20 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
     int rc;
     unsigned long eip = guest_cpu_user_regs()->eip;
 
+    if ( altp2m_active(d) )
+        p2m = p2m_get_altp2m(v);
+    if ( !p2m )
+        p2m = p2m_get_hostp2m(d);
+
     /* First, handle rx2rw conversion automatically.
      * These calls to p2m->set_entry() must succeed: we have the gfn
      * locked and just did a successful get_entry(). */
     gfn_lock(p2m, gfn, 0);
-    mfn = p2m->get_entry(p2m, gfn, &p2mt, &p2ma, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &p2ma, 0, NULL, NULL);
 
     if ( npfec.write_access && p2ma == p2m_access_rx2rw ) 
     {
-        rc = p2m->set_entry(p2m, gfn, mfn, PAGE_ORDER_4K, p2mt, p2m_access_rw);
+        rc = p2m->set_entry(p2m, gfn, mfn, PAGE_ORDER_4K, p2mt, p2m_access_rw, -1);
         ASSERT(rc == 0);
         gfn_unlock(p2m, gfn, 0);
         return 1;
@@ -1501,7 +1642,7 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
     {
         ASSERT(npfec.write_access || npfec.read_access || npfec.insn_fetch);
         rc = p2m->set_entry(p2m, gfn, mfn, PAGE_ORDER_4K,
-                            p2mt, p2m_access_rwx);
+                            p2mt, p2m_access_rwx, -1);
         ASSERT(rc == 0);
     }
     gfn_unlock(p2m, gfn, 0);
@@ -1521,14 +1662,14 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
         else
         {
             gfn_lock(p2m, gfn, 0);
-            mfn = p2m->get_entry(p2m, gfn, &p2mt, &p2ma, 0, NULL);
+            mfn = p2m->get_entry(p2m, gfn, &p2mt, &p2ma, 0, NULL, NULL);
             if ( p2ma != p2m_access_n2rwx )
             {
                 /* A listener is not required, so clear the access
                  * restrictions.  This set must succeed: we have the
                  * gfn locked and just did a successful get_entry(). */
                 rc = p2m->set_entry(p2m, gfn, mfn, PAGE_ORDER_4K,
-                                    p2mt, p2m_access_rwx);
+                                    p2mt, p2m_access_rwx, -1);
                 ASSERT(rc == 0);
             }
             gfn_unlock(p2m, gfn, 0);
@@ -1552,9 +1693,17 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
 
     if ( v->arch.vm_event.emulate_flags )
     {
-        hvm_mem_access_emulate_one((v->arch.vm_event.emulate_flags &
-                                    MEM_ACCESS_EMULATE_NOWRITE) != 0,
-                                   TRAP_invalid_op, HVM_DELIVER_NO_ERROR_CODE);
+        enum emul_kind kind = EMUL_KIND_NORMAL;
+
+        if ( v->arch.vm_event.emulate_flags &
+             VM_EVENT_FLAG_SET_EMUL_READ_DATA )
+            kind = EMUL_KIND_SET_CONTEXT;
+        else if ( v->arch.vm_event.emulate_flags &
+                  VM_EVENT_FLAG_EMULATE_NOWRITE )
+            kind = EMUL_KIND_NOWRITE;
+
+        hvm_mem_access_emulate_one(kind, TRAP_invalid_op,
+                                   HVM_DELIVER_NO_ERROR_CODE);
 
         v->arch.vm_event.emulate_flags = 0;
         return 1;
@@ -1590,6 +1739,12 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
         req->vcpu_id = v->vcpu_id;
 
         p2m_vm_event_fill_regs(req);
+
+        if ( altp2m_active(v->domain) )
+        {
+            req->flags |= VM_EVENT_FLAG_ALTERNATE_P2M;
+            req->altp2m_idx = vcpu_altp2m(v).p2midx;
+        }
     }
 
     /* Pause the current VCPU */
@@ -1600,15 +1755,18 @@ bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
     return (p2ma == p2m_access_n2rwx);
 }
 
-/* Set access type for a region of pfns.
- * If start_pfn == -1ul, sets the default access type */
-long p2m_set_mem_access(struct domain *d, unsigned long pfn, uint32_t nr,
+/*
+ * Set access type for a region of gfns.
+ * If gfn == INVALID_GFN, sets the default access type.
+ */
+long p2m_set_mem_access(struct domain *d, gfn_t gfn, uint32_t nr,
                         uint32_t start, uint32_t mask, xenmem_access_t access)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     p2m_access_t a, _a;
     p2m_type_t t;
     mfn_t mfn;
+    unsigned long gfn_l;
     long rc = 0;
 
     static const p2m_access_t memaccess[] = {
@@ -1638,18 +1796,18 @@ long p2m_set_mem_access(struct domain *d, unsigned long pfn, uint32_t nr,
         return -EINVAL;
     }
 
-    /* If request to set default access */
-    if ( pfn == ~0ul )
+    /* If request to set default access. */
+    if ( gfn_x(gfn) == INVALID_GFN )
     {
         p2m->default_access = a;
         return 0;
     }
 
     p2m_lock(p2m);
-    for ( pfn += start; nr > start; ++pfn )
+    for ( gfn_l = gfn_x(gfn) + start; nr > start; ++gfn_l )
     {
-        mfn = p2m->get_entry(p2m, pfn, &t, &_a, 0, NULL);
-        rc = p2m->set_entry(p2m, pfn, mfn, PAGE_ORDER_4K, t, a);
+        mfn = p2m->get_entry(p2m, gfn_l, &t, &_a, 0, NULL, NULL);
+        rc = p2m->set_entry(p2m, gfn_l, mfn, PAGE_ORDER_4K, t, a, -1);
         if ( rc )
             break;
 
@@ -1664,10 +1822,11 @@ long p2m_set_mem_access(struct domain *d, unsigned long pfn, uint32_t nr,
     return rc;
 }
 
-/* Get access type for a pfn
- * If pfn == -1ul, gets the default access type */
-int p2m_get_mem_access(struct domain *d, unsigned long pfn, 
-                       xenmem_access_t *access)
+/*
+ * Get access type for a gfn.
+ * If gfn == INVALID_GFN, gets the default access type.
+ */
+int p2m_get_mem_access(struct domain *d, gfn_t gfn, xenmem_access_t *access)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     p2m_type_t t;
@@ -1689,15 +1848,15 @@ int p2m_get_mem_access(struct domain *d, unsigned long pfn,
 #undef ACCESS
     };
 
-    /* If request to get default access */
-    if ( pfn == ~0ull ) 
+    /* If request to get default access. */
+    if ( gfn_x(gfn) == INVALID_GFN )
     {
         *access = memaccess[p2m->default_access];
         return 0;
     }
 
     gfn_lock(p2m, gfn, 0);
-    mfn = p2m->get_entry(p2m, pfn, &t, &a, 0, NULL);
+    mfn = p2m->get_entry(p2m, gfn_x(gfn), &t, &a, 0, NULL, NULL);
     gfn_unlock(p2m, gfn, 0);
 
     if ( mfn_x(mfn) == INVALID_MFN )
@@ -1741,6 +1900,12 @@ p2m_flush_table(struct p2m_domain *p2m)
     /* Nested p2m's do not do pod, hence the asserts (and no pod lock)*/
     ASSERT(page_list_empty(&p2m->pod.super));
     ASSERT(page_list_empty(&p2m->pod.single));
+
+    if ( p2m->np2m_base == P2M_BASE_EADDR )
+    {
+        p2m_unlock(p2m);
+        return;
+    }
 
     /* This is no longer a valid nested p2m for any address space */
     p2m->np2m_base = P2M_BASE_EADDR;
@@ -1851,9 +2016,7 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
     struct p2m_domain *hostp2m = p2m_get_hostp2m(v->domain);
     const struct paging_mode *hostmode = paging_get_hostmode(v);
 
-    if ( is_hvm_domain(v->domain)
-        && paging_mode_hap(v->domain) 
-        && nestedhvm_is_n2(v) )
+    if ( is_hvm_vcpu(v) && paging_mode_hap(v->domain) && nestedhvm_is_n2(v) )
     {
         unsigned long gfn;
         struct p2m_domain *p2m;
@@ -1918,6 +2081,497 @@ int unmap_mmio_regions(struct domain *d,
     }
 
     return err;
+}
+
+unsigned int p2m_find_altp2m_by_eptp(struct domain *d, uint64_t eptp)
+{
+    struct p2m_domain *p2m;
+    struct ept_data *ept;
+    unsigned int i;
+
+    altp2m_list_lock(d);
+
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        if ( d->arch.altp2m_eptp[i] == INVALID_MFN )
+            continue;
+
+        p2m = d->arch.altp2m_p2m[i];
+        ept = &p2m->ept;
+
+        if ( eptp == ept_get_eptp(ept) )
+            goto out;
+    }
+
+    i = INVALID_ALTP2M;
+
+ out:
+    altp2m_list_unlock(d);
+    return i;
+}
+
+bool_t p2m_switch_vcpu_altp2m_by_id(struct vcpu *v, unsigned int idx)
+{
+    struct domain *d = v->domain;
+    bool_t rc = 0;
+
+    if ( idx >= MAX_ALTP2M )
+        return rc;
+
+    altp2m_list_lock(d);
+
+    if ( d->arch.altp2m_eptp[idx] != INVALID_MFN )
+    {
+        if ( idx != vcpu_altp2m(v).p2midx )
+        {
+            atomic_dec(&p2m_get_altp2m(v)->active_vcpus);
+            vcpu_altp2m(v).p2midx = idx;
+            atomic_inc(&p2m_get_altp2m(v)->active_vcpus);
+            altp2m_vcpu_update_p2m(v);
+        }
+        rc = 1;
+    }
+
+    altp2m_list_unlock(d);
+    return rc;
+}
+
+/*
+ * If the fault is for a not present entry:
+ *     if the entry in the host p2m has a valid mfn, copy it and retry
+ *     else indicate that outer handler should handle fault
+ *
+ * If the fault is for a present entry:
+ *     indicate that outer handler should handle fault
+ */
+
+bool_t p2m_altp2m_lazy_copy(struct vcpu *v, paddr_t gpa,
+                            unsigned long gla, struct npfec npfec,
+                            struct p2m_domain **ap2m)
+{
+    struct p2m_domain *hp2m = p2m_get_hostp2m(v->domain);
+    p2m_type_t p2mt;
+    p2m_access_t p2ma;
+    unsigned int page_order;
+    gfn_t gfn = _gfn(paddr_to_pfn(gpa));
+    unsigned long mask;
+    mfn_t mfn;
+    int rv;
+
+    *ap2m = p2m_get_altp2m(v);
+
+    mfn = get_gfn_type_access(*ap2m, gfn_x(gfn), &p2mt, &p2ma,
+                              0, &page_order);
+    __put_gfn(*ap2m, gfn_x(gfn));
+
+    if ( mfn_x(mfn) != INVALID_MFN )
+        return 0;
+
+    mfn = get_gfn_type_access(hp2m, gfn_x(gfn), &p2mt, &p2ma,
+                              P2M_ALLOC | P2M_UNSHARE, &page_order);
+    __put_gfn(hp2m, gfn_x(gfn));
+
+    if ( mfn_x(mfn) == INVALID_MFN )
+        return 0;
+
+    p2m_lock(*ap2m);
+
+    /*
+     * If this is a superpage mapping, round down both frame numbers
+     * to the start of the superpage.
+     */
+    mask = ~((1UL << page_order) - 1);
+    mfn = _mfn(mfn_x(mfn) & mask);
+
+    rv = p2m_set_entry(*ap2m, gfn_x(gfn) & mask, mfn, page_order, p2mt, p2ma);
+    p2m_unlock(*ap2m);
+
+    if ( rv )
+    {
+        gdprintk(XENLOG_ERR,
+	    "failed to set entry for %#"PRIx64" -> %#"PRIx64" p2m %#"PRIx64"\n",
+	    gfn_x(gfn), mfn_x(mfn), (unsigned long)*ap2m);
+        domain_crash(hp2m->domain);
+    }
+
+    return 1;
+}
+
+void p2m_flush_altp2m(struct domain *d)
+{
+    unsigned int i;
+
+    altp2m_list_lock(d);
+
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        p2m_flush_table(d->arch.altp2m_p2m[i]);
+        /* Uninit and reinit ept to force TLB shootdown */
+        ept_p2m_uninit(d->arch.altp2m_p2m[i]);
+        ept_p2m_init(d->arch.altp2m_p2m[i]);
+        d->arch.altp2m_eptp[i] = INVALID_MFN;
+    }
+
+    altp2m_list_unlock(d);
+}
+
+static void p2m_init_altp2m_helper(struct domain *d, unsigned int i)
+{
+    struct p2m_domain *p2m = d->arch.altp2m_p2m[i];
+    struct ept_data *ept;
+
+    p2m->min_remapped_gfn = INVALID_GFN;
+    p2m->max_remapped_gfn = 0;
+    ept = &p2m->ept;
+    ept->asr = pagetable_get_pfn(p2m_get_pagetable(p2m));
+    d->arch.altp2m_eptp[i] = ept_get_eptp(ept);
+}
+
+int p2m_init_altp2m_by_id(struct domain *d, unsigned int idx)
+{
+    int rc = -EINVAL;
+
+    if ( idx >= MAX_ALTP2M )
+        return rc;
+
+    altp2m_list_lock(d);
+
+    if ( d->arch.altp2m_eptp[idx] == INVALID_MFN )
+    {
+        p2m_init_altp2m_helper(d, idx);
+        rc = 0;
+    }
+
+    altp2m_list_unlock(d);
+    return rc;
+}
+
+int p2m_init_next_altp2m(struct domain *d, uint16_t *idx)
+{
+    int rc = -EINVAL;
+    unsigned int i;
+
+    altp2m_list_lock(d);
+
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        if ( d->arch.altp2m_eptp[i] != INVALID_MFN )
+            continue;
+
+        p2m_init_altp2m_helper(d, i);
+        *idx = i;
+        rc = 0;
+
+        break;
+    }
+
+    altp2m_list_unlock(d);
+    return rc;
+}
+
+int p2m_destroy_altp2m_by_id(struct domain *d, unsigned int idx)
+{
+    struct p2m_domain *p2m;
+    int rc = -EBUSY;
+
+    if ( !idx || idx >= MAX_ALTP2M )
+        return rc;
+
+    domain_pause_except_self(d);
+
+    altp2m_list_lock(d);
+
+    if ( d->arch.altp2m_eptp[idx] != INVALID_MFN )
+    {
+        p2m = d->arch.altp2m_p2m[idx];
+
+        if ( !_atomic_read(p2m->active_vcpus) )
+        {
+            p2m_flush_table(d->arch.altp2m_p2m[idx]);
+            /* Uninit and reinit ept to force TLB shootdown */
+            ept_p2m_uninit(d->arch.altp2m_p2m[idx]);
+            ept_p2m_init(d->arch.altp2m_p2m[idx]);
+            d->arch.altp2m_eptp[idx] = INVALID_MFN;
+            rc = 0;
+        }
+    }
+
+    altp2m_list_unlock(d);
+
+    domain_unpause_except_self(d);
+
+    return rc;
+}
+
+int p2m_switch_domain_altp2m_by_id(struct domain *d, unsigned int idx)
+{
+    struct vcpu *v;
+    int rc = -EINVAL;
+
+    if ( idx >= MAX_ALTP2M )
+        return rc;
+
+    domain_pause_except_self(d);
+
+    altp2m_list_lock(d);
+
+    if ( d->arch.altp2m_eptp[idx] != INVALID_MFN )
+    {
+        for_each_vcpu( d, v )
+            if ( idx != vcpu_altp2m(v).p2midx )
+            {
+                atomic_dec(&p2m_get_altp2m(v)->active_vcpus);
+                vcpu_altp2m(v).p2midx = idx;
+                atomic_inc(&p2m_get_altp2m(v)->active_vcpus);
+                altp2m_vcpu_update_p2m(v);
+            }
+
+        rc = 0;
+    }
+
+    altp2m_list_unlock(d);
+
+    domain_unpause_except_self(d);
+
+    return rc;
+}
+
+int p2m_set_altp2m_mem_access(struct domain *d, unsigned int idx,
+                              gfn_t gfn, xenmem_access_t access)
+{
+    struct p2m_domain *hp2m, *ap2m;
+    p2m_access_t req_a, old_a;
+    p2m_type_t t;
+    mfn_t mfn;
+    unsigned int page_order;
+    int rc = -EINVAL;
+
+    static const p2m_access_t memaccess[] = {
+#define ACCESS(ac) [XENMEM_access_##ac] = p2m_access_##ac
+        ACCESS(n),
+        ACCESS(r),
+        ACCESS(w),
+        ACCESS(rw),
+        ACCESS(x),
+        ACCESS(rx),
+        ACCESS(wx),
+        ACCESS(rwx),
+#undef ACCESS
+    };
+
+    if ( idx >= MAX_ALTP2M || d->arch.altp2m_eptp[idx] == INVALID_MFN )
+        return rc;
+
+    ap2m = d->arch.altp2m_p2m[idx];
+
+    switch ( access )
+    {
+    case 0 ... ARRAY_SIZE(memaccess) - 1:
+        req_a = memaccess[access];
+        break;
+    case XENMEM_access_default:
+        req_a = ap2m->default_access;
+        break;
+    default:
+        return rc;
+    }
+
+    /* If request to set default access */
+    if ( gfn_x(gfn) == INVALID_GFN )
+    {
+        ap2m->default_access = req_a;
+        return 0;
+    }
+
+    hp2m = p2m_get_hostp2m(d);
+
+    p2m_lock(ap2m);
+
+    mfn = ap2m->get_entry(ap2m, gfn_x(gfn), &t, &old_a, 0, NULL, NULL);
+
+    /* Check host p2m if no valid entry in alternate */
+    if ( !mfn_valid(mfn) )
+    {
+        mfn = hp2m->get_entry(hp2m, gfn_x(gfn), &t, &old_a,
+                              P2M_ALLOC | P2M_UNSHARE, &page_order, NULL);
+
+        if ( !mfn_valid(mfn) || t != p2m_ram_rw )
+            goto out;
+
+        /* If this is a superpage, copy that first */
+        if ( page_order != PAGE_ORDER_4K )
+        {
+            gfn_t gfn2;
+            unsigned long mask;
+            mfn_t mfn2;
+
+            mask = ~((1UL << page_order) - 1);
+            gfn2 = _gfn(gfn_x(gfn) & mask);
+            mfn2 = _mfn(mfn_x(mfn) & mask);
+
+            if ( ap2m->set_entry(ap2m, gfn_x(gfn2), mfn2, page_order, t, old_a, 1) )
+                goto out;
+        }
+    }
+
+    if ( !ap2m->set_entry(ap2m, gfn_x(gfn), mfn, PAGE_ORDER_4K, t, req_a,
+                          (current->domain != d)) )
+        rc = 0;
+
+ out:
+    p2m_unlock(ap2m);
+    return rc;
+}
+
+int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
+                          gfn_t old_gfn, gfn_t new_gfn)
+{
+    struct p2m_domain *hp2m, *ap2m;
+    p2m_access_t a;
+    p2m_type_t t;
+    mfn_t mfn;
+    unsigned int page_order;
+    int rc = -EINVAL;
+
+    if ( idx >= MAX_ALTP2M || d->arch.altp2m_eptp[idx] == INVALID_MFN )
+        return rc;
+
+    hp2m = p2m_get_hostp2m(d);
+    ap2m = d->arch.altp2m_p2m[idx];
+
+    p2m_lock(ap2m);
+
+    mfn = ap2m->get_entry(ap2m, gfn_x(old_gfn), &t, &a, 0, NULL, NULL);
+
+    if ( gfn_x(new_gfn) == INVALID_GFN )
+    {
+        if ( mfn_valid(mfn) )
+            p2m_remove_page(ap2m, gfn_x(old_gfn), mfn_x(mfn), PAGE_ORDER_4K);
+        rc = 0;
+        goto out;
+    }
+
+    /* Check host p2m if no valid entry in alternate */
+    if ( !mfn_valid(mfn) )
+    {
+        mfn = hp2m->get_entry(hp2m, gfn_x(old_gfn), &t, &a,
+                              P2M_ALLOC | P2M_UNSHARE, &page_order, NULL);
+
+        if ( !mfn_valid(mfn) || t != p2m_ram_rw )
+            goto out;
+
+        /* If this is a superpage, copy that first */
+        if ( page_order != PAGE_ORDER_4K )
+        {
+            gfn_t gfn;
+            unsigned long mask;
+
+            mask = ~((1UL << page_order) - 1);
+            gfn = _gfn(gfn_x(old_gfn) & mask);
+            mfn = _mfn(mfn_x(mfn) & mask);
+
+            if ( ap2m->set_entry(ap2m, gfn_x(gfn), mfn, page_order, t, a, 1) )
+                goto out;
+        }
+    }
+
+    mfn = ap2m->get_entry(ap2m, gfn_x(new_gfn), &t, &a, 0, NULL, NULL);
+
+    if ( !mfn_valid(mfn) )
+        mfn = hp2m->get_entry(hp2m, gfn_x(new_gfn), &t, &a, 0, NULL, NULL);
+
+    if ( !mfn_valid(mfn) || (t != p2m_ram_rw) )
+        goto out;
+
+    if ( !ap2m->set_entry(ap2m, gfn_x(old_gfn), mfn, PAGE_ORDER_4K, t, a,
+                          (current->domain != d)) )
+    {
+        rc = 0;
+
+        if ( gfn_x(new_gfn) < ap2m->min_remapped_gfn )
+            ap2m->min_remapped_gfn = gfn_x(new_gfn);
+        if ( gfn_x(new_gfn) > ap2m->max_remapped_gfn )
+            ap2m->max_remapped_gfn = gfn_x(new_gfn);
+    }
+
+ out:
+    p2m_unlock(ap2m);
+    return rc;
+}
+
+static void p2m_reset_altp2m(struct p2m_domain *p2m)
+{
+    p2m_flush_table(p2m);
+    /* Uninit and reinit ept to force TLB shootdown */
+    ept_p2m_uninit(p2m);
+    ept_p2m_init(p2m);
+    p2m->min_remapped_gfn = INVALID_GFN;
+    p2m->max_remapped_gfn = 0;
+}
+
+void p2m_altp2m_propagate_change(struct domain *d, gfn_t gfn,
+                                 mfn_t mfn, unsigned int page_order,
+                                 p2m_type_t p2mt, p2m_access_t p2ma)
+{
+    struct p2m_domain *p2m;
+    p2m_access_t a;
+    p2m_type_t t;
+    mfn_t m;
+    unsigned int i;
+    unsigned int reset_count = 0;
+    unsigned int last_reset_idx = ~0;
+
+    if ( !altp2m_active(d) )
+        return;
+
+    altp2m_list_lock(d);
+
+    for ( i = 0; i < MAX_ALTP2M; i++ )
+    {
+        if ( d->arch.altp2m_eptp[i] == INVALID_MFN )
+            continue;
+
+        p2m = d->arch.altp2m_p2m[i];
+        m = get_gfn_type_access(p2m, gfn_x(gfn), &t, &a, 0, NULL);
+
+        /* Check for a dropped page that may impact this altp2m */
+        if ( mfn_x(mfn) == INVALID_MFN &&
+             gfn_x(gfn) >= p2m->min_remapped_gfn &&
+             gfn_x(gfn) <= p2m->max_remapped_gfn )
+        {
+            if ( !reset_count++ )
+            {
+                p2m_reset_altp2m(p2m);
+                last_reset_idx = i;
+            }
+            else
+            {
+                /* At least 2 altp2m's impacted, so reset everything */
+                __put_gfn(p2m, gfn_x(gfn));
+
+                for ( i = 0; i < MAX_ALTP2M; i++ )
+                {
+                    if ( i == last_reset_idx ||
+                         d->arch.altp2m_eptp[i] == INVALID_MFN )
+                        continue;
+
+                    p2m = d->arch.altp2m_p2m[i];
+                    p2m_lock(p2m);
+                    p2m_reset_altp2m(p2m);
+                    p2m_unlock(p2m);
+                }
+
+                goto out;
+            }
+        }
+        else if ( mfn_x(m) != INVALID_MFN )
+            p2m_set_entry(p2m, gfn_x(gfn), mfn, page_order, p2mt, p2ma);
+
+        __put_gfn(p2m, gfn_x(gfn));
+    }
+
+ out:
+    altp2m_list_unlock(d);
 }
 
 /*** Audit ***/

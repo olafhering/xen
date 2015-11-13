@@ -293,7 +293,7 @@ static unsigned long __init compute_dom0_nr_pages(
     avail -= (d->max_vcpus - 1UL)
              << get_order_from_bytes(sizeof(struct vcpu));
     /* ...and compat_l4's, if needed. */
-    if ( is_pv_32on64_domain(d) )
+    if ( is_pv_32bit_domain(d) )
         avail -= d->max_vcpus - 1;
 
     /* Reserve memory for iommu_dom0_init() (rough estimate). */
@@ -608,7 +608,7 @@ static __init void dom0_update_physmap(struct domain *d, unsigned long pfn,
         BUG_ON(rc);
         return;
     }
-    if ( !is_pv_32on64_domain(d) )
+    if ( !is_pv_32bit_domain(d) )
         ((unsigned long *)vphysmap_s)[pfn] = mfn;
     else
         ((unsigned int *)vphysmap_s)[pfn] = mfn;
@@ -630,7 +630,7 @@ static __init void pvh_fixup_page_tables_for_hap(struct vcpu *v,
 
     ASSERT(paging_mode_enabled(v->domain));
 
-    l4start = map_domain_page(pagetable_get_pfn(v->arch.guest_table));
+    l4start = map_domain_page(_mfn(pagetable_get_pfn(v->arch.guest_table)));
 
     /* Clear entries prior to guest L4 start */
     pl4e = l4start + l4_table_offset(v_start);
@@ -718,7 +718,7 @@ static __init void mark_pv_pt_pages_rdonly(struct domain *d,
 
         /* Top-level p.t. is pinned. */
         if ( (page->u.inuse.type_info & PGT_type_mask) ==
-             (!is_pv_32on64_domain(d) ?
+             (!is_pv_32bit_domain(d) ?
               PGT_l4_page_table : PGT_l3_page_table) )
         {
             page->count_info        += 1;
@@ -746,7 +746,7 @@ static __init void setup_pv_physmap(struct domain *d, unsigned long pgtbl_pfn,
                                     unsigned long nr_pages)
 {
     struct page_info *page = NULL;
-    l4_pgentry_t *pl4e, *l4start = map_domain_page(pgtbl_pfn);
+    l4_pgentry_t *pl4e, *l4start = map_domain_page(_mfn(pgtbl_pfn));
     l3_pgentry_t *pl3e = NULL;
     l2_pgentry_t *pl2e = NULL;
     l1_pgentry_t *pl1e = NULL;
@@ -789,7 +789,7 @@ static __init void setup_pv_physmap(struct domain *d, unsigned long pgtbl_pfn,
             clear_page(pl3e);
             *pl4e = l4e_from_page(page, L4_PROT);
         } else
-            pl3e = map_domain_page(l4e_get_pfn(*pl4e));
+            pl3e = map_domain_page(_mfn(l4e_get_pfn(*pl4e)));
 
         pl3e += l3_table_offset(vphysmap_start);
         if ( !l3e_get_intpte(*pl3e) )
@@ -816,7 +816,7 @@ static __init void setup_pv_physmap(struct domain *d, unsigned long pgtbl_pfn,
             *pl3e = l3e_from_page(page, L3_PROT);
         }
         else
-           pl2e = map_domain_page(l3e_get_pfn(*pl3e));
+            pl2e = map_domain_page(_mfn(l3e_get_pfn(*pl3e)));
 
         pl2e += l2_table_offset(vphysmap_start);
         if ( !l2e_get_intpte(*pl2e) )
@@ -844,7 +844,7 @@ static __init void setup_pv_physmap(struct domain *d, unsigned long pgtbl_pfn,
             *pl2e = l2e_from_page(page, L2_PROT);
         }
         else
-            pl1e = map_domain_page(l2e_get_pfn(*pl2e));
+            pl1e = map_domain_page(_mfn(l2e_get_pfn(*pl2e)));
 
         pl1e += l1_table_offset(vphysmap_start);
         BUG_ON(l1e_get_intpte(*pl1e));
@@ -929,6 +929,8 @@ int __init construct_dom0(
     BUG_ON(d->domain_id != 0);
     BUG_ON(d->vcpu[0] == NULL);
     BUG_ON(v->is_initialised);
+
+    process_pending_softirqs();
 
     printk("*** LOADING DOMAIN 0 ***\n");
 
@@ -1046,7 +1048,7 @@ int __init construct_dom0(
         vinitrd_end    = vinitrd_start + initrd_len;
         vphysmap_start = round_pgup(vinitrd_end);
     }
-    vphysmap_end     = vphysmap_start + (nr_pages * (!is_pv_32on64_domain(d) ?
+    vphysmap_end     = vphysmap_start + (nr_pages * (!is_pv_32bit_domain(d) ?
                                                      sizeof(unsigned long) :
                                                      sizeof(unsigned int)));
     if ( parms.p2m_base != UNSET_ADDR )
@@ -1074,9 +1076,9 @@ int __init construct_dom0(
 #define NR(_l,_h,_s) \
     (((((_h) + ((1UL<<(_s))-1)) & ~((1UL<<(_s))-1)) - \
        ((_l) & ~((1UL<<(_s))-1))) >> (_s))
-        if ( (!is_pv_32on64_domain(d) + /* # L4 */
+        if ( (!is_pv_32bit_domain(d) + /* # L4 */
               NR(v_start, v_end, L4_PAGETABLE_SHIFT) + /* # L3 */
-              (!is_pv_32on64_domain(d) ?
+              (!is_pv_32bit_domain(d) ?
                NR(v_start, v_end, L3_PAGETABLE_SHIFT) : /* # L2 */
                4) + /* # compat L2 */
               NR(v_start, v_end, L2_PAGETABLE_SHIFT))  /* # L1 */
@@ -1167,12 +1169,14 @@ int __init construct_dom0(
            _p(v_start), _p(v_end));
     printk(" ENTRY ADDRESS: %p\n", _p(parms.virt_entry));
 
+    process_pending_softirqs();
+
     mpt_alloc = (vpt_start - v_start) + pfn_to_paddr(alloc_spfn);
     if ( vinitrd_start )
         mpt_alloc -= PAGE_ALIGN(initrd_len);
 
     /* Overlap with Xen protected area? */
-    if ( !is_pv_32on64_domain(d) ?
+    if ( !is_pv_32bit_domain(d) ?
          ((v_start < HYPERVISOR_VIRT_END) &&
           (v_end > HYPERVISOR_VIRT_START)) :
          (v_end > HYPERVISOR_COMPAT_VIRT_START(d)) )
@@ -1182,14 +1186,14 @@ int __init construct_dom0(
         goto out;
     }
 
-    if ( is_pv_32on64_domain(d) )
+    if ( is_pv_32bit_domain(d) )
     {
         v->arch.pv_vcpu.failsafe_callback_cs = FLAT_COMPAT_KERNEL_CS;
         v->arch.pv_vcpu.event_callback_cs    = FLAT_COMPAT_KERNEL_CS;
     }
 
     /* WARNING: The new domain must have its 'processor' field filled in! */
-    if ( !is_pv_32on64_domain(d) )
+    if ( !is_pv_32bit_domain(d) )
     {
         maddr_to_page(mpt_alloc)->u.inuse.type_info = PGT_l4_page_table;
         l4start = l4tab = __va(mpt_alloc); mpt_alloc += PAGE_SIZE;
@@ -1207,7 +1211,7 @@ int __init construct_dom0(
     clear_page(l4tab);
     init_guest_l4_table(l4tab, d, 0);
     v->arch.guest_table = pagetable_from_paddr(__pa(l4start));
-    if ( is_pv_32on64_domain(d) )
+    if ( is_pv_32bit_domain(d) )
         v->arch.guest_table_user = v->arch.guest_table;
 
     l4tab += l4_table_offset(v_start);
@@ -1253,7 +1257,7 @@ int __init construct_dom0(
             mfn = pfn++;
         else
             mfn = initrd_mfn++;
-        *l1tab = l1e_from_pfn(mfn, (!is_pv_32on64_domain(d) ?
+        *l1tab = l1e_from_pfn(mfn, (!is_pv_32bit_domain(d) ?
                                     L1_PROT : COMPAT_L1_PROT));
         l1tab++;
 
@@ -1266,7 +1270,7 @@ int __init construct_dom0(
         }
     }
 
-    if ( is_pv_32on64_domain(d) )
+    if ( is_pv_32bit_domain(d) )
     {
         /* Ensure the first four L3 entries are all populated. */
         for ( i = 0, l3tab = l3start; i < 4; ++i, ++l3tab )
@@ -1473,7 +1477,7 @@ int __init construct_dom0(
     if ( is_pvh_domain(d) )
         si->shared_info = shared_info_paddr;
 
-    if ( is_pv_32on64_domain(d) )
+    if ( is_pv_32bit_domain(d) )
         xlat_start_info(si, XLAT_start_info_console_dom0);
 
     /* Return to idle domain's page tables. */
@@ -1495,10 +1499,10 @@ int __init construct_dom0(
      */
     regs = &v->arch.user_regs;
     regs->ds = regs->es = regs->fs = regs->gs =
-        !is_pv_32on64_domain(d) ? FLAT_KERNEL_DS : FLAT_COMPAT_KERNEL_DS;
-    regs->ss = (!is_pv_32on64_domain(d) ?
+        !is_pv_32bit_domain(d) ? FLAT_KERNEL_DS : FLAT_COMPAT_KERNEL_DS;
+    regs->ss = (!is_pv_32bit_domain(d) ?
                 FLAT_KERNEL_SS : FLAT_COMPAT_KERNEL_SS);
-    regs->cs = (!is_pv_32on64_domain(d) ?
+    regs->cs = (!is_pv_32bit_domain(d) ?
                 FLAT_KERNEL_CS : FLAT_COMPAT_KERNEL_CS);
     regs->eip = parms.virt_entry;
     regs->esp = vstack_end;

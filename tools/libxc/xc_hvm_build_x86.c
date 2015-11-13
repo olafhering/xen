@@ -12,8 +12,7 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ * License along with this library; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stddef.h>
@@ -99,7 +98,7 @@ static void build_hvm_info(void *hvm_info_page,
     memset(hvm_info_page, 0, PAGE_SIZE);
 
     /* Fill in the header. */
-    strncpy(hvm_info->signature, "HVM INFO", 8);
+    memcpy(hvm_info->signature, "HVM INFO", sizeof(hvm_info->signature));
     hvm_info->length = sizeof(struct hvm_info_table);
 
     /* Sensible defaults: these can be overridden by the caller. */
@@ -257,7 +256,9 @@ static int setup_guest(xc_interface *xch,
     uint64_t total_pages;
     xen_vmemrange_t dummy_vmemrange[2];
     unsigned int dummy_vnode_to_pnode[1];
-    bool use_dummy = false;
+    xen_vmemrange_t *vmemranges;
+    unsigned int *vnode_to_pnode;
+    unsigned int nr_vmemranges, nr_vnodes;
 
     memset(&elf, 0, sizeof(elf));
     if ( elf_init(&elf, image, image_size) != 0 )
@@ -290,7 +291,7 @@ static int setup_guest(xc_interface *xch,
         dummy_vmemrange[0].end   = args->lowmem_end;
         dummy_vmemrange[0].flags = 0;
         dummy_vmemrange[0].nid   = 0;
-        args->nr_vmemranges = 1;
+        nr_vmemranges = 1;
 
         if ( args->highmem_end > (1ULL << 32) )
         {
@@ -299,14 +300,13 @@ static int setup_guest(xc_interface *xch,
             dummy_vmemrange[1].flags = 0;
             dummy_vmemrange[1].nid   = 0;
 
-            args->nr_vmemranges++;
+            nr_vmemranges++;
         }
 
         dummy_vnode_to_pnode[0] = XC_NUMA_NO_NODE;
-        args->nr_vnodes = 1;
-        args->vmemranges = dummy_vmemrange;
-        args->vnode_to_pnode = dummy_vnode_to_pnode;
-        use_dummy = true;
+        nr_vnodes = 1;
+        vmemranges = dummy_vmemrange;
+        vnode_to_pnode = dummy_vnode_to_pnode;
     }
     else
     {
@@ -315,16 +315,21 @@ static int setup_guest(xc_interface *xch,
             PERROR("Cannot enable vNUMA and PoD at the same time");
             goto error_out;
         }
+
+        nr_vmemranges = args->nr_vmemranges;
+        nr_vnodes = args->nr_vnodes;
+        vmemranges = args->vmemranges;
+        vnode_to_pnode = args->vnode_to_pnode;
     }
 
     total_pages = 0;
     p2m_size = 0;
-    for ( i = 0; i < args->nr_vmemranges; i++ )
+    for ( i = 0; i < nr_vmemranges; i++ )
     {
-        total_pages += ((args->vmemranges[i].end - args->vmemranges[i].start)
+        total_pages += ((vmemranges[i].end - vmemranges[i].start)
                         >> PAGE_SHIFT);
-        p2m_size = p2m_size > (args->vmemranges[i].end >> PAGE_SHIFT) ?
-            p2m_size : (args->vmemranges[i].end >> PAGE_SHIFT);
+        p2m_size = p2m_size > (vmemranges[i].end >> PAGE_SHIFT) ?
+            p2m_size : (vmemranges[i].end >> PAGE_SHIFT);
     }
 
     if ( total_pages != (args->mem_size >> PAGE_SHIFT) )
@@ -360,12 +365,12 @@ static int setup_guest(xc_interface *xch,
 
     for ( i = 0; i < p2m_size; i++ )
         page_array[i] = ((xen_pfn_t)-1);
-    for ( vmemid = 0; vmemid < args->nr_vmemranges; vmemid++ )
+    for ( vmemid = 0; vmemid < nr_vmemranges; vmemid++ )
     {
         uint64_t pfn;
 
-        for ( pfn = args->vmemranges[vmemid].start >> PAGE_SHIFT;
-              pfn < args->vmemranges[vmemid].end >> PAGE_SHIFT;
+        for ( pfn = vmemranges[vmemid].start >> PAGE_SHIFT;
+              pfn < vmemranges[vmemid].end >> PAGE_SHIFT;
               pfn++ )
             page_array[pfn] = pfn;
     }
@@ -417,29 +422,29 @@ static int setup_guest(xc_interface *xch,
         xch, dom, 0xa0, 0, memflags, &page_array[0x00]);
 
     stat_normal_pages = 0;
-    for ( vmemid = 0; vmemid < args->nr_vmemranges; vmemid++ )
+    for ( vmemid = 0; vmemid < nr_vmemranges; vmemid++ )
     {
         unsigned int new_memflags = memflags;
         uint64_t end_pages;
-        unsigned int vnode = args->vmemranges[vmemid].nid;
-        unsigned int pnode = args->vnode_to_pnode[vnode];
+        unsigned int vnode = vmemranges[vmemid].nid;
+        unsigned int pnode = vnode_to_pnode[vnode];
 
         if ( pnode != XC_NUMA_NO_NODE )
             new_memflags |= XENMEMF_exact_node(pnode);
 
-        end_pages = args->vmemranges[vmemid].end >> PAGE_SHIFT;
+        end_pages = vmemranges[vmemid].end >> PAGE_SHIFT;
         /*
          * Consider vga hole belongs to the vmemrange that covers
          * 0xA0000-0xC0000. Note that 0x00000-0xA0000 is populated just
          * before this loop.
          */
-        if ( args->vmemranges[vmemid].start == 0 )
+        if ( vmemranges[vmemid].start == 0 )
         {
             cur_pages = 0xc0;
             stat_normal_pages += 0xc0;
         }
         else
-            cur_pages = args->vmemranges[vmemid].start >> PAGE_SHIFT;
+            cur_pages = vmemranges[vmemid].start >> PAGE_SHIFT;
 
         while ( (rc == 0) && (end_pages > cur_pages) )
         {
@@ -481,7 +486,8 @@ static int setup_guest(xc_interface *xch,
 
                 done = xc_domain_populate_physmap(xch, dom, nr_extents,
                                                   SUPERPAGE_1GB_SHIFT,
-                                                  memflags, sp_extents);
+                                                  new_memflags,
+                                                  sp_extents);
 
                 if ( done > 0 )
                 {
@@ -521,7 +527,8 @@ static int setup_guest(xc_interface *xch,
 
                     done = xc_domain_populate_physmap(xch, dom, nr_extents,
                                                       SUPERPAGE_2MB_SHIFT,
-                                                      memflags, sp_extents);
+                                                      new_memflags,
+                                                      sp_extents);
 
                     if ( done > 0 )
                     {
@@ -679,12 +686,6 @@ static int setup_guest(xc_interface *xch,
  error_out:
     rc = -1;
  out:
-    if ( use_dummy )
-    {
-        args->nr_vnodes = 0;
-        args->vmemranges = NULL;
-        args->vnode_to_pnode = NULL;
-    }
     if ( elf_check_broken(&elf) )
         ERROR("HVM ELF broken: %s", elf_check_broken(&elf));
 
@@ -754,6 +755,8 @@ int xc_hvm_build_target_mem(xc_interface *xch,
     args.mem_size = (uint64_t)memsize << 20;
     args.mem_target = (uint64_t)target << 20;
     args.image_file_name = image_name;
+    if ( args.mmio_size == 0 )
+        args.mmio_size = HVM_BELOW_4G_MMIO_LENGTH;
 
     return xc_hvm_build(xch, domid, &args);
 }

@@ -13,8 +13,7 @@
  * more details.
  * 
  * You should have received a copy of the GNU General Public License along 
- * with this program; if not, write to the Free Software Foundation, Inc., 59 
- * Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -59,7 +58,7 @@ void *do_page_walk(struct vcpu *v, unsigned long addr)
     if ( !is_pv_vcpu(v) || !is_canonical_address(addr) )
         return NULL;
 
-    l4t = map_domain_page(mfn);
+    l4t = map_domain_page(_mfn(mfn));
     l4e = l4t[l4_table_offset(addr)];
     unmap_domain_page(l4t);
     if ( !(l4e_get_flags(l4e) & _PAGE_PRESENT) )
@@ -77,7 +76,7 @@ void *do_page_walk(struct vcpu *v, unsigned long addr)
         goto ret;
     }
 
-    l2t = map_domain_page(mfn);
+    l2t = map_domain_page(_mfn(mfn));
     l2e = l2t[l2_table_offset(addr)];
     unmap_domain_page(l2t);
     mfn = l2e_get_pfn(l2e);
@@ -89,7 +88,7 @@ void *do_page_walk(struct vcpu *v, unsigned long addr)
         goto ret;
     }
 
-    l1t = map_domain_page(mfn);
+    l1t = map_domain_page(_mfn(mfn));
     l1e = l1t[l1_table_offset(addr)];
     unmap_domain_page(l1t);
     mfn = l1e_get_pfn(l1e);
@@ -97,7 +96,7 @@ void *do_page_walk(struct vcpu *v, unsigned long addr)
         return NULL;
 
  ret:
-    return map_domain_page(mfn) + (addr & ~PAGE_MASK);
+    return map_domain_page(_mfn(mfn)) + (addr & ~PAGE_MASK);
 }
 
 /*
@@ -1188,7 +1187,7 @@ int handle_memadd_fault(unsigned long addr, struct cpu_user_regs *regs)
     unsigned long mfn, idle_index;
     int ret = 0;
 
-    if (!is_pv_32on64_domain(d))
+    if (!is_pv_32bit_domain(d))
         return 0;
 
     if ( (addr < HYPERVISOR_COMPAT_VIRT_START(d)) ||
@@ -1197,7 +1196,7 @@ int handle_memadd_fault(unsigned long addr, struct cpu_user_regs *regs)
 
     mfn = (read_cr3()) >> PAGE_SHIFT;
 
-    pl4e = map_domain_page(mfn);
+    pl4e = map_domain_page(_mfn(mfn));
 
     l4e = pl4e[0];
 
@@ -1206,7 +1205,7 @@ int handle_memadd_fault(unsigned long addr, struct cpu_user_regs *regs)
 
     mfn = l4e_get_pfn(l4e);
     /* We don't need get page type here since it is current CR3 */
-    pl3e = map_domain_page(mfn);
+    pl3e = map_domain_page(_mfn(mfn));
 
     l3e = pl3e[3];
 
@@ -1214,7 +1213,7 @@ int handle_memadd_fault(unsigned long addr, struct cpu_user_regs *regs)
         goto unmap;
 
     mfn = l3e_get_pfn(l3e);
-    pl2e = map_domain_page(mfn);
+    pl2e = map_domain_page(_mfn(mfn));
 
     l2e = pl2e[l2_table_offset(addr)];
 
@@ -1247,7 +1246,7 @@ unmap:
 
 void domain_set_alloc_bitsize(struct domain *d)
 {
-    if ( !is_pv_32on64_domain(d) ||
+    if ( !is_pv_32bit_domain(d) ||
          (MACH2PHYS_COMPAT_NR_ENTRIES(d) >= max_page) ||
          d->arch.physaddr_bitsize > 0 )
         return;
@@ -1377,7 +1376,7 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
         ret = map_pages_to_xen((unsigned long)mfn_to_virt(spfn), spfn,
                                min(epfn, i) - spfn, PAGE_HYPERVISOR);
         if ( ret )
-            return ret;
+            goto destroy_directmap;
     }
     if ( i < epfn )
     {
@@ -1386,7 +1385,7 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
         ret = map_pages_to_xen((unsigned long)mfn_to_virt(i), i,
                                epfn - i, __PAGE_HYPERVISOR_RW);
         if ( ret )
-            return ret;
+            goto destroy_directmap;
     }
 
     old_node_start = NODE_DATA(node)->node_start_pfn;
@@ -1409,7 +1408,6 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
             NODE_DATA(node)->node_spanned_pages = epfn - node_start_pfn(node);
     }
 
-    ret = -EINVAL;
     info.spfn = spfn;
     info.epfn = epfn;
     info.cur = spfn;
@@ -1432,7 +1430,7 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
     if ( ret )
         goto destroy_m2p;
 
-    if ( !need_iommu(hardware_domain) )
+    if ( iommu_enabled && !iommu_passthrough && !need_iommu(hardware_domain) )
     {
         for ( i = spfn; i < epfn; i++ )
             if ( iommu_map_page(hardware_domain, i, i, IOMMUF_readable|IOMMUF_writable) )
@@ -1446,9 +1444,8 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
     }
 
     /* We can't revert any more */
-    transfer_pages_to_heap(&info);
-
     share_hotadd_m2p_table(&info);
+    transfer_pages_to_heap(&info);
 
     return 0;
 
@@ -1459,13 +1456,13 @@ destroy_m2p:
     max_pdx = pfn_to_pdx(max_page - 1) + 1;
 destroy_frametable:
     cleanup_frame_table(&info);
-    destroy_xen_mappings((unsigned long)mfn_to_virt(spfn),
-                         (unsigned long)mfn_to_virt(epfn));
-
     if ( !orig_online )
         node_set_offline(node);
     NODE_DATA(node)->node_start_pfn = old_node_start;
     NODE_DATA(node)->node_spanned_pages = old_node_span;
+ destroy_directmap:
+    destroy_xen_mappings((unsigned long)mfn_to_virt(spfn),
+                         (unsigned long)mfn_to_virt(epfn));
 
     return ret;
 }

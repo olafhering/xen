@@ -34,6 +34,7 @@
 #include "xen.h"
 #include "domctl.h"
 #include "physdev.h"
+#include "tmem.h"
 
 #define XEN_SYSCTL_INTERFACE_VERSION 0x0000000C
 
@@ -482,10 +483,11 @@ DEFINE_XEN_GUEST_HANDLE(xen_sysctl_cputopo_t);
  *  - otherwise it's the number of entries in 'cputopo'
  *
  * OUT:
- *  - If 'num_cpus' is less than the number Xen needs to write, -ENOBUFS shall
- *    be returned and 'num_cpus' updated to reflect the intended number.
- *  - On success, 'num_cpus' shall indicate the number of entries written, which
- *    may be less than the maximum.
+ *  - If 'num_cpus' is less than the number Xen wants to write but the handle
+ *    handle is not a NULL one, partial data gets returned and 'num_cpus' gets
+ *    updated to reflect the intended number.
+ *  - Otherwise, 'num_cpus' shall indicate the number of entries written, which
+ *    may be less than the input value.
  */
 struct xen_sysctl_cputopoinfo {
     uint32_t num_cpus;
@@ -514,10 +516,11 @@ DEFINE_XEN_GUEST_HANDLE(xen_sysctl_meminfo_t);
  *    non-null)
  *
  * OUT:
- *  - If 'num_nodes' is less than the number Xen needs to write, -ENOBUFS shall
- *    be returned and 'num_nodes' updated to reflect the intended number.
- *  - On success, 'num_nodes' shall indicate the number of entries written, which
- *    may be less than the maximum.
+ *  - If 'num_nodes' is less than the number Xen wants to write but either
+ *    handle is not a NULL one, partial data gets returned and 'num_nodes'
+ *    gets updated to reflect the intended number.
+ *  - Otherwise, 'num_nodes' shall indicate the number of entries written, which
+ *    may be less than the input value.
  */
 
 struct xen_sysctl_numainfo {
@@ -694,6 +697,73 @@ struct xen_sysctl_pcitopoinfo {
 typedef struct xen_sysctl_pcitopoinfo xen_sysctl_pcitopoinfo_t;
 DEFINE_XEN_GUEST_HANDLE(xen_sysctl_pcitopoinfo_t);
 
+#define XEN_SYSCTL_PSR_CAT_get_l3_info               0
+struct xen_sysctl_psr_cat_op {
+    uint32_t cmd;       /* IN: XEN_SYSCTL_PSR_CAT_* */
+    uint32_t target;    /* IN */
+    union {
+        struct {
+            uint32_t cbm_len;   /* OUT: CBM length */
+            uint32_t cos_max;   /* OUT: Maximum COS */
+        } l3_info;
+    } u;
+};
+typedef struct xen_sysctl_psr_cat_op xen_sysctl_psr_cat_op_t;
+DEFINE_XEN_GUEST_HANDLE(xen_sysctl_psr_cat_op_t);
+
+#define XEN_SYSCTL_TMEM_OP_ALL_CLIENTS 0xFFFFU
+
+#define XEN_SYSCTL_TMEM_OP_THAW                   0
+#define XEN_SYSCTL_TMEM_OP_FREEZE                 1
+#define XEN_SYSCTL_TMEM_OP_FLUSH                  2
+#define XEN_SYSCTL_TMEM_OP_DESTROY                3
+#define XEN_SYSCTL_TMEM_OP_LIST                   4
+#define XEN_SYSCTL_TMEM_OP_SET_WEIGHT             5
+#define XEN_SYSCTL_TMEM_OP_SET_CAP                6
+#define XEN_SYSCTL_TMEM_OP_SET_COMPRESS           7
+#define XEN_SYSCTL_TMEM_OP_QUERY_FREEABLE_MB      8
+#define XEN_SYSCTL_TMEM_OP_SAVE_BEGIN             10
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_VERSION       11
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_MAXPOOLS      12
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_CLIENT_WEIGHT 13
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_CLIENT_CAP    14
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_CLIENT_FLAGS  15
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_POOL_FLAGS    16
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_POOL_NPAGES   17
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_POOL_UUID     18
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_NEXT_PAGE     19
+#define XEN_SYSCTL_TMEM_OP_SAVE_GET_NEXT_INV      20
+#define XEN_SYSCTL_TMEM_OP_SAVE_END               21
+#define XEN_SYSCTL_TMEM_OP_RESTORE_BEGIN          30
+#define XEN_SYSCTL_TMEM_OP_RESTORE_PUT_PAGE       32
+#define XEN_SYSCTL_TMEM_OP_RESTORE_FLUSH_PAGE     33
+
+/*
+ * XEN_SYSCTL_TMEM_OP_SAVE_GET_NEXT_[PAGE|INV] override the 'buf' in
+ * xen_sysctl_tmem_op with this structure - sometimes with an extra
+ * page tackled on.
+ */
+struct tmem_handle {
+    uint32_t pool_id;
+    uint32_t index;
+    xen_tmem_oid_t oid;
+};
+
+struct xen_sysctl_tmem_op {
+    uint32_t cmd;       /* IN: XEN_SYSCTL_TMEM_OP_* . */
+    int32_t pool_id;    /* IN: 0 by default unless _SAVE_*, RESTORE_* .*/
+    uint32_t cli_id;    /* IN: client id, 0 for XEN_SYSCTL_TMEM_QUERY_FREEABLE_MB
+                           for all others can be the domain id or
+                           XEN_SYSCTL_TMEM_OP_ALL_CLIENTS for all. */
+    uint32_t arg1;      /* IN: If not applicable to command use 0. */
+    uint32_t arg2;      /* IN: If not applicable to command use 0. */
+    uint32_t pad;       /* Padding so structure is the same under 32 and 64. */
+    xen_tmem_oid_t oid; /* IN: If not applicable to command use 0s. */
+    XEN_GUEST_HANDLE_64(char) buf; /* IN/OUT: Buffer to save and restore ops. */
+};
+typedef struct xen_sysctl_tmem_op xen_sysctl_tmem_op_t;
+DEFINE_XEN_GUEST_HANDLE(xen_sysctl_tmem_op_t);
+
 struct xen_sysctl {
     uint32_t cmd;
 #define XEN_SYSCTL_readconsole                    1
@@ -717,6 +787,8 @@ struct xen_sysctl {
 #define XEN_SYSCTL_coverage_op                   20
 #define XEN_SYSCTL_psr_cmt_op                    21
 #define XEN_SYSCTL_pcitopoinfo                   22
+#define XEN_SYSCTL_psr_cat_op                    23
+#define XEN_SYSCTL_tmem_op                       24
     uint32_t interface_version; /* XEN_SYSCTL_INTERFACE_VERSION */
     union {
         struct xen_sysctl_readconsole       readconsole;
@@ -740,6 +812,8 @@ struct xen_sysctl {
         struct xen_sysctl_scheduler_op      scheduler_op;
         struct xen_sysctl_coverage_op       coverage_op;
         struct xen_sysctl_psr_cmt_op        psr_cmt_op;
+        struct xen_sysctl_psr_cat_op        psr_cat_op;
+        struct xen_sysctl_tmem_op           tmem_op;
         uint8_t                             pad[128];
     } u;
 };

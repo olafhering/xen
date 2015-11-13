@@ -29,7 +29,6 @@
 #include <asm/current.h>
 #include <asm/mmio.h>
 #include <asm/gic_v3_defs.h>
-#include <asm/gic.h>
 #include <asm/vgic.h>
 
 /* GICD_PIDRn register values for ARM implementations */
@@ -50,6 +49,28 @@
  */
 #define VGICD_CTLR_DEFAULT  (GICD_CTLR_ARE_NS)
 
+static struct {
+    bool_t enabled;
+    /* Distributor interface address */
+    paddr_t dbase;
+    /* Re-distributor regions */
+    unsigned int nr_rdist_regions;
+    const struct rdist_region *regions;
+    uint32_t rdist_stride; /* Re-distributor stride */
+} vgic_v3_hw;
+
+void vgic_v3_setup_hw(paddr_t dbase,
+                      unsigned int nr_rdist_regions,
+                      const struct rdist_region *regions,
+                      uint32_t rdist_stride)
+{
+    vgic_v3_hw.enabled = 1;
+    vgic_v3_hw.dbase = dbase;
+    vgic_v3_hw.nr_rdist_regions = nr_rdist_regions;
+    vgic_v3_hw.regions = regions;
+    vgic_v3_hw.rdist_stride = rdist_stride;
+}
+
 static struct vcpu *vgic_v3_irouter_to_vcpu(struct domain *d, uint64_t irouter)
 {
     unsigned int vcpu_id;
@@ -61,7 +82,7 @@ static struct vcpu *vgic_v3_irouter_to_vcpu(struct domain *d, uint64_t irouter)
     if ( irouter & GICD_IROUTER_SPI_MODE_ANY )
         return d->vcpu[0];
 
-    vcpu_id = irouter & MPIDR_AFF0_MASK;
+    vcpu_id = vaffinity_to_vcpuid(irouter);
     if ( vcpu_id >= d->max_vcpus )
         return NULL;
 
@@ -172,7 +193,7 @@ static int __vgic_v3_rdistr_rd_mmio_read(struct vcpu *v, mmio_info_t *info,
         goto read_as_zero_32;
     default:
         printk(XENLOG_G_ERR
-               "%pv: vGICR: read r%d offset %#08x\n not found",
+               "%pv: vGICR: unhandled read r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
         return 0;
     }
@@ -248,7 +269,7 @@ static int __vgic_v3_rdistr_rd_mmio_write(struct vcpu *v, mmio_info_t *info,
         /* RO */
         goto write_ignore_32;
     default:
-        printk(XENLOG_G_ERR "%pv: vGICR: write r%d offset %#08x\n not found",
+        printk(XENLOG_G_ERR "%pv: vGICR: unhandled write r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
         return 0;
     }
@@ -494,7 +515,7 @@ static int vgic_v3_rdistr_sgi_mmio_read(struct vcpu *v, mmio_info_t *info,
 
     default:
         printk(XENLOG_G_ERR
-               "%pv: vGICR: SGI: read r%d offset %#08x\n not found",
+               "%pv: vGICR: SGI: unhandled read r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
         return 0;
     }
@@ -555,7 +576,7 @@ static int vgic_v3_rdistr_sgi_mmio_write(struct vcpu *v, mmio_info_t *info,
         goto write_ignore_32;
     default:
         printk(XENLOG_G_ERR
-               "%pv: vGICR: SGI: write r%d offset %#08x\n not found",
+               "%pv: vGICR: SGI: unhandled write r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
         return 0;
     }
@@ -889,7 +910,6 @@ static int vgic_v3_distr_mmio_write(struct vcpu *v, mmio_info_t *info)
         rank = vgic_rank_offset(v, 64, gicd_reg - GICD_IROUTER,
                                 DABT_DOUBLE_WORD);
         if ( rank == NULL ) goto write_ignore;
-        BUG_ON(v->domain->max_vcpus > 8);
         new_irouter = *r;
         vgic_lock_rank(v, rank, flags);
 
@@ -977,17 +997,19 @@ static int vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
     int virq;
     int irqmode;
     enum gic_sgi_mode sgi_mode;
-    unsigned long vcpu_mask = 0;
+    struct sgi_target target;
 
     irqmode = (sgir >> ICH_SGI_IRQMODE_SHIFT) & ICH_SGI_IRQMODE_MASK;
     virq = (sgir >> ICH_SGI_IRQ_SHIFT ) & ICH_SGI_IRQ_MASK;
-    /* SGI's are injected at Rdist level 0. ignoring affinity 1, 2, 3 */
-    vcpu_mask = sgir & ICH_SGI_TARGETLIST_MASK;
 
     /* Map GIC sgi value to enum value */
     switch ( irqmode )
     {
     case ICH_SGI_TARGET_LIST:
+        sgi_target_init(&target);
+        /* We assume that only AFF1 is used in ICC_SGI1R_EL1. */
+        target.aff1 = (sgir >> ICH_SGI_AFFINITY_LEVEL(1)) & ICH_SGI_AFFx_MASK;
+        target.list = sgir & ICH_SGI_TARGETLIST_MASK;
         sgi_mode = SGI_TARGET_LIST;
         break;
     case ICH_SGI_TARGET_OTHERS:
@@ -998,7 +1020,7 @@ static int vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
         return 0;
     }
 
-    return vgic_to_sgi(v, sgir, sgi_mode, virq, vcpu_mask);
+    return vgic_to_sgi(v, sgir, sgi_mode, virq, &target);
 }
 
 static int vgic_v3_emulate_sysreg(struct cpu_user_regs *regs, union hsr hsr)
@@ -1119,15 +1141,66 @@ static int vgic_v3_domain_init(struct domain *d)
 {
     int i, idx;
 
+    /*
+     * Domain 0 gets the hardware address.
+     * Guests get the virtual platform layout.
+     */
+    if ( is_hardware_domain(d) )
+    {
+        unsigned int first_cpu = 0;
+
+        d->arch.vgic.dbase = vgic_v3_hw.dbase;
+
+        d->arch.vgic.rdist_stride = vgic_v3_hw.rdist_stride;
+        /*
+         * If the stride is not set, the default stride for GICv3 is 2 * 64K:
+         *     - first 64k page for Control and Physical LPIs
+         *     - second 64k page for Control and Generation of SGIs
+         */
+        if ( !d->arch.vgic.rdist_stride )
+            d->arch.vgic.rdist_stride = 2 * SZ_64K;
+
+        for ( i = 0; i < vgic_v3_hw.nr_rdist_regions; i++ )
+        {
+            paddr_t size = vgic_v3_hw.regions[i].size;
+
+            d->arch.vgic.rdist_regions[i].base = vgic_v3_hw.regions[i].base;
+            d->arch.vgic.rdist_regions[i].size = size;
+
+            /* Set the first CPU handled by this region */
+            d->arch.vgic.rdist_regions[i].first_cpu = first_cpu;
+
+            first_cpu += size / d->arch.vgic.rdist_stride;
+        }
+        d->arch.vgic.nr_regions = vgic_v3_hw.nr_rdist_regions;
+    }
+    else
+    {
+        d->arch.vgic.dbase = GUEST_GICV3_GICD_BASE;
+
+        /* XXX: Only one Re-distributor region mapped for the guest */
+        BUILD_BUG_ON(GUEST_GICV3_RDIST_REGIONS != 1);
+
+        d->arch.vgic.nr_regions = GUEST_GICV3_RDIST_REGIONS;
+        d->arch.vgic.rdist_stride = GUEST_GICV3_RDIST_STRIDE;
+
+        /* The first redistributor should contain enough space for all CPUs */
+        BUILD_BUG_ON((GUEST_GICV3_GICR0_SIZE / GUEST_GICV3_RDIST_STRIDE) < MAX_VIRT_CPUS);
+        d->arch.vgic.rdist_regions[0].base = GUEST_GICV3_GICR0_BASE;
+        d->arch.vgic.rdist_regions[0].size = GUEST_GICV3_GICR0_SIZE;
+        d->arch.vgic.rdist_regions[0].first_cpu = 0;
+    }
+
     /* By default deliver to CPU0 */
     for ( i = 0; i < DOMAIN_NR_RANKS(d); i++ )
     {
         for ( idx = 0; idx < 32; idx++ )
             d->arch.vgic.shared_irqs[i].v3.irouter[idx] = 0;
     }
-    /* We rely on gicv init to get dbase and size */
+
+    /* Register mmio handle for the Distributor */
     register_mmio_handler(d, &vgic_distr_mmio_handler, d->arch.vgic.dbase,
-                          d->arch.vgic.dbase_size);
+                          SZ_64K);
 
     /*
      * Register mmio handler per contiguous region occupied by the
@@ -1150,10 +1223,23 @@ static const struct vgic_ops v3_ops = {
     .get_irq_priority = vgic_v3_get_irq_priority,
     .get_target_vcpu  = vgic_v3_get_target_vcpu,
     .emulate_sysreg  = vgic_v3_emulate_sysreg,
+    /*
+     * We use both AFF1 and AFF0 in (v)MPIDR. Thus, the max number of CPU
+     * that can be supported is up to 4096(==256*16) in theory.
+     */
+    .max_vcpus = 4096,
 };
 
 int vgic_v3_init(struct domain *d)
 {
+    if ( !vgic_v3_hw.enabled )
+    {
+        printk(XENLOG_G_ERR
+               "d%d: vGICv3 is not supported on this platform.\n",
+               d->domain_id);
+        return -ENODEV;
+    }
+
     register_vgic_ops(d, &v3_ops);
 
     return 0;

@@ -14,8 +14,7 @@
 # more details.
 #
 # You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc., 59 Temple
-# Place - Suite 330, Boston, MA 02111-1307 USA.
+# this program; If not, see <http://www.gnu.org/licenses/>.
 #
 
 XEN_ROOT = $(CURDIR)/../../..
@@ -30,6 +29,9 @@ LOADADDR = 0x100000
 SMBIOS_REL_DATE ?= $(shell date +%m/%d/%Y)
 
 CFLAGS += $(CFLAGS_xeninclude)
+
+# We mustn't use tools-only public interfaces.
+CFLAGS += -U__XEN_TOOLS__ -D__XEN_INTERFACE_VERSION__=__XEN_LATEST_INTERFACE_VERSION__
 
 OBJS  = hvmloader.o mp_tables.o util.o smbios.o 
 OBJS += smp.o cacheattr.o xenbus.o vnuma.o

@@ -17,8 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -781,11 +780,11 @@ static void oos_hash_add(struct vcpu *v, mfn_t gmfn)
     if ( swap )
         SWAP(oos_snapshot[idx], oos_snapshot[oidx]);
 
-    gptr = sh_map_domain_page(oos[oidx]);
-    gsnpptr = sh_map_domain_page(oos_snapshot[oidx]);
+    gptr = map_domain_page(oos[oidx]);
+    gsnpptr = map_domain_page(oos_snapshot[oidx]);
     memcpy(gsnpptr, gptr, PAGE_SIZE);
-    sh_unmap_domain_page(gptr);
-    sh_unmap_domain_page(gsnpptr);
+    unmap_domain_page(gptr);
+    unmap_domain_page(gsnpptr);
 }
 
 /* Remove an MFN from the list of out-of-sync guest pagetables */
@@ -971,7 +970,7 @@ int sh_unsync(struct vcpu *v, mfn_t gmfn)
     if ( pg->shadow_flags &
          ((SHF_page_type_mask & ~SHF_L1_ANY) | SHF_out_of_sync)
          || sh_page_has_multiple_shadows(pg)
-         || is_pv_domain(v->domain)
+         || is_pv_vcpu(v)
          || !v->domain->arch.paging.shadow.oos_active )
         return 0;
 
@@ -1498,7 +1497,7 @@ mfn_t shadow_alloc(struct domain *d,
         p = __map_domain_page(sp);
         ASSERT(p != NULL);
         clear_page(p);
-        sh_unmap_domain_page(p);
+        unmap_domain_page(p);
         INIT_PAGE_LIST_ENTRY(&sp->list);
         page_list_add(sp, &tmp_list);
         sp->u.sh.type = shadow_type;
@@ -2110,7 +2109,7 @@ void sh_destroy_shadow(struct domain *d, mfn_t smfn)
            t == SH_type_fl1_pae_shadow ||
            t == SH_type_fl1_64_shadow  ||
            t == SH_type_monitor_table  ||
-           (is_pv_32on64_domain(d) && t == SH_type_l4_64_shadow) ||
+           (is_pv_32bit_domain(d) && t == SH_type_l4_64_shadow) ||
            (page_get_owner(mfn_to_page(backpointer(sp))) == d));
 
     /* The down-shifts here are so that the switch statement is on nice
@@ -2139,7 +2138,7 @@ void sh_destroy_shadow(struct domain *d, mfn_t smfn)
         SHADOW_INTERNAL_NAME(sh_destroy_l1_shadow, 4)(d, smfn);
         break;
     case SH_type_l2h_64_shadow:
-        ASSERT(is_pv_32on64_domain(d));
+        ASSERT(is_pv_32bit_domain(d));
         /* Fall through... */
     case SH_type_l2_64_shadow:
         SHADOW_INTERNAL_NAME(sh_destroy_l2_shadow, 4)(d, smfn);
@@ -2524,7 +2523,7 @@ static int sh_remove_shadow_via_pointer(struct domain *d, mfn_t smfn)
     if (sp->up == 0) return 0;
     pmfn = _mfn(sp->up >> PAGE_SHIFT);
     ASSERT(mfn_valid(pmfn));
-    vaddr = sh_map_domain_page(pmfn);
+    vaddr = map_domain_page(pmfn);
     ASSERT(vaddr);
     vaddr += sp->up & (PAGE_SIZE-1);
     ASSERT(l1e_get_pfn(*(l1_pgentry_t *)vaddr) == mfn_x(smfn));
@@ -2554,7 +2553,7 @@ static int sh_remove_shadow_via_pointer(struct domain *d, mfn_t smfn)
     default: BUG(); /* Some wierd unknown shadow type */
     }
 
-    sh_unmap_domain_page(vaddr);
+    unmap_domain_page(vaddr);
     if ( rc )
         perfc_incr(shadow_up_pointer);
     else
@@ -3028,7 +3027,7 @@ int shadow_enable(struct domain *d, u32 mode)
             e[i] = ((0x400000U * i)
                     | _PAGE_PRESENT | _PAGE_RW | _PAGE_USER
                     | _PAGE_ACCESSED | _PAGE_DIRTY | _PAGE_PSE);
-        sh_unmap_domain_page(e);
+        unmap_domain_page(e);
         pg->u.inuse.type_info = PGT_l2_page_table | 1 | PGT_validated;
     }
 
@@ -3072,7 +3071,7 @@ int shadow_enable(struct domain *d, u32 mode)
     return rv;
 }
 
-void shadow_teardown(struct domain *d)
+void shadow_teardown(struct domain *d, int *preempted)
 /* Destroy the shadow pagetables of this domain and free its shadow memory.
  * Should only be called for dying domains. */
 {
@@ -3133,23 +3132,16 @@ void shadow_teardown(struct domain *d)
 
     if ( d->arch.paging.shadow.total_pages != 0 )
     {
-        SHADOW_PRINTK("teardown of domain %u starts."
-                       "  Shadow pages total = %u, free = %u, p2m=%u\n",
-                       d->domain_id,
-                       d->arch.paging.shadow.total_pages,
-                       d->arch.paging.shadow.free_pages,
-                       d->arch.paging.shadow.p2m_pages);
         /* Destroy all the shadows and release memory to domheap */
-        sh_set_allocation(d, 0, NULL);
+        sh_set_allocation(d, 0, preempted);
+
+        if ( preempted && *preempted )
+            goto out;
+
         /* Release the hash table back to xenheap */
         if (d->arch.paging.shadow.hash_table)
             shadow_hash_teardown(d);
-        /* Should not have any more memory held */
-        SHADOW_PRINTK("teardown done."
-                       "  Shadow pages total = %u, free = %u, p2m=%u\n",
-                       d->arch.paging.shadow.total_pages,
-                       d->arch.paging.shadow.free_pages,
-                       d->arch.paging.shadow.p2m_pages);
+
         ASSERT(d->arch.paging.shadow.total_pages == 0);
     }
 
@@ -3157,12 +3149,10 @@ void shadow_teardown(struct domain *d)
      * destroyed any shadows of it or sh_destroy_shadow will get confused. */
     if ( !pagetable_is_null(d->arch.paging.shadow.unpaged_pagetable) )
     {
+        ASSERT(is_hvm_domain(d));
         for_each_vcpu(d, v)
-        {
-            ASSERT(is_hvm_vcpu(v));
             if ( !hvm_paging_enabled(v) )
                 v->arch.guest_table = pagetable_null();
-        }
         unpaged_pagetable =
             pagetable_get_page(d->arch.paging.shadow.unpaged_pagetable);
         d->arch.paging.shadow.unpaged_pagetable = pagetable_null();
@@ -3180,6 +3170,7 @@ void shadow_teardown(struct domain *d)
         d->arch.hvm_domain.dirty_vram = NULL;
     }
 
+out:
     paging_unlock(d);
 
     /* Must be called outside the lock */
@@ -3201,7 +3192,7 @@ void shadow_final_teardown(struct domain *d)
      * It is possible for a domain that never got domain_kill()ed
      * to get here with its shadow allocation intact. */
     if ( d->arch.paging.shadow.total_pages != 0 )
-        shadow_teardown(d);
+        shadow_teardown(d, NULL);
 
     /* It is now safe to pull down the p2m map. */
     p2m_teardown(p2m_get_hostp2m(d));
@@ -3395,7 +3386,7 @@ static void sh_unshadow_for_p2m_change(struct domain *d, unsigned long gfn,
             if ( (l1e_get_flags(new) & _PAGE_PRESENT)
                  && !(l1e_get_flags(new) & _PAGE_PSE)
                  && mfn_valid(nmfn) )
-                npte = map_domain_page(mfn_x(nmfn));
+                npte = map_domain_page(nmfn);
 
             for ( i = 0; i < L1_PAGETABLE_ENTRIES; i++ )
             {
@@ -3474,7 +3465,7 @@ static int sh_enable_log_dirty(struct domain *d, bool_t log_global)
     /* 32bit PV guests on 64bit xen behave like older 64bit linux: they
      * change an l4e instead of cr3 to switch tables.  Give them the
      * same optimization */
-    if ( is_pv_32on64_domain(d) )
+    if ( is_pv_32bit_domain(d) )
         d->arch.paging.shadow.opt_flags = SHOPT_LINUX_L3_TOPLEVEL;
 #endif
 
@@ -3633,8 +3624,8 @@ int shadow_track_dirty_vram(struct domain *d,
                         if ( sl1mfn != map_mfn )
                         {
                             if ( map_sl1p )
-                                sh_unmap_domain_page(map_sl1p);
-                            map_sl1p = sh_map_domain_page(_mfn(sl1mfn));
+                                unmap_domain_page(map_sl1p);
+                            map_sl1p = map_domain_page(_mfn(sl1mfn));
                             map_mfn = sl1mfn;
                         }
                         sl1e = map_sl1p + (sl1ma & ~PAGE_MASK);
@@ -3665,7 +3656,7 @@ int shadow_track_dirty_vram(struct domain *d,
         }
 
         if ( map_sl1p )
-            sh_unmap_domain_page(map_sl1p);
+            unmap_domain_page(map_sl1p);
 
         memcpy(dirty_bitmap, dirty_vram->dirty_bitmap, dirty_size);
         memset(dirty_vram->dirty_bitmap, 0, dirty_size);

@@ -14,8 +14,6 @@
 #define has_32bit_shinfo(d)    ((d)->arch.has_32bit_shinfo)
 #define is_pv_32bit_domain(d)  ((d)->arch.is_32bit_pv)
 #define is_pv_32bit_vcpu(v)    (is_pv_32bit_domain((v)->domain))
-#define is_pv_32on64_domain(d) (is_pv_32bit_domain(d))
-#define is_pv_32on64_vcpu(v)   (is_pv_32on64_domain((v)->domain))
 
 #define is_hvm_pv_evtchn_domain(d) (has_hvm_container_domain(d) && \
         d->arch.hvm_domain.irq.callback_via_type == HVMIRQ_callback_vector)
@@ -235,6 +233,10 @@ struct paging_vcpu {
 typedef xen_domctl_cpuid_t cpuid_input_t;
 
 #define MAX_NESTEDP2M 10
+
+#define MAX_ALTP2M      10 /* arbitrary */
+#define INVALID_ALTP2M  0xffff
+#define MAX_EPTP        (PAGE_SIZE / sizeof(uint64_t))
 struct p2m_domain;
 struct time_scale {
     int shift;
@@ -247,6 +249,21 @@ struct pv_domain
 
     /* map_domain_page() mapping cache. */
     struct mapcache_domain mapcache;
+};
+
+struct monitor_write_data {
+    struct {
+        unsigned int msr : 1;
+        unsigned int cr0 : 1;
+        unsigned int cr3 : 1;
+        unsigned int cr4 : 1;
+    } do_write;
+
+    uint32_t msr;
+    uint64_t value;
+    uint64_t cr0;
+    uint64_t cr3;
+    uint64_t cr4;
 };
 
 struct arch_domain
@@ -294,6 +311,12 @@ struct arch_domain
     struct p2m_domain *nested_p2m[MAX_NESTEDP2M];
     mm_lock_t nested_p2m_lock;
 
+    /* altp2m: allow multiple copies of host p2m */
+    bool_t altp2m_active;
+    struct p2m_domain *altp2m_p2m[MAX_ALTP2M];
+    mm_lock_t altp2m_list_lock;
+    uint64_t *altp2m_eptp;
+
     /* NB. protected by d->event_lock and by irq_desc[irq].lock */
     struct radix_tree_root irq_pirq;
 
@@ -307,6 +330,11 @@ struct arch_domain
 
     /* Is PHYSDEVOP_eoi to automatically unmask the event channel? */
     bool_t auto_unmask;
+
+    /* Values snooped from updates to cpuids[] (below). */
+    u8 x86;                  /* CPU family */
+    u8 x86_vendor;           /* CPU vendor */
+    u8 x86_model;            /* CPU model */
 
     cpuid_input_t *cpuids;
 
@@ -333,7 +361,10 @@ struct arch_domain
     struct e820entry *e820;
     unsigned int nr_e820;
 
-    unsigned int psr_rmid; /* RMID assigned to the domain for CMT */
+    /* RMID assigned to the domain for CMT */
+    unsigned int psr_rmid;
+    /* COS assigned to the domain for each socket */
+    unsigned int *psr_cos_ids;
 
     /* Shared page for notifying that explicit PIRQ EOI is required. */
     unsigned long *pirq_eoi_map;
@@ -341,17 +372,21 @@ struct arch_domain
 
     /* Monitor options */
     struct {
-        uint16_t write_ctrlreg_enabled       : 4;
-        uint16_t write_ctrlreg_sync          : 4;
-        uint16_t write_ctrlreg_onchangeonly  : 4;
-        uint16_t mov_to_msr_enabled          : 1;
-        uint16_t mov_to_msr_extended         : 1;
-        uint16_t singlestep_enabled          : 1;
-        uint16_t software_breakpoint_enabled : 1;
+        unsigned int write_ctrlreg_enabled       : 4;
+        unsigned int write_ctrlreg_sync          : 4;
+        unsigned int write_ctrlreg_onchangeonly  : 4;
+        unsigned int mov_to_msr_enabled          : 1;
+        unsigned int mov_to_msr_extended         : 1;
+        unsigned int singlestep_enabled          : 1;
+        unsigned int software_breakpoint_enabled : 1;
+        unsigned int guest_request_enabled       : 1;
+        unsigned int guest_request_sync          : 1;
     } monitor;
 
     /* Mem_access emulation control */
     bool_t mem_access_emulate_enabled;
+
+    struct monitor_write_data *event_write_data;
 } __cacheline_aligned;
 
 #define has_arch_pdevs(d)    (!list_empty(&(d)->arch.pdev_list))
@@ -446,6 +481,8 @@ struct arch_vcpu
     void (*ctxt_switch_from) (struct vcpu *);
     void (*ctxt_switch_to) (struct vcpu *);
 
+    struct vpmu_struct vpmu;
+
     /* Virtual Machine Extensions */
     union {
         struct pv_vcpu pv_vcpu;
@@ -504,8 +541,8 @@ struct arch_vcpu
         uint32_t emulate_flags;
         unsigned long gpa;
         unsigned long eip;
+        struct vm_event_emul_read_data *emul_read_data;
     } vm_event;
-
 };
 
 smap_check_policy_t smap_policy_change(struct vcpu *v,

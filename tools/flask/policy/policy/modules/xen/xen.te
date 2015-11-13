@@ -67,6 +67,10 @@ allow dom0_t xen_t:xen {
 allow dom0_t xen_t:xen2 {
     resource_op
     psr_cmt_op
+    psr_cat_op
+};
+allow dom0_t xen_t:xen2 {
+    pmu_ctrl
 };
 allow dom0_t xen_t:mmu memorymap;
 
@@ -80,7 +84,8 @@ allow dom0_t dom0_t:domain {
 	getpodtarget setpodtarget set_misc_info set_virq_handler
 };
 allow dom0_t dom0_t:domain2 {
-	set_cpuid gettsc settsc setscheduler set_max_evtchn set_vnumainfo get_vnumainfo psr_cmt_op
+	set_cpuid gettsc settsc setscheduler set_max_evtchn set_vnumainfo
+	get_vnumainfo psr_cmt_op psr_cat_op
 };
 allow dom0_t dom0_t:resource { add remove };
 
@@ -126,6 +131,10 @@ if (guest_writeconsole) {
 } else {
 	dontaudit domain_type xen_t : xen writeconsole;
 }
+
+# Allow all domains to use PMU (but not to change its settings --- that's what
+# pmu_ctrl is for)
+allow domain_type xen_t:xen2 pmu_use;
 
 ###############################################################################
 #

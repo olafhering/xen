@@ -303,7 +303,7 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_guest_context_t);
  * struct xen_arch_domainconfig's ABI is covered by
  * XEN_DOMCTL_INTERFACE_VERSION.
  */
-#define XEN_DOMCTL_CONFIG_GIC_DEFAULT   0
+#define XEN_DOMCTL_CONFIG_GIC_NATIVE    0
 #define XEN_DOMCTL_CONFIG_GIC_V2        1
 #define XEN_DOMCTL_CONFIG_GIC_V3        2
 struct xen_arch_domainconfig {
@@ -311,6 +311,20 @@ struct xen_arch_domainconfig {
     uint8_t gic_version;
     /* IN */
     uint32_t nr_spis;
+    /*
+     * OUT
+     * Based on the property clock-frequency in the DT timer node.
+     * The property may be present when the bootloader/firmware doesn't
+     * set correctly CNTFRQ which hold the timer frequency.
+     *
+     * As it's not possible to trap this register, we have to replicate
+     * the value in the guest DT.
+     *
+     * = 0 => property not present
+     * > 0 => Value of the property
+     *
+     */
+    uint32_t clock_frequency;
 };
 #endif /* __XEN__ || __XEN_TOOLS__ */
 
@@ -392,8 +406,8 @@ typedef uint64_t xen_callback_t;
 #define GUEST_GICV3_RDIST_STRIDE   0x20000ULL
 #define GUEST_GICV3_RDIST_REGIONS  1
 
-#define GUEST_GICV3_GICR0_BASE     0x03020000ULL    /* vCPU0 - vCPU7 */
-#define GUEST_GICV3_GICR0_SIZE     0x00100000ULL
+#define GUEST_GICV3_GICR0_BASE     0x03020000ULL    /* vCPU0 - vCPU127 */
+#define GUEST_GICV3_GICR0_SIZE     0x01000000ULL
 
 /*
  * 16MB == 4096 pages reserved for guest to use as a region to map its
@@ -432,6 +446,11 @@ typedef uint64_t xen_callback_t;
 #define PSCI_cpu_on      2
 #define PSCI_migrate     3
 
+#endif
+
+#ifndef __ASSEMBLY__
+/* Stub definition of PMU structure */
+typedef struct xen_pmu_arch { uint8_t dummy; } xen_pmu_arch_t;
 #endif
 
 #endif /*  __XEN_PUBLIC_ARCH_ARM_H__ */

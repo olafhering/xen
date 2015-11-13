@@ -18,8 +18,7 @@
  *  Lesser General Public License for more details.
  *
  *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *  License along with this library; If not, see <http://www.gnu.org/licenses/>.
  *
  *  Yunhong Jiang <yunhong.jiang@intel.com>
  *  Ported to xen by using virtual IRQ line.
@@ -94,7 +93,7 @@ static uint32_t vioapic_read_indirect(const struct hvm_hw_vioapic *vioapic)
 
 static int vioapic_read(
     struct vcpu *v, unsigned long addr,
-    unsigned long length, unsigned long *pval)
+    unsigned int length, unsigned long *pval)
 {
     const struct hvm_hw_vioapic *vioapic = domain_vioapic(v->domain);
     uint32_t result;
@@ -215,7 +214,7 @@ static void vioapic_write_indirect(
 
 static int vioapic_write(
     struct vcpu *v, unsigned long addr,
-    unsigned long length, unsigned long val)
+    unsigned int length, unsigned long val)
 {
     struct hvm_hw_vioapic *vioapic = domain_vioapic(v->domain);
 
@@ -250,10 +249,10 @@ static int vioapic_range(struct vcpu *v, unsigned long addr)
              (addr < vioapic->base_address + VIOAPIC_MEM_LENGTH)));
 }
 
-const struct hvm_mmio_handler vioapic_mmio_handler = {
-    .check_handler = vioapic_range,
-    .read_handler = vioapic_read,
-    .write_handler = vioapic_write
+static const struct hvm_mmio_ops vioapic_mmio_ops = {
+    .check = vioapic_range,
+    .read = vioapic_read,
+    .write = vioapic_write
 };
 
 static void ioapic_inj_irq(
@@ -386,7 +385,7 @@ void vioapic_irq_positive_edge(struct domain *d, unsigned int irq)
     }
 }
 
-void vioapic_update_EOI(struct domain *d, int vector)
+void vioapic_update_EOI(struct domain *d, u8 vector)
 {
     struct hvm_hw_vioapic *vioapic = domain_vioapic(d);
     struct hvm_irq *hvm_irq = &d->arch.hvm_domain.irq;
@@ -455,6 +454,8 @@ int vioapic_init(struct domain *d)
 
     d->arch.hvm_domain.vioapic->domain = d;
     vioapic_reset(d);
+
+    register_mmio_handler(d, &vioapic_mmio_ops);
 
     return 0;
 }

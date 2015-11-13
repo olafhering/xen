@@ -16,8 +16,7 @@
  * GNU General Public License for more details.
  * 
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -60,6 +59,10 @@ DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_core_mask);
 cpumask_t cpu_online_map __read_mostly;
 EXPORT_SYMBOL(cpu_online_map);
 
+unsigned int __read_mostly nr_sockets;
+cpumask_t **__read_mostly socket_cpumask;
+static cpumask_t *secondary_socket_cpumask;
+
 struct cpuinfo_x86 cpu_data[NR_CPUS];
 
 u32 x86_cpu_to_apicid[NR_CPUS] __read_mostly =
@@ -81,10 +84,20 @@ void *stack_base[NR_CPUS];
 static void smp_store_cpu_info(int id)
 {
     struct cpuinfo_x86 *c = cpu_data + id;
+    unsigned int socket;
 
     *c = boot_cpu_data;
     if ( id != 0 )
+    {
         identify_cpu(c);
+
+        socket = cpu_to_socket(id);
+        if ( !socket_cpumask[socket] )
+        {
+            socket_cpumask[socket] = secondary_socket_cpumask;
+            secondary_socket_cpumask = NULL;
+        }
+    }
 
     /*
      * Certain Athlons might work (for various values of 'work') in SMP
@@ -244,6 +257,8 @@ static void set_cpu_sibling_map(int cpu)
     struct cpuinfo_x86 *c = cpu_data;
 
     cpumask_set_cpu(cpu, &cpu_sibling_setup_map);
+
+    cpumask_set_cpu(cpu, socket_cpumask[cpu_to_socket(cpu)]);
 
     if ( c[cpu].x86_num_siblings > 1 )
     {
@@ -649,7 +664,19 @@ void cpu_exit_clear(unsigned int cpu)
 
 static void cpu_smpboot_free(unsigned int cpu)
 {
-    unsigned int order;
+    unsigned int order, socket = cpu_to_socket(cpu);
+    struct cpuinfo_x86 *c = cpu_data;
+
+    if ( cpumask_empty(socket_cpumask[socket]) )
+    {
+        xfree(socket_cpumask[socket]);
+        socket_cpumask[socket] = NULL;
+    }
+
+    c[cpu].phys_proc_id = XEN_INVALID_SOCKET_ID;
+    c[cpu].cpu_core_id = XEN_INVALID_CORE_ID;
+    c[cpu].compute_unit_id = INVALID_CUID;
+    cpumask_clear_cpu(cpu, &cpu_sibling_setup_map);
 
     free_cpumask_var(per_cpu(cpu_sibling_mask, cpu));
     free_cpumask_var(per_cpu(cpu_core_mask, cpu));
@@ -657,7 +684,7 @@ static void cpu_smpboot_free(unsigned int cpu)
     if ( per_cpu(stubs.addr, cpu) )
     {
         unsigned long mfn = per_cpu(stubs.mfn, cpu);
-        unsigned char *stub_page = map_domain_page(mfn);
+        unsigned char *stub_page = map_domain_page(_mfn(mfn));
         unsigned int i;
 
         memset(stub_page + STUB_BUF_CPU_OFFS(cpu), 0xcc, STUB_BUF_SIZE);
@@ -736,6 +763,10 @@ static int cpu_smpboot_alloc(unsigned int cpu)
         goto oom;
     per_cpu(stubs.addr, cpu) = stub_page + STUB_BUF_CPU_OFFS(cpu);
 
+    if ( secondary_socket_cpumask == NULL &&
+         (secondary_socket_cpumask = xzalloc(cpumask_t)) == NULL )
+        goto oom;
+
     if ( zalloc_cpumask_var(&per_cpu(cpu_sibling_mask, cpu)) &&
          zalloc_cpumask_var(&per_cpu(cpu_core_mask, cpu)) )
         return 0;
@@ -785,6 +816,13 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
     x86_cpu_to_apicid[0] = boot_cpu_physical_apicid;
 
     stack_base[0] = stack_start;
+
+    set_nr_sockets();
+
+    socket_cpumask = xzalloc_array(cpumask_t *, nr_sockets);
+    if ( socket_cpumask == NULL ||
+         (socket_cpumask[cpu_to_socket(0)] = xzalloc(cpumask_t)) == NULL )
+        panic("No memory for socket CPU siblings map");
 
     if ( !zalloc_cpumask_var(&per_cpu(cpu_sibling_mask, 0)) ||
          !zalloc_cpumask_var(&per_cpu(cpu_core_mask, 0)) )
@@ -849,24 +887,21 @@ static void
 remove_siblinginfo(int cpu)
 {
     int sibling;
-    struct cpuinfo_x86 *c = cpu_data;
+
+    cpumask_clear_cpu(cpu, socket_cpumask[cpu_to_socket(cpu)]);
 
     for_each_cpu ( sibling, per_cpu(cpu_core_mask, cpu) )
     {
         cpumask_clear_cpu(cpu, per_cpu(cpu_core_mask, sibling));
         /* Last thread sibling in this cpu core going down. */
         if ( cpumask_weight(per_cpu(cpu_sibling_mask, cpu)) == 1 )
-            c[sibling].booted_cores--;
+            cpu_data[sibling].booted_cores--;
     }
    
     for_each_cpu(sibling, per_cpu(cpu_sibling_mask, cpu))
         cpumask_clear_cpu(cpu, per_cpu(cpu_sibling_mask, sibling));
     cpumask_clear(per_cpu(cpu_sibling_mask, cpu));
     cpumask_clear(per_cpu(cpu_core_mask, cpu));
-    c[cpu].phys_proc_id = XEN_INVALID_SOCKET_ID;
-    c[cpu].cpu_core_id = XEN_INVALID_CORE_ID;
-    c[cpu].compute_unit_id = INVALID_CUID;
-    cpumask_clear_cpu(cpu, &cpu_sibling_setup_map);
 }
 
 void __cpu_disable(void)
@@ -887,7 +922,6 @@ void __cpu_disable(void)
     remove_siblinginfo(cpu);
 
     /* It's now safe to remove this processor from the online map */
-    cpumask_clear_cpu(cpu, cpupool0->cpu_valid);
     cpumask_clear_cpu(cpu, &cpu_online_map);
     fixup_irqs();
 

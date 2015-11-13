@@ -15,8 +15,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -174,13 +173,6 @@ int nvmx_vcpu_reset(struct vcpu *v)
     return 0;
 }
 
-uint64_t nvmx_vcpu_guestcr3(struct vcpu *v)
-{
-    /* TODO */
-    ASSERT(0);
-    return 0;
-}
-
 uint64_t nvmx_vcpu_eptp_base(struct vcpu *v)
 {
     uint64_t eptp_base;
@@ -188,13 +180,6 @@ uint64_t nvmx_vcpu_eptp_base(struct vcpu *v)
 
     eptp_base = __get_vvmcs(nvcpu->nv_vvmcx, EPT_POINTER);
     return eptp_base & PAGE_MASK;
-}
-
-uint32_t nvmx_vcpu_asid(struct vcpu *v)
-{
-    /* TODO */
-    ASSERT(0);
-    return 0;
 }
 
 bool_t nvmx_ept_enabled(struct vcpu *v)
@@ -514,8 +499,8 @@ static void vmreturn(struct cpu_user_regs *regs, enum vmx_ops_result ops_res)
     regs->eflags = eflags;
 }
 
-int nvmx_intercepts_exception(struct vcpu *v, unsigned int trap,
-                               int error_code)
+bool_t nvmx_intercepts_exception(struct vcpu *v, unsigned int trap,
+                                 int error_code)
 {
     struct nestedvcpu *nvcpu = &vcpu_nestedhvm(v);
     u32 exception_bitmap, pfec_match=0, pfec_mask=0;
@@ -1048,15 +1033,16 @@ static void load_shadow_guest_state(struct vcpu *v)
 
     nvcpu->guest_cr[0] = __get_vvmcs(vvmcs, CR0_READ_SHADOW);
     nvcpu->guest_cr[4] = __get_vvmcs(vvmcs, CR4_READ_SHADOW);
-    hvm_set_cr0(__get_vvmcs(vvmcs, GUEST_CR0));
-    hvm_set_cr4(__get_vvmcs(vvmcs, GUEST_CR4));
-    hvm_set_cr3(__get_vvmcs(vvmcs, GUEST_CR3));
+    hvm_set_cr0(__get_vvmcs(vvmcs, GUEST_CR0), 1);
+    hvm_set_cr4(__get_vvmcs(vvmcs, GUEST_CR4), 1);
+    hvm_set_cr3(__get_vvmcs(vvmcs, GUEST_CR3), 1);
 
     control = __get_vvmcs(vvmcs, VM_ENTRY_CONTROLS);
     if ( control & VM_ENTRY_LOAD_GUEST_PAT )
         hvm_set_guest_pat(v, __get_vvmcs(vvmcs, GUEST_PAT));
     if ( control & VM_ENTRY_LOAD_PERF_GLOBAL_CTRL )
-        hvm_msr_write_intercept(MSR_CORE_PERF_GLOBAL_CTRL, __get_vvmcs(vvmcs, GUEST_PERF_GLOBAL_CTRL));
+        hvm_msr_write_intercept(MSR_CORE_PERF_GLOBAL_CTRL,
+                                __get_vvmcs(vvmcs, GUEST_PERF_GLOBAL_CTRL), 0);
 
     hvm_funcs.set_tsc_offset(v, v->arch.hvm_vcpu.cache_tsc_offset, 0);
 
@@ -1249,15 +1235,16 @@ static void load_vvmcs_host_state(struct vcpu *v)
         __vmwrite(vmcs_h2g_field[i].guest_field, r);
     }
 
-    hvm_set_cr0(__get_vvmcs(vvmcs, HOST_CR0));
-    hvm_set_cr4(__get_vvmcs(vvmcs, HOST_CR4));
-    hvm_set_cr3(__get_vvmcs(vvmcs, HOST_CR3));
+    hvm_set_cr0(__get_vvmcs(vvmcs, HOST_CR0), 1);
+    hvm_set_cr4(__get_vvmcs(vvmcs, HOST_CR4), 1);
+    hvm_set_cr3(__get_vvmcs(vvmcs, HOST_CR3), 1);
 
     control = __get_vvmcs(vvmcs, VM_EXIT_CONTROLS);
     if ( control & VM_EXIT_LOAD_HOST_PAT )
         hvm_set_guest_pat(v, __get_vvmcs(vvmcs, HOST_PAT));
     if ( control & VM_EXIT_LOAD_PERF_GLOBAL_CTRL )
-        hvm_msr_write_intercept(MSR_CORE_PERF_GLOBAL_CTRL, __get_vvmcs(vvmcs, HOST_PERF_GLOBAL_CTRL));
+        hvm_msr_write_intercept(MSR_CORE_PERF_GLOBAL_CTRL,
+                                __get_vvmcs(vvmcs, HOST_PERF_GLOBAL_CTRL), 1);
 
     hvm_funcs.set_tsc_offset(v, v->arch.hvm_vcpu.cache_tsc_offset, 0);
 
@@ -1631,10 +1618,23 @@ int nvmx_handle_vmptrld(struct cpu_user_regs *regs)
 
     if ( nvcpu->nv_vvmcxaddr == VMCX_EADDR )
     {
-        nvcpu->nv_vvmcx = hvm_map_guest_frame_rw(gpa >> PAGE_SHIFT, 1);
-        if ( nvcpu->nv_vvmcx )
-            nvcpu->nv_vvmcxaddr = gpa;
-        if ( !nvcpu->nv_vvmcx ||
+        bool_t writable;
+        void *vvmcx = hvm_map_guest_frame_rw(paddr_to_pfn(gpa), 1, &writable);
+
+        if ( vvmcx )
+        {
+            if ( writable )
+            {
+                nvcpu->nv_vvmcx = vvmcx;
+                nvcpu->nv_vvmcxaddr = gpa;
+            }
+            else
+            {
+                hvm_unmap_guest_frame(vvmcx, 1);
+                vvmcx = NULL;
+            }
+        }
+        if ( !vvmcx ||
              !map_io_bitmap_all(v) ||
              !_map_msr_bitmap(v) )
         {
@@ -1688,13 +1688,10 @@ int nvmx_handle_vmclear(struct cpu_user_regs *regs)
     if ( rc != X86EMUL_OKAY )
         return rc;
 
+    BUILD_BUG_ON(X86EMUL_OKAY != VMSUCCEED); /* rc = VMSUCCEED; */
     if ( gpa & 0xfff )
-    {
-        vmreturn(regs, VMFAIL_INVALID);
-        return X86EMUL_OKAY;
-    }
-    
-    if ( gpa == nvcpu->nv_vvmcxaddr ) 
+        rc = VMFAIL_INVALID;
+    else if ( gpa == nvcpu->nv_vvmcxaddr )
     {
         if ( cpu_has_vmx_vmcs_shadowing )
             nvmx_clear_vmcs_pointer(v, nvcpu->nv_vvmcx);
@@ -1705,14 +1702,22 @@ int nvmx_handle_vmclear(struct cpu_user_regs *regs)
     else 
     {
         /* Even if this VMCS isn't the current one, we must clear it. */
-        vvmcs = hvm_map_guest_frame_rw(gpa >> PAGE_SHIFT, 0);
+        bool_t writable;
+
+        vvmcs = hvm_map_guest_frame_rw(paddr_to_pfn(gpa), 0, &writable);
         if ( vvmcs ) 
-            clear_vvmcs_launched(&nvmx->launched_list,
-                domain_page_map_to_mfn(vvmcs));
-        hvm_unmap_guest_frame(vvmcs, 0);
+        {
+            if ( writable )
+                clear_vvmcs_launched(&nvmx->launched_list,
+                                     domain_page_map_to_mfn(vvmcs));
+            else
+                rc = VMFAIL_VALID;
+            hvm_unmap_guest_frame(vvmcs, 0);
+        }
     }
 
-    vmreturn(regs, VMSUCCEED);
+    vmreturn(regs, rc);
+
     return X86EMUL_OKAY;
 }
 

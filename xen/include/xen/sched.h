@@ -79,6 +79,7 @@ extern domid_t hardware_domid;
 
 struct evtchn
 {
+    spinlock_t lock;
 #define ECS_FREE         0 /* Channel is available for use.                  */
 #define ECS_RESERVED     1 /* Channel is reserved.                           */
 #define ECS_UNBOUND      2 /* Channel is waiting to bind to a remote domain. */
@@ -128,7 +129,7 @@ struct evtchn
 #endif
     } ssid;
 #endif
-};
+} __attribute__((aligned(64)));
 
 int  evtchn_init(struct domain *d); /* from domain_create */
 void evtchn_destroy(struct domain *d); /* from domain_kill */
@@ -218,6 +219,10 @@ struct vcpu
     atomic_t         vm_event_pause_count;
     /* VCPU paused by system controller. */
     int              controller_pause_count;
+
+    /* Maptrack */
+    unsigned int     maptrack_head;
+    unsigned int     maptrack_tail;
 
     /* IRQ-safe virq_lock protects against delivering VIRQ to stale evtchn. */
     evtchn_port_t    virq_to_evtchn[NR_VIRQS];
@@ -336,8 +341,9 @@ struct domain
     /* Event channel information. */
     struct evtchn   *evtchn;                         /* first bucket only */
     struct evtchn  **evtchn_group[NR_EVTCHN_GROUPS]; /* all other buckets */
-    unsigned int     max_evtchns;
-    unsigned int     max_evtchn_port;
+    unsigned int     max_evtchns;     /* number supported by ABI */
+    unsigned int     max_evtchn_port; /* max permitted port number */
+    unsigned int     valid_evtchns;   /* number of allocated event channels */
     spinlock_t       event_lock;
     const struct evtchn_port_ops *evtchn_port_ops;
     struct evtchn_fifo_domain *evtchn_fifo;
@@ -798,6 +804,11 @@ static inline int domain_pause_by_systemcontroller_nosync(struct domain *d)
 {
     return __domain_pause_by_systemcontroller(d, domain_pause_nosync);
 }
+
+/* domain_pause() but safe against trying to pause current. */
+void domain_pause_except_self(struct domain *d);
+void domain_unpause_except_self(struct domain *d);
+
 void cpu_init(void);
 
 struct scheduler;

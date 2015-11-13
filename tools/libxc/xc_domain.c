@@ -14,8 +14,7 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ * License along with this library; If not, see <http://www.gnu.org/licenses/>.
  *
  * Copyright (c) 2003, K A Fraser.
  */
@@ -66,7 +65,7 @@ int xc_domain_create(xc_interface *xch,
 #if defined (__i386) || defined(__x86_64__)
     /* No arch-specific configuration for now */
 #elif defined (__arm__) || defined(__aarch64__)
-    config.gic_version = XEN_DOMCTL_CONFIG_GIC_DEFAULT;
+    config.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
     config.nr_spis = 0;
 #else
     errno = ENOSYS;
@@ -684,6 +683,7 @@ int xc_domain_set_memory_map(xc_interface *xch,
 
     return rc;
 }
+
 int xc_get_machine_memory_map(xc_interface *xch,
                               struct e820entry entries[],
                               uint32_t max_entries)
@@ -729,6 +729,41 @@ int xc_domain_set_memmap_limit(xc_interface *xch,
     return -1;
 }
 #endif
+
+int xc_reserved_device_memory_map(xc_interface *xch,
+                                  uint32_t flags,
+                                  uint16_t seg,
+                                  uint8_t bus,
+                                  uint8_t devfn,
+                                  struct xen_reserved_device_memory entries[],
+                                  uint32_t *max_entries)
+{
+    int rc;
+    struct xen_reserved_device_memory_map xrdmmap = {
+        .flags = flags,
+        .dev.pci.seg = seg,
+        .dev.pci.bus = bus,
+        .dev.pci.devfn = devfn,
+        .nr_entries = *max_entries
+    };
+    DECLARE_HYPERCALL_BOUNCE(entries,
+                             sizeof(struct xen_reserved_device_memory) *
+                             *max_entries, XC_HYPERCALL_BUFFER_BOUNCE_OUT);
+
+    if ( xc_hypercall_bounce_pre(xch, entries) )
+        return -1;
+
+    set_xen_guest_handle(xrdmmap.buffer, entries);
+
+    rc = do_memory_op(xch, XENMEM_reserved_device_memory_map,
+                      &xrdmmap, sizeof(xrdmmap));
+
+    xc_hypercall_bounce_post(xch, entries);
+
+    *max_entries = xrdmmap.nr_entries;
+
+    return rc;
+}
 
 int xc_domain_set_time_offset(xc_interface *xch,
                               uint32_t domid,
@@ -1411,7 +1446,7 @@ int xc_hvm_create_ioreq_server(xc_interface *xch,
     hypercall.arg[1] = HYPERCALL_BUFFER_AS_ARG(arg);
 
     arg->domid = domid;
-    arg->handle_bufioreq = !!handle_bufioreq;
+    arg->handle_bufioreq = handle_bufioreq;
 
     rc = do_xen_hypercall(xch, &hypercall);
 
@@ -1661,7 +1696,8 @@ int xc_domain_setdebugging(xc_interface *xch,
 int xc_assign_device(
     xc_interface *xch,
     uint32_t domid,
-    uint32_t machine_sbdf)
+    uint32_t machine_sbdf,
+    uint32_t flag)
 {
     DECLARE_DOMCTL;
 
@@ -1669,6 +1705,7 @@ int xc_assign_device(
     domctl.domain = domid;
     domctl.u.assign_device.dev = XEN_DOMCTL_DEV_PCI;
     domctl.u.assign_device.u.pci.machine_sbdf = machine_sbdf;
+    domctl.u.assign_device.flag = flag;
 
     return do_domctl(xch, &domctl);
 }
@@ -1756,6 +1793,11 @@ int xc_assign_dt_device(
 
     domctl.u.assign_device.dev = XEN_DOMCTL_DEV_DT;
     domctl.u.assign_device.u.dt.size = size;
+    /*
+     * DT doesn't own any RDM so actually DT has nothing to do
+     * for any flag and here just fix that as 0.
+     */
+    domctl.u.assign_device.flag = 0;
     set_xen_guest_handle(domctl.u.assign_device.u.dt.path, path);
 
     rc = do_domctl(xch, &domctl);
@@ -1880,7 +1922,7 @@ int xc_domain_unbind_msi_irq(
 static int xc_domain_bind_pt_irq_int(
     xc_interface *xch,
     uint32_t domid,
-    uint8_t machine_irq,
+    uint32_t machine_irq,
     uint8_t irq_type,
     uint8_t bus,
     uint8_t device,
@@ -1939,7 +1981,7 @@ int xc_domain_bind_pt_irq(
 static int xc_domain_unbind_pt_irq_int(
     xc_interface *xch,
     uint32_t domid,
-    uint8_t machine_irq,
+    uint32_t machine_irq,
     uint8_t irq_type,
     uint8_t bus,
     uint8_t device,
@@ -2409,8 +2451,7 @@ int xc_domain_setvnuma(xc_interface *xch,
                              XC_HYPERCALL_BUFFER_BOUNCE_BOTH);
     errno = EINVAL;
 
-    if ( nr_vnodes == 0 || nr_vmemranges == 0 ||
-         nr_vmemranges < nr_vnodes || nr_vcpus == 0 )
+    if ( nr_vnodes == 0 || nr_vmemranges == 0 || nr_vcpus == 0 )
         return -1;
 
     if ( !vdistance || !vcpu_to_vnode || !vmemrange || !vnode_to_pnode )

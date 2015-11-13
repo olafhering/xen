@@ -98,6 +98,17 @@ struct vgic_irq_rank {
     };
 };
 
+struct sgi_target {
+    uint8_t aff1;
+    uint16_t list;
+};
+
+static inline void sgi_target_init(struct sgi_target *sgi_target)
+{
+    sgi_target->aff1 = 0;
+    sgi_target->list = 0;
+}
+
 struct vgic_ops {
     /* Initialize vGIC */
     int (*vcpu_init)(struct vcpu *v);
@@ -110,6 +121,8 @@ struct vgic_ops {
     struct vcpu *(*get_target_vcpu)(struct vcpu *v, unsigned int irq);
     /* vGIC sysreg emulation */
     int (*emulate_sysreg)(struct cpu_user_regs *regs, union hsr hsr);
+    /* Maximum number of vCPU supported */
+    const unsigned int max_vcpus;
 };
 
 /* Number of ranks of interrupt registers for a domain */
@@ -198,7 +211,7 @@ int vgic_v3_init(struct domain *d);
 extern int vcpu_vgic_free(struct vcpu *v);
 extern int vgic_to_sgi(struct vcpu *v, register_t sgir,
                        enum gic_sgi_mode irqmode, int virq,
-                       unsigned long vcpu_mask);
+                       const struct sgi_target *target);
 extern void vgic_migrate_irq(struct vcpu *old, struct vcpu *new, unsigned int irq);
 
 /* Reserve a specific guest vIRQ */
@@ -222,6 +235,16 @@ static inline int vgic_allocate_spi(struct domain *d)
 }
 
 extern void vgic_free_virq(struct domain *d, unsigned int virq);
+
+void vgic_v2_setup_hw(paddr_t dbase, paddr_t cbase, paddr_t vbase);
+
+#ifdef HAS_GICV3
+struct rdist_region;
+void vgic_v3_setup_hw(paddr_t dbase,
+                      unsigned int nr_rdist_regions,
+                      const struct rdist_region *regions,
+                      uint32_t rdist_stride);
+#endif
 
 #endif /* __ASM_ARM_VGIC_H__ */
 

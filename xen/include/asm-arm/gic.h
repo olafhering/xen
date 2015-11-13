@@ -162,6 +162,7 @@
 
 #define DT_MATCH_GIC_V3 DT_MATCH_COMPATIBLE("arm,gic-v3")
 
+#ifdef HAS_GICV3
 /*
  * GICv3 registers that needs to be saved/restored
  */
@@ -171,6 +172,7 @@ struct gic_v3 {
     uint32_t apr1[4];
     uint64_t lr[16];
 };
+#endif
 
 /*
  * GICv2 register that needs to be saved/restored
@@ -188,7 +190,9 @@ struct gic_v2 {
  */
 union gic_state_data {
     struct gic_v2 v2;
+#ifdef HAS_GICV3
     struct gic_v3 v3;
+#endif
 };
 
 /*
@@ -307,8 +311,6 @@ struct gic_hw_operations {
     void (*restore_state)(const struct vcpu *);
     /* Dump GIC LR register information */
     void (*dump_state)(const struct vcpu *);
-    /* Map MMIO region of GIC */
-    int (*gicv_setup)(struct domain *);
 
     /* hw_irq_controller to enable/disable/eoi host irq */
     hw_irq_controller *gic_host_irq_type;
@@ -348,13 +350,14 @@ struct gic_hw_operations {
     unsigned int (*read_apr)(int apr_reg);
     /* Secondary CPU init */
     int (*secondary_init)(void);
-    int (*make_dt_node)(const struct domain *d,
-                        const struct dt_device_node *node, void *fdt);
+    int (*make_hwdom_dt_node)(const struct domain *d,
+                              const struct dt_device_node *node, void *fdt);
 };
 
 void register_gic_ops(const struct gic_hw_operations *ops);
-int gic_make_node(const struct domain *d,const struct dt_device_node *node,
-                  void *fdt);
+int gic_make_hwdom_dt_node(const struct domain *d,
+                           const struct dt_device_node *node,
+                           void *fdt);
 
 #endif /* __ASSEMBLY__ */
 #endif

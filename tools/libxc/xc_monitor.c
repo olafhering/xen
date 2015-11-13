@@ -17,8 +17,7 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ * License along with this library; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "xc_private.h"
@@ -43,6 +42,30 @@ int xc_monitor_resume(xc_interface *xch, domid_t domain_id)
                                XEN_VM_EVENT_RESUME,
                                XEN_DOMCTL_VM_EVENT_OP_MONITOR,
                                NULL);
+}
+
+int xc_monitor_get_capabilities(xc_interface *xch, domid_t domain_id,
+                                uint32_t *capabilities)
+{
+    int rc;
+    DECLARE_DOMCTL;
+
+    if ( !capabilities )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    domctl.cmd = XEN_DOMCTL_monitor_op;
+    domctl.domain = domain_id;
+    domctl.u.monitor_op.op = XEN_DOMCTL_MONITOR_OP_GET_CAPABILITIES;
+
+    rc = do_domctl(xch, &domctl);
+    if ( rc )
+        return rc;
+
+    *capabilities = domctl.u.monitor_op.event;
+    return 0;
 }
 
 int xc_monitor_write_ctrlreg(xc_interface *xch, domid_t domain_id,
@@ -102,6 +125,21 @@ int xc_monitor_singlestep(xc_interface *xch, domid_t domain_id,
     domctl.u.monitor_op.op = enable ? XEN_DOMCTL_MONITOR_OP_ENABLE
                                     : XEN_DOMCTL_MONITOR_OP_DISABLE;
     domctl.u.monitor_op.event = XEN_DOMCTL_MONITOR_EVENT_SINGLESTEP;
+
+    return do_domctl(xch, &domctl);
+}
+
+int xc_monitor_guest_request(xc_interface *xch, domid_t domain_id, bool enable,
+                             bool sync)
+{
+    DECLARE_DOMCTL;
+
+    domctl.cmd = XEN_DOMCTL_monitor_op;
+    domctl.domain = domain_id;
+    domctl.u.monitor_op.op = enable ? XEN_DOMCTL_MONITOR_OP_ENABLE
+                                    : XEN_DOMCTL_MONITOR_OP_DISABLE;
+    domctl.u.monitor_op.event = XEN_DOMCTL_MONITOR_EVENT_GUEST_REQUEST;
+    domctl.u.monitor_op.u.guest_request.sync = sync;
 
     return do_domctl(xch, &domctl);
 }

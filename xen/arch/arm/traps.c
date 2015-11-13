@@ -1171,6 +1171,22 @@ die:
 }
 #endif
 
+static register_t do_deprecated_hypercall(void)
+{
+    struct cpu_user_regs *regs = guest_cpu_user_regs();
+    const register_t op =
+#ifdef CONFIG_ARM_64
+        !is_32bit_domain(current->domain) ?
+            regs->x16
+        :
+#endif
+            regs->r12;
+
+    gdprintk(XENLOG_DEBUG, "%pv: deprecated hypercall %lu\n",
+             current, (unsigned long)op);
+    return -ENOSYS;
+}
+
 typedef register_t (*arm_hypercall_fn_t)(
     register_t, register_t, register_t, register_t, register_t);
 
@@ -1190,15 +1206,29 @@ typedef struct {
         .fn = (arm_hypercall_fn_t) &do_arm_ ## _name,                \
         .nr_args = _nr_args,                                         \
     }
+/*
+ * Only use this for hypercalls which were deprecated (i.e. replaced
+ * by something else) before Xen on ARM was created, i.e. *not* for
+ * hypercalls which are simply not yet used on ARM.
+ */
+#define HYPERCALL_DEPRECATED(_name, _nr_args)                   \
+    [ __HYPERVISOR_##_name ] = {                                \
+        .fn = (arm_hypercall_fn_t) &do_deprecated_hypercall,    \
+        .nr_args = _nr_args,                                    \
+    }
+
 static arm_hypercall_t arm_hypercall_table[] = {
     HYPERCALL(memory_op, 2),
     HYPERCALL(domctl, 1),
     HYPERCALL(sched_op, 2),
+    HYPERCALL_DEPRECATED(sched_op_compat, 2),
     HYPERCALL(console_io, 3),
     HYPERCALL(xen_version, 2),
     HYPERCALL(xsm_op, 1),
     HYPERCALL(event_channel_op, 2),
+    HYPERCALL_DEPRECATED(event_channel_op_compat, 1),
     HYPERCALL(physdev_op, 2),
+    HYPERCALL_DEPRECATED(physdev_op_compat, 1),
     HYPERCALL(sysctl, 2),
     HYPERCALL(hvm_op, 2),
     HYPERCALL(grant_table_op, 3),
@@ -2263,7 +2293,7 @@ void dump_guest_s1_walk(struct domain *d, vaddr_t addr)
         printk("Failed TTBR0 maddr lookup\n");
         goto done;
     }
-    first = map_domain_page(paddr>>PAGE_SHIFT);
+    first = map_domain_page(_mfn(paddr_to_pfn(paddr)));
 
     offset = addr >> (12+10);
     printk("1ST[0x%"PRIx32"] (0x%"PRIpaddr") = 0x%08"PRIx32"\n",
@@ -2279,7 +2309,7 @@ void dump_guest_s1_walk(struct domain *d, vaddr_t addr)
         printk("Failed L1 entry maddr lookup\n");
         goto done;
     }
-    second = map_domain_page(paddr>>PAGE_SHIFT);
+    second = map_domain_page(_mfn(paddr_to_pfn(paddr)));
     offset = (addr >> 12) & 0x3FF;
     printk("2ND[0x%"PRIx32"] (0x%"PRIpaddr") = 0x%08"PRIx32"\n",
            offset, paddr, second[offset]);

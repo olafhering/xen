@@ -735,6 +735,9 @@ static int flask_domctl(struct domain *d, int cmd)
     case XEN_DOMCTL_psr_cmt_op:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__PSR_CMT_OP);
 
+    case XEN_DOMCTL_psr_cat_op:
+        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__PSR_CAT_OP);
+
     default:
         printk("flask_domctl: Unknown op %d\n", cmd);
         return -EPERM;
@@ -794,6 +797,12 @@ static int flask_sysctl(int cmd)
     case XEN_SYSCTL_psr_cmt_op:
         return avc_current_has_perm(SECINITSID_XEN, SECCLASS_XEN2,
                                     XEN2__PSR_CMT_OP, NULL);
+    case XEN_SYSCTL_psr_cat_op:
+        return avc_current_has_perm(SECINITSID_XEN, SECCLASS_XEN2,
+                                    XEN2__PSR_CAT_OP, NULL);
+
+    case XEN_SYSCTL_tmem_op:
+        return domain_has_xen(current->domain, XEN__TMEM_CONTROL);
 
     default:
         printk("flask_sysctl: Unknown op %d\n", cmd);
@@ -1123,11 +1132,6 @@ static inline int flask_tmem_op(void)
     return domain_has_xen(current->domain, XEN__TMEM_OP);
 }
 
-static inline int flask_tmem_control(void)
-{
-    return domain_has_xen(current->domain, XEN__TMEM_CONTROL);
-}
-
 static int flask_add_to_physmap(struct domain *d1, struct domain *d2)
 {
     return domain_has_perm(d1, d2, SECCLASS_MMU, MMU__PHYSMAP);
@@ -1168,6 +1172,16 @@ static int flask_hvm_param(struct domain *d, unsigned long op)
 static int flask_hvm_param_nested(struct domain *d)
 {
     return current_has_perm(d, SECCLASS_HVM, HVM__NESTED);
+}
+
+static int flask_hvm_param_altp2mhvm(struct domain *d)
+{
+    return current_has_perm(d, SECCLASS_HVM, HVM__ALTP2MHVM);
+}
+
+static int flask_hvm_altp2mhvm_op(struct domain *d)
+{
+    return current_has_perm(d, SECCLASS_HVM, HVM__ALTP2MHVM_OP);
 }
 
 static int flask_vm_event_control(struct domain *d, int mode, int op)
@@ -1515,6 +1529,10 @@ static int flask_platform_op(uint32_t op)
         return avc_current_has_perm(SECINITSID_XEN, SECCLASS_XEN2,
                                     XEN2__RESOURCE_OP, NULL);
 
+    case XENPF_get_symbol:
+        return avc_has_perm(domain_sid(current->domain), SECINITSID_XEN,
+                            SECCLASS_XEN2, XEN2__GET_SYMBOL, NULL);
+
     default:
         printk("flask_platform_op: Unknown op %d\n", op);
         return -EPERM;
@@ -1574,6 +1592,29 @@ static int flask_update_va_mapping(struct domain *d, struct domain *f,
 static int flask_priv_mapping(struct domain *d, struct domain *t)
 {
     return domain_has_perm(d, t, SECCLASS_MMU, MMU__TARGET_HACK);
+}
+
+static int flask_pmu_op (struct domain *d, unsigned int op)
+{
+    u32 dsid = domain_sid(d);
+
+    switch ( op )
+    {
+    case XENPMU_mode_set:
+    case XENPMU_mode_get:
+    case XENPMU_feature_set:
+    case XENPMU_feature_get:
+        return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_XEN2,
+                            XEN2__PMU_CTRL, NULL);
+    case XENPMU_init:
+    case XENPMU_finish:
+    case XENPMU_lvtpc_set:
+    case XENPMU_flush:
+        return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_XEN2,
+                            XEN2__PMU_USE, NULL);
+    default:
+        return -EPERM;
+    }
 }
 #endif /* CONFIG_X86 */
 
@@ -1650,10 +1691,11 @@ static struct xsm_operations flask_ops = {
 
     .page_offline = flask_page_offline,
     .tmem_op = flask_tmem_op,
-    .tmem_control = flask_tmem_control,
     .hvm_param = flask_hvm_param,
     .hvm_control = flask_hvm_param,
     .hvm_param_nested = flask_hvm_param_nested,
+    .hvm_param_altp2mhvm = flask_hvm_param_altp2mhvm,
+    .hvm_altp2mhvm_op = flask_hvm_altp2mhvm_op,
 
     .do_xsm_op = do_flask_op,
     .get_vnumainfo = flask_get_vnumainfo,
@@ -1712,6 +1754,7 @@ static struct xsm_operations flask_ops = {
     .priv_mapping = flask_priv_mapping,
     .ioport_permission = flask_ioport_permission,
     .ioport_mapping = flask_ioport_mapping,
+    .pmu_op = flask_pmu_op,
 #endif
 };
 

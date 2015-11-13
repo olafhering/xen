@@ -1,5 +1,7 @@
 #include <arpa/inet.h>
 
+#include <assert.h>
+
 #include "xc_sr_common.h"
 
 /*
@@ -179,6 +181,7 @@ static int pfn_set_populated(struct xc_sr_context *ctx, xen_pfn_t pfn)
         ctx->restore.max_populated_pfn = new_max;
     }
 
+    assert(!test_bit(pfn, ctx->restore.populated_pfns));
     set_bit(pfn, ctx->restore.populated_pfns);
 
     return 0;
@@ -212,6 +215,9 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned count,
                           types[i] != XEN_DOMCTL_PFINFO_BROKEN))) &&
              !pfn_is_populated(ctx, original_pfns[i]) )
         {
+            rc = pfn_set_populated(ctx, original_pfns[i]);
+            if ( rc )
+                goto err;
             pfns[nr_pfns] = mfns[nr_pfns] = original_pfns[i];
             ++nr_pfns;
         }
@@ -236,9 +242,6 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned count,
                 goto err;
             }
 
-            rc = pfn_set_populated(ctx, pfns[i]);
-            if ( rc )
-                goto err;
             ctx->restore.ops.set_gfn(ctx, pfns[i], mfns[i]);
         }
     }
@@ -472,12 +475,27 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec);
 static int handle_checkpoint(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    int rc = 0;
+    int rc = 0, ret;
     unsigned i;
 
     if ( !ctx->restore.checkpointed )
     {
         ERROR("Found checkpoint in non-checkpointed stream");
+        rc = -1;
+        goto err;
+    }
+
+    ret = ctx->restore.callbacks->checkpoint(ctx->restore.callbacks->data);
+    switch ( ret )
+    {
+    case XGR_CHECKPOINT_SUCCESS:
+        break;
+
+    case XGR_CHECKPOINT_FAILOVER:
+        rc = BROKEN_CHANNEL;
+        goto err;
+
+    default: /* Other fatal error */
         rc = -1;
         goto err;
     }
@@ -560,19 +578,6 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     free(rec->data);
     rec->data = NULL;
 
-    if ( rc == RECORD_NOT_PROCESSED )
-    {
-        if ( rec->type & REC_TYPE_OPTIONAL )
-            DPRINTF("Ignoring optional record %#x (%s)",
-                    rec->type, rec_type_to_str(rec->type));
-        else
-        {
-            ERROR("Mandatory record %#x (%s) not handled",
-                  rec->type, rec_type_to_str(rec->type));
-            rc = -1;
-        }
-    }
-
     return rc;
 }
 
@@ -623,9 +628,6 @@ static void cleanup(struct xc_sr_context *ctx)
         PERROR("Failed to clean up");
 }
 
-#ifdef XG_LIBXL_HVM_COMPAT
-extern int read_qemu(struct xc_sr_context *ctx);
-#endif
 /*
  * Restore a domain.
  */
@@ -652,21 +654,6 @@ static int restore(struct xc_sr_context *ctx)
                 goto err;
         }
 
-#ifdef XG_LIBXL_HVM_COMPAT
-        if ( ctx->dominfo.hvm &&
-             (rec.type == REC_TYPE_END || rec.type == REC_TYPE_CHECKPOINT) )
-        {
-            rc = read_qemu(ctx);
-            if ( rc )
-            {
-                if ( ctx->restore.buffer_all_records )
-                    goto remus_failover;
-                else
-                    goto err;
-            }
-        }
-#endif
-
         if ( ctx->restore.buffer_all_records &&
              rec.type != REC_TYPE_END &&
              rec.type != REC_TYPE_CHECKPOINT )
@@ -678,7 +665,22 @@ static int restore(struct xc_sr_context *ctx)
         else
         {
             rc = process_record(ctx, &rec);
-            if ( rc )
+            if ( rc == RECORD_NOT_PROCESSED )
+            {
+                if ( rec.type & REC_TYPE_OPTIONAL )
+                    DPRINTF("Ignoring optional record %#x (%s)",
+                            rec.type, rec_type_to_str(rec.type));
+                else
+                {
+                    ERROR("Mandatory record %#x (%s) not handled",
+                          rec.type, rec_type_to_str(rec.type));
+                    rc = -1;
+                    goto err;
+                }
+            }
+            else if ( rc == BROKEN_CHANNEL )
+                goto remus_failover;
+            else if ( rc )
                 goto err;
         }
 
@@ -713,13 +715,13 @@ static int restore(struct xc_sr_context *ctx)
     return rc;
 }
 
-int xc_domain_restore2(xc_interface *xch, int io_fd, uint32_t dom,
-                       unsigned int store_evtchn, unsigned long *store_mfn,
-                       domid_t store_domid, unsigned int console_evtchn,
-                       unsigned long *console_gfn, domid_t console_domid,
-                       unsigned int hvm, unsigned int pae, int superpages,
-                       int checkpointed_stream,
-                       struct restore_callbacks *callbacks)
+int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
+                      unsigned int store_evtchn, unsigned long *store_mfn,
+                      domid_t store_domid, unsigned int console_evtchn,
+                      unsigned long *console_gfn, domid_t console_domid,
+                      unsigned int hvm, unsigned int pae, int superpages,
+                      int checkpointed_stream,
+                      struct restore_callbacks *callbacks)
 {
     struct xc_sr_context ctx =
         {
@@ -735,7 +737,10 @@ int xc_domain_restore2(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.restore.checkpointed = checkpointed_stream;
     ctx.restore.callbacks = callbacks;
 
-    IPRINTF("In experimental %s", __func__);
+    /* Sanity checks for callbacks. */
+    if ( checkpointed_stream )
+        assert(callbacks->checkpoint);
+
     DPRINTF("fd %d, dom %u, hvm %u, pae %u, superpages %d"
             ", checkpointed_stream %d", io_fd, dom, hvm, pae,
             superpages, checkpointed_stream);

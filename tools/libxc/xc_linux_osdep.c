@@ -17,8 +17,7 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ * License along with this library; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <errno.h>
@@ -743,7 +742,7 @@ static int linux_gnttab_munmap(xc_gnttab *xcg, xc_osdep_handle h,
     }
 
     /* Next, unmap the memory. */
-    if ( (rc = munmap(start_address, count * getpagesize())) )
+    if ( (rc = munmap(start_address, count * XC_PAGE_SIZE)) )
         return rc;
 
     /* Finally, unmap the driver slots used to store the grant information. */

@@ -12,8 +12,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  *
  */
 #ifndef __ASM_X86_HVM_VMX_VMX_H__
@@ -47,7 +46,7 @@ typedef union {
         access      :   4,  /* bits 61:58 - p2m_access_t */
         tm          :   1,  /* bit 62 - VT-d transient-mapping hint in
                                shared EPT/VT-d usage */
-        avail3      :   1;  /* bit 63 - Software available 3 */
+        suppress_ve :   1;  /* bit 63 - suppress #VE */
     };
     u64 epte;
 } ept_entry_t;
@@ -94,6 +93,7 @@ void vmx_asm_do_vmentry(void);
 void vmx_intr_assist(void);
 void noreturn vmx_do_resume(struct vcpu *);
 void vmx_vlapic_msr_changed(struct vcpu *v);
+void vmx_realmode_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt);
 void vmx_realmode(struct cpu_user_regs *regs);
 void vmx_update_debug_state(struct vcpu *v);
 void vmx_update_exception_bitmap(struct vcpu *v);
@@ -186,6 +186,7 @@ static inline unsigned long pi_get_pir(struct pi_desc *pi_desc, int group)
 #define EXIT_REASON_XSETBV              55
 #define EXIT_REASON_APIC_WRITE          56
 #define EXIT_REASON_INVPCID             58
+#define EXIT_REASON_VMFUNC              59
 #define EXIT_REASON_PML_FULL            62
 
 /*
@@ -553,5 +554,15 @@ void p2m_init_hap_data(struct p2m_domain *p2m);
 
 #define EPT_L4_PAGETABLE_SHIFT      39
 #define EPT_PAGETABLE_ENTRIES       512
+
+/* #VE information page */
+typedef struct {
+    u32 exit_reason;
+    u32 semaphore;
+    u64 exit_qualification;
+    u64 gla;
+    u64 gpa;
+    u16 eptp_index;
+} ve_info_t;
 
 #endif /* __ASM_X86_HVM_VMX_VMX_H__ */

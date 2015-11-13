@@ -17,8 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/types.h>
@@ -1210,8 +1209,8 @@ int __mem_sharing_unshare_page(struct domain *d,
         return -ENOMEM;
     }
 
-    s = map_domain_page(__page_to_mfn(old_page));
-    t = map_domain_page(__page_to_mfn(page));
+    s = map_domain_page(_mfn(__page_to_mfn(old_page)));
+    t = map_domain_page(_mfn(__page_to_mfn(page)));
     memcpy(t, s, PAGE_SIZE);
     unmap_domain_page(s);
     unmap_domain_page(t);
@@ -1260,7 +1259,7 @@ int relinquish_shared_pages(struct domain *d)
 
         if ( atomic_read(&d->shr_pages) == 0 )
             break;
-        mfn = p2m->get_entry(p2m, gfn, &t, &a, 0, NULL);
+        mfn = p2m->get_entry(p2m, gfn, &t, &a, 0, NULL, NULL);
         if ( mfn_valid(mfn) && (t == p2m_ram_shared) )
         {
             /* Does not fail with ENOMEM given the DESTROY flag */
@@ -1270,7 +1269,7 @@ int relinquish_shared_pages(struct domain *d)
              * unshare.  Must succeed: we just read the old entry and
              * we hold the p2m lock. */
             set_rc = p2m->set_entry(p2m, gfn, _mfn(0), PAGE_ORDER_4K,
-                                    p2m_invalid, p2m_access_rwx);
+                                    p2m_invalid, p2m_access_rwx, -1);
             ASSERT(set_rc == 0);
             count += 0x10;
         }
@@ -1318,10 +1317,6 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
     /* Only HAP is supported */
     rc = -ENODEV;
     if ( !hap_enabled(d) || !d->arch.hvm_domain.mem_sharing_enabled )
-        goto out;
-
-    rc = -ENODEV;
-    if ( unlikely(!d->vm_event->share.ring_page) )
         goto out;
 
     switch ( mso.op )

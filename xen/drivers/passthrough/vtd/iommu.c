@@ -11,8 +11,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  *
  * Copyright (C) Ashok Raj <ashok.raj@intel.com>
  * Copyright (C) Shaohua Li <shaohua.li@intel.com>
@@ -997,7 +996,7 @@ static void dma_msi_unmask(struct irq_desc *desc)
     spin_lock_irqsave(&iommu->register_lock, flags);
     dmar_writel(iommu->reg, DMAR_FECTL_REG, 0);
     spin_unlock_irqrestore(&iommu->register_lock, flags);
-    iommu->msi.msi_attrib.masked = 0;
+    iommu->msi.msi_attrib.host_masked = 0;
 }
 
 static void dma_msi_mask(struct irq_desc *desc)
@@ -1009,7 +1008,7 @@ static void dma_msi_mask(struct irq_desc *desc)
     spin_lock_irqsave(&iommu->register_lock, flags);
     dmar_writel(iommu->reg, DMAR_FECTL_REG, DMA_FECTL_IM);
     spin_unlock_irqrestore(&iommu->register_lock, flags);
-    iommu->msi.msi_attrib.masked = 1;
+    iommu->msi.msi_attrib.host_masked = 1;
 }
 
 static unsigned int dma_msi_startup(struct irq_desc *desc)
@@ -1807,7 +1806,8 @@ static void iommu_set_pgd(struct domain *d)
 }
 
 static int rmrr_identity_mapping(struct domain *d, bool_t map,
-                                 const struct acpi_rmrr_unit *rmrr)
+                                 const struct acpi_rmrr_unit *rmrr,
+                                 u32 flag)
 {
     unsigned long base_pfn = rmrr->base_address >> PAGE_SHIFT_4K;
     unsigned long end_pfn = PAGE_ALIGN_4K(rmrr->end_address) >> PAGE_SHIFT_4K;
@@ -1839,7 +1839,7 @@ static int rmrr_identity_mapping(struct domain *d, bool_t map,
 
             while ( base_pfn < end_pfn )
             {
-                if ( intel_iommu_unmap_page(d, base_pfn) )
+                if ( clear_identity_p2m_entry(d, base_pfn) )
                     ret = -ENXIO;
                 base_pfn++;
             }
@@ -1855,8 +1855,7 @@ static int rmrr_identity_mapping(struct domain *d, bool_t map,
 
     while ( base_pfn < end_pfn )
     {
-        int err = intel_iommu_map_page(d, base_pfn, base_pfn,
-                                       IOMMUF_readable|IOMMUF_writable);
+        int err = set_identity_p2m_entry(d, base_pfn, p2m_access_rw, flag);
 
         if ( err )
             return err;
@@ -1899,7 +1898,13 @@ static int intel_iommu_add_device(u8 devfn, struct pci_dev *pdev)
              PCI_BUS(bdf) == pdev->bus &&
              PCI_DEVFN2(bdf) == devfn )
         {
-            ret = rmrr_identity_mapping(pdev->domain, 1, rmrr);
+            /*
+             * iommu_add_device() is only called for the hardware
+             * domain (see xen/drivers/passthrough/pci.c:pci_add_device()).
+             * Since RMRRs are always reserved in the e820 map for the hardware
+             * domain, there shouldn't be a conflict.
+             */
+            ret = rmrr_identity_mapping(pdev->domain, 1, rmrr, 0);
             if ( ret )
                 dprintk(XENLOG_ERR VTDPREFIX, "d%d: RMRR mapping failed\n",
                         pdev->domain->domain_id);
@@ -1940,7 +1945,11 @@ static int intel_iommu_remove_device(u8 devfn, struct pci_dev *pdev)
              PCI_DEVFN2(bdf) != devfn )
             continue;
 
-        rmrr_identity_mapping(pdev->domain, 0, rmrr);
+        /*
+         * Any flag is nothing to clear these mappings but here
+         * its always safe and strict to set 0.
+         */
+        rmrr_identity_mapping(pdev->domain, 0, rmrr, 0);
     }
 
     return domain_context_unmap(pdev->domain, devfn, pdev);
@@ -2098,7 +2107,13 @@ static void __hwdom_init setup_hwdom_rmrr(struct domain *d)
     spin_lock(&pcidevs_lock);
     for_each_rmrr_device ( rmrr, bdf, i )
     {
-        ret = rmrr_identity_mapping(d, 1, rmrr);
+        /*
+         * Here means we're add a device to the hardware domain.
+         * Since RMRRs are always reserved in the e820 map for the hardware
+         * domain, there shouldn't be a conflict. So its always safe and
+         * strict to set 0.
+         */
+        ret = rmrr_identity_mapping(d, 1, rmrr, 0);
         if ( ret )
             dprintk(XENLOG_ERR VTDPREFIX,
                      "IOMMU: mapping reserved region failed\n");
@@ -2226,11 +2241,9 @@ static int reassign_device_ownership(
     /*
      * If the device belongs to the hardware domain, and it has RMRR, don't
      * remove it from the hardware domain, because BIOS may use RMRR at
-     * booting time. Also account for the special casing of USB below (in
-     * intel_iommu_assign_device()).
+     * booting time.
      */
-    if ( !is_hardware_domain(source) &&
-         !is_usb_device(pdev->seg, pdev->bus, pdev->devfn) )
+    if ( !is_hardware_domain(source) )
     {
         const struct acpi_rmrr_unit *rmrr;
         u16 bdf;
@@ -2241,7 +2254,11 @@ static int reassign_device_ownership(
                  PCI_BUS(bdf) == pdev->bus &&
                  PCI_DEVFN2(bdf) == devfn )
             {
-                ret = rmrr_identity_mapping(source, 0, rmrr);
+                /*
+                 * Any RMRR flag is always ignored when remove a device,
+                 * but its always safe and strict to set 0.
+                 */
+                ret = rmrr_identity_mapping(source, 0, rmrr, 0);
                 if ( ret != -ENOENT )
                     return ret;
             }
@@ -2265,7 +2282,7 @@ static int reassign_device_ownership(
 }
 
 static int intel_iommu_assign_device(
-    struct domain *d, u8 devfn, struct pci_dev *pdev)
+    struct domain *d, u8 devfn, struct pci_dev *pdev, u32 flag)
 {
     struct acpi_rmrr_unit *rmrr;
     int ret = 0, i;
@@ -2275,17 +2292,36 @@ static int intel_iommu_assign_device(
     if ( list_empty(&acpi_drhd_units) )
         return -ENODEV;
 
+    seg = pdev->seg;
+    bus = pdev->bus;
+    /*
+     * In rare cases one given rmrr is shared by multiple devices but
+     * obviously this would put the security of a system at risk. So
+     * we should prevent from this sort of device assignment.
+     *
+     * TODO: in the future we can introduce group device assignment
+     * interface to make sure devices sharing RMRR are assigned to the
+     * same domain together.
+     */
+    for_each_rmrr_device( rmrr, bdf, i )
+    {
+        if ( rmrr->segment == seg &&
+             PCI_BUS(bdf) == bus &&
+             PCI_DEVFN2(bdf) == devfn &&
+             rmrr->scope.devices_cnt > 1 )
+        {
+            printk(XENLOG_G_ERR VTDPREFIX
+                   " cannot assign %04x:%02x:%02x.%u"
+                   " with shared RMRR at %"PRIx64" for Dom%d.\n",
+                   seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+                   rmrr->base_address, d->domain_id);
+            return -EPERM;
+        }
+    }
+
     ret = reassign_device_ownership(hardware_domain, d, devfn, pdev);
     if ( ret )
         return ret;
-
-    /* FIXME: Because USB RMRR conflicts with guest bios region,
-     * ignore USB RMRR temporarily.
-     */
-    seg = pdev->seg;
-    bus = pdev->bus;
-    if ( is_usb_device(seg, bus, pdev->devfn) )
-        return 0;
 
     /* Setup rmrr identity mapping */
     for_each_rmrr_device( rmrr, bdf, i )
@@ -2294,7 +2330,7 @@ static int intel_iommu_assign_device(
              PCI_BUS(bdf) == bus &&
              PCI_DEVFN2(bdf) == devfn )
         {
-            ret = rmrr_identity_mapping(d, 1, rmrr);
+            ret = rmrr_identity_mapping(d, 1, rmrr, flag);
             if ( ret )
             {
                 reassign_device_ownership(d, hardware_domain, devfn, pdev);
@@ -2490,6 +2526,7 @@ const struct iommu_ops intel_iommu_ops = {
     .crash_shutdown = vtd_crash_shutdown,
     .iotlb_flush = intel_iommu_iotlb_flush,
     .iotlb_flush_all = intel_iommu_iotlb_flush_all,
+    .get_reserved_device_memory = intel_iommu_get_reserved_device_memory,
     .dump_p2m_table = vtd_dump_p2m_table,
 };
 

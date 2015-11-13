@@ -1,7 +1,7 @@
 XEN_ROOT = $(CURDIR)/../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-MAJOR    = 4.5
+MAJOR    = 4.6
 MINOR    = 0
 
 ifeq ($(CONFIG_LIBXC_MINIOS),y)
@@ -10,6 +10,7 @@ override CONFIG_MIGRATE := n
 endif
 
 CTRL_SRCS-y       :=
+CTRL_SRCS-y       += xc_altp2m.c
 CTRL_SRCS-y       += xc_core.c
 CTRL_SRCS-$(CONFIG_X86) += xc_core_x86.c
 CTRL_SRCS-$(CONFIG_ARM) += xc_core_arm.c
@@ -21,7 +22,6 @@ CTRL_SRCS-y       += xc_misc.c
 CTRL_SRCS-y       += xc_flask.c
 CTRL_SRCS-y       += xc_physdev.c
 CTRL_SRCS-y       += xc_private.c
-CTRL_SRCS-y       += xc_sedf.c
 CTRL_SRCS-y       += xc_csched.c
 CTRL_SRCS-y       += xc_csched2.c
 CTRL_SRCS-y       += xc_arinc653.c
@@ -48,12 +48,12 @@ CTRL_SRCS-$(CONFIG_Linux) += xc_linux.c xc_linux_osdep.c
 CTRL_SRCS-$(CONFIG_FreeBSD) += xc_freebsd.c xc_freebsd_osdep.c
 CTRL_SRCS-$(CONFIG_SunOS) += xc_solaris.c
 CTRL_SRCS-$(CONFIG_NetBSD) += xc_netbsd.c
+CTRL_SRCS-$(CONFIG_NetBSDRump) += xc_netbsd.c
 CTRL_SRCS-$(CONFIG_MiniOS) += xc_minios.c
 
 GUEST_SRCS-y :=
 GUEST_SRCS-y += xg_private.c xc_suspend.c
 ifeq ($(CONFIG_MIGRATE),y)
-GUEST_SRCS-y += xc_domain_restore.c xc_domain_save.c
 GUEST_SRCS-y += xc_sr_common.c
 GUEST_SRCS-$(CONFIG_X86) += xc_sr_common_x86.c
 GUEST_SRCS-$(CONFIG_X86) += xc_sr_common_x86_pv.c
@@ -64,8 +64,6 @@ GUEST_SRCS-$(CONFIG_X86) += xc_sr_save_x86_hvm.c
 GUEST_SRCS-y += xc_sr_restore.c
 GUEST_SRCS-y += xc_sr_save.c
 GUEST_SRCS-y += xc_offline_page.c xc_compression.c
-$(patsubst %.c,%.o,$(GUEST_SRCS-y)): CFLAGS += -DXG_LIBXL_HVM_COMPAT
-$(patsubst %.c,%.opic,$(GUEST_SRCS-y)): CFLAGS += -DXG_LIBXL_HVM_COMPAT
 else
 GUEST_SRCS-y += xc_nomigrate.c
 endif

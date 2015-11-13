@@ -13,8 +13,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <asm/hvm/vpt.h>
@@ -166,7 +165,7 @@ static inline int hpet_check_access_length(
 }
 
 static int hpet_read(
-    struct vcpu *v, unsigned long addr, unsigned long length,
+    struct vcpu *v, unsigned long addr, unsigned int length,
     unsigned long *pval)
 {
     HPETState *h = vcpu_vhpet(v);
@@ -301,7 +300,7 @@ static inline uint64_t hpet_fixup_reg(
 
 static int hpet_write(
     struct vcpu *v, unsigned long addr,
-    unsigned long length, unsigned long val)
+    unsigned int length, unsigned long val)
 {
     HPETState *h = vcpu_vhpet(v);
     uint64_t old_val, new_val;
@@ -504,10 +503,10 @@ static int hpet_range(struct vcpu *v, unsigned long addr)
              (addr < (HPET_BASE_ADDRESS + HPET_MMAP_SIZE)) );
 }
 
-const struct hvm_mmio_handler hpet_mmio_handler = {
-    .check_handler = hpet_range,
-    .read_handler  = hpet_read,
-    .write_handler = hpet_write
+static const struct hvm_mmio_ops hpet_mmio_ops = {
+    .check = hpet_range,
+    .read  = hpet_read,
+    .write = hpet_write
 };
 
 
@@ -659,6 +658,8 @@ void hpet_init(struct domain *d)
         h->hpet.comparator64[i] = ~0ULL;
         h->pt[i].source = PTSRC_isa;
     }
+
+    register_mmio_handler(d, &hpet_mmio_ops);
 }
 
 void hpet_deinit(struct domain *d)

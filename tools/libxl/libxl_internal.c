@@ -161,7 +161,11 @@ char *libxl__sprintf(libxl__gc *gc, const char *fmt, ...)
 
 char *libxl__strdup(libxl__gc *gc, const char *c)
 {
-    char *s = strdup(c);
+    char *s;
+
+    if (!c) return NULL;
+
+    s = strdup(c);
 
     if (!s) libxl__alloc_failed(CTX, __func__, strlen(c), 1);
 
@@ -172,7 +176,11 @@ char *libxl__strdup(libxl__gc *gc, const char *c)
 
 char *libxl__strndup(libxl__gc *gc, const char *c, size_t n)
 {
-    char *s = strndup(c, n);
+    char *s;
+
+    if (!c) return NULL;
+
+    s = strndup(c, n);
 
     if (!s) libxl__alloc_failed(CTX, __func__, n, 1);
 
@@ -233,8 +241,7 @@ void libxl__log(libxl_ctx *ctx, xentoollog_level msglevel, int errnoval,
 
 char *libxl__abs_path(libxl__gc *gc, const char *s, const char *path)
 {
-    if (!s || s[0] == '/')
-        return libxl__strdup(gc, s);
+    if (s[0] == '/') return libxl__strdup(gc, s);
     return libxl__sprintf(gc, "%s/%s", path, s);
 }
 
@@ -333,19 +340,18 @@ _hidden int libxl__init_recursive_mutex(libxl_ctx *ctx, pthread_mutex_t *lock)
     int rc = 0;
 
     if (pthread_mutexattr_init(&attr) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, 
-                         "Failed to init mutex attributes\n");
+        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR,
+                         "Failed to init mutex attributes");
         return ERROR_FAIL;
     }
     if (pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, 
-                         "Failed to set mutex attributes\n");
+        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR,
+                         "Failed to set mutex attributes");
         rc = ERROR_FAIL;
         goto out;
     }
     if (pthread_mutex_init(lock, &attr) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, 
-                         "Failed to init mutex\n");
+        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "Failed to init mutex");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -374,25 +380,6 @@ int libxl__device_model_version_running(libxl__gc *gc, uint32_t domid)
         return -1;
     }
     return value;
-}
-
-int libxl__hotplug_settings(libxl__gc *gc, xs_transaction_t t)
-{
-    int rc = 0;
-    char *val;
-
-    val = libxl__xs_read(gc, t, DISABLE_UDEV_PATH);
-    if (!val && errno != ENOENT) {
-        LOGE(ERROR, "cannot read %s from xenstore", DISABLE_UDEV_PATH);
-        rc = ERROR_FAIL;
-        goto out;
-    }
-    if (!val) val = "0";
-
-    rc = !!atoi(val);
-
-out:
-    return rc;
 }
 
 /* Portability note: this lock utilises flock(2) so a proper implementation of

@@ -661,11 +661,6 @@ void gic_interrupt(struct cpu_user_regs *regs, int is_fiq)
     } while (1);
 }
 
-int gicv_setup(struct domain *d)
-{
-    return gic_hw_ops->gicv_setup(d);
-}
-
 static void maintenance_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 {
     /*
@@ -706,10 +701,11 @@ void __cpuinit init_maintenance_interrupt(void)
                 "irq-maintenance", NULL);
 }
 
-int gic_make_node(const struct domain *d,const struct dt_device_node *node,
-                   void *fdt)
+int gic_make_hwdom_dt_node(const struct domain *d,
+                           const struct dt_device_node *node,
+                           void *fdt)
 {
-    return gic_hw_ops->make_dt_node(d, node, fdt);
+    return gic_hw_ops->make_hwdom_dt_node(d, node, fdt);
 }
 
 /*

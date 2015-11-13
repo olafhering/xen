@@ -70,7 +70,7 @@ integer_param("hardware_dom", hardware_domid);
 
 struct vcpu *idle_vcpu[NR_CPUS] __read_mostly;
 
-vcpu_info_t dummy_vcpu_info;
+static vcpu_info_t dummy_vcpu_info;
 
 static void __domain_finalise_shutdown(struct domain *d)
 {
@@ -126,6 +126,8 @@ struct vcpu *alloc_vcpu(
     spin_lock_init(&v->virq_lock);
 
     tasklet_init(&v->continue_hypercall_tasklet, NULL, 0);
+
+    grant_table_init_vcpu(v);
 
     if ( !zalloc_cpumask_var(&v->cpu_hard_affinity) ||
          !zalloc_cpumask_var(&v->cpu_hard_affinity_tmp) ||
@@ -898,7 +900,7 @@ int vcpu_pause_by_systemcontroller(struct vcpu *v)
         new = old + 1;
 
         if ( new > 255 )
-            return -EUSERS;
+            return -EOVERFLOW;
 
         prev = cmpxchg(&v->controller_pause_count, old, new);
     } while ( prev != old );
@@ -978,7 +980,7 @@ int __domain_pause_by_systemcontroller(struct domain *d,
          * toolstack overflowing d->pause_count with many repeated hypercalls.
          */
         if ( new > 255 )
-            return -EUSERS;
+            return -EOVERFLOW;
 
         prev = cmpxchg(&d->controller_pause_count, old, new);
     } while ( prev != old );
@@ -1006,6 +1008,34 @@ int domain_unpause_by_systemcontroller(struct domain *d)
     domain_unpause(d);
 
     return 0;
+}
+
+void domain_pause_except_self(struct domain *d)
+{
+    struct vcpu *v, *curr = current;
+
+    if ( curr->domain == d )
+    {
+        for_each_vcpu( d, v )
+            if ( likely(v != curr) )
+                vcpu_pause(v);
+    }
+    else
+        domain_pause(d);
+}
+
+void domain_unpause_except_self(struct domain *d)
+{
+    struct vcpu *v, *curr = current;
+
+    if ( curr->domain == d )
+    {
+        for_each_vcpu( d, v )
+            if ( likely(v != curr) )
+                vcpu_unpause(v);
+    }
+    else
+        domain_unpause(d);
 }
 
 int vcpu_reset(struct vcpu *v)

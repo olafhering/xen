@@ -5,10 +5,10 @@
 XEN_ROOT = $(CURDIR)/../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-MAJOR = 4.5
+MAJOR = 4.6
 MINOR = 0
 
-XLUMAJOR = 4.3
+XLUMAJOR = 4.6
 XLUMINOR = 0
 
 CFLAGS += -Werror -Wno-format-zero-length -Wmissing-declarations \
@@ -56,6 +56,12 @@ else
 LIBXL_OBJS-y += libxl_nonetbuffer.o
 endif
 
+ifeq ($(CONFIG_X86),y)
+LIBXL_OBJS-y += libxl_convert_callout.o
+else
+LIBXL_OBJS-y += libxl_no_convert_callout.o
+endif
+
 LIBXL_OBJS-y += libxl_remus_device.o libxl_remus_disk_drbd.o
 
 LIBXL_OBJS-$(CONFIG_X86) += libxl_cpuid.o libxl_x86.o libxl_psr.o
@@ -95,12 +101,17 @@ LIBXL_OBJS = flexarray.o libxl.o libxl_create.o libxl_dm.o libxl_pci.o \
 			libxl_dom.o libxl_exec.o libxl_xshelp.o libxl_device.o \
 			libxl_internal.o libxl_utils.o libxl_uuid.o \
 			libxl_json.o libxl_aoutils.o libxl_numa.o libxl_vnuma.o \
+			libxl_stream_read.o libxl_stream_write.o \
 			libxl_save_callout.o _libxl_save_msgs_callout.o \
-			libxl_qmp.o libxl_event.o libxl_fork.o $(LIBXL_OBJS-y)
+			libxl_qmp.o libxl_event.o libxl_fork.o \
+			libxl_dom_suspend.o $(LIBXL_OBJS-y)
 LIBXL_OBJS += libxl_genid.o
 LIBXL_OBJS += _libxl_types.o libxl_flask.o _libxl_types_internal.o
 
 LIBXL_TESTS += timedereg
+LIBXL_TESTS_PROGS = $(LIBXL_TESTS) fdderegrace
+LIBXL_TESTS_INSIDE = $(LIBXL_TESTS) fdevent
+
 # Each entry FOO in LIBXL_TESTS has two main .c files:
 #   libxl_test_FOO.c  "inside libxl" code to support the test case
 #   test_FOO.c        "outside libxl" code to exercise the test case
@@ -110,11 +121,17 @@ LIBXL_TESTS += timedereg
 # "outside libxl" file is compiled exactly like a piece of application
 # code.  They must share information via explicit libxl entrypoints.
 # Unlike proper parts of libxl, it is permissible for libxl_test_FOO.c
-# to use private global variables for its state.
+# to use private global variables for its state.  Note that all the
+# "inside" parts are compiled into a single test library, so their
+# symbol names must be unique.
+#
+# To run these tests, either use LD_PRELOAD to get libxenlight_test.so
+# loaded, or rename it to libxenlight.so so it is the target of the
+# appropriate symlinks.
 
-LIBXL_TEST_OBJS += $(foreach t, $(LIBXL_TESTS),libxl_test_$t.o)
-TEST_PROG_OBJS += $(foreach t, $(LIBXL_TESTS),test_$t.o) test_common.o
-TEST_PROGS += $(foreach t, $(LIBXL_TESTS),test_$t)
+LIBXL_TEST_OBJS += $(foreach t, $(LIBXL_TESTS_INSIDE),libxl_test_$t.o)
+TEST_PROG_OBJS += $(foreach t, $(LIBXL_TESTS_PROGS),test_$t.o) test_common.o
+TEST_PROGS += $(foreach t, $(LIBXL_TESTS_PROGS),test_$t)
 
 $(LIBXL_OBJS) $(LIBXL_TEST_OBJS): CFLAGS += $(CFLAGS_LIBXL) -include $(XEN_ROOT)/tools/config.h
 

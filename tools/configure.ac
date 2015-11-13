@@ -8,15 +8,17 @@ AC_CONFIG_SRCDIR([libxl/libxl.c])
 AC_CONFIG_FILES([
 ../config/Tools.mk
 hotplug/FreeBSD/rc.d/xencommons
+hotplug/FreeBSD/rc.d/xendriverdomain
 hotplug/Linux/init.d/sysconfig.xencommons
 hotplug/Linux/init.d/xen-watchdog
 hotplug/Linux/init.d/xencommons
 hotplug/Linux/init.d/xendomains
+hotplug/Linux/init.d/xendriverdomain
 hotplug/Linux/vif-setup
-hotplug/Linux/xen-backend.rules
 hotplug/Linux/xen-hotplug-common.sh
 hotplug/Linux/xendomains
 hotplug/NetBSD/rc.d/xencommons
+hotplug/NetBSD/rc.d/xendriverdomain
 libxl/xenlight.pc.in
 libxl/xlutil.pc.in
 ])
@@ -81,7 +83,6 @@ AX_ARG_DEFAULT_ENABLE([ocamltools], [Disable Ocaml tools])
 AX_ARG_DEFAULT_ENABLE([xsmpolicy], [Disable XSM policy compilation])
 AX_ARG_DEFAULT_DISABLE([ovmf], [Enable OVMF])
 AX_ARG_DEFAULT_ENABLE([seabios], [Disable SeaBIOS])
-AX_ARG_DEFAULT_ENABLE([debug], [Disable debug build of tools])
 
 AC_ARG_WITH([linux-backend-modules],
     AS_HELP_STRING([--with-linux-backend-modules="mod1 mod2"],
@@ -174,9 +175,14 @@ AC_ARG_WITH([system-qemu],
        [Use system supplied qemu PATH or qemu (taken from $PATH) as qemu-xen
         device model instead of building and installing our own version]),[
     case $withval in
-    yes) qemu_xen=n ; qemu_xen_path=qemu ;;
-    no)  qemu_xen=y ; qemu_xen_path= ;;
-    *)   qemu_xen=n ; qemu_xen_path=$withval ;;
+        yes)
+            qemu_xen=n ; qemu_xen_path="qemu-system-i386"
+            qemu_xen_systemd="/usr/bin/env $qemu_xen_path" ;;
+        no)
+            qemu_xen=y ;;
+        *)
+            qemu_xen=n ; qemu_xen_path="$withval" ;
+            qemu_xen_systemd="$qemu_xen_path" ;;
     esac
 ],[
     case "$host_cpu" in
@@ -187,10 +193,14 @@ AC_ARG_WITH([system-qemu],
         *) qemu_xen=n;;
     esac
 ])
-AS_IF([test "x$qemu_xen" = "xn"], [
-    AC_DEFINE_UNQUOTED([QEMU_XEN_PATH], ["$qemu_xen_path"], [Qemu Xen path])
+AS_IF([test "x$qemu_xen" = "xy"], [
+    qemu_xen_path="$LIBEXEC_BIN/qemu-system-i386"
+    qemu_xen_systemd="$qemu_xen_path"
 ])
+AC_DEFINE_UNQUOTED([QEMU_XEN_PATH], ["$qemu_xen_path"], [Qemu Xen path])
 AC_SUBST(qemu_xen)
+AC_SUBST(qemu_xen_path)
+AC_SUBST(qemu_xen_systemd)
 
 AC_ARG_WITH([system-seabios],
     AS_HELP_STRING([--with-system-seabios@<:@=PATH@:>@],
@@ -356,6 +366,10 @@ AC_CHECK_LIB([yajl], [yajl_alloc], [],
 AC_CHECK_LIB([z], [deflateCopy], [], [AC_MSG_ERROR([Could not find zlib])])
 AC_CHECK_LIB([iconv], [libiconv_open], [libiconv="y"], [libiconv="n"])
 AC_SUBST(libiconv)
+AC_CHECK_HEADER([argp.h], [
+AC_CHECK_LIB([argp], [argp_usage], [argp_ldflags="-largp"])
+], [AC_MSG_ERROR([Could not find argp])])
+AC_SUBST(argp_ldflags)
 
 # FDT is needed only on ARM
 case "$host_cpu" in
@@ -379,6 +393,10 @@ AS_IF([test "x$partial_dt" = "xy" ],
 #   * The prototype exists but the functions are not exposed. Don't ask why...
 AC_CHECK_FUNCS([fdt_first_subnode fdt_next_subnode])
 AC_CHECK_DECLS([fdt_first_subnode, fdt_next_subnode],,,[#include <libfdt.h>])
+
+# The helper fdt_property_u32 is only present in libfdt >= 1.4.0
+# It's an inline function, so only check if the declaration is present
+AC_CHECK_DECLS([fdt_property_u32],,,[#include <libfdt.h>])
 esac
 
 # Checks for header files.

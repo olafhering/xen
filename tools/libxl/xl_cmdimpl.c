@@ -109,7 +109,10 @@ static const char migrate_report[]=
    */
 
 #define XL_MANDATORY_FLAG_JSON (1U << 0) /* config data is in JSON format */
-#define XL_MANDATORY_FLAG_ALL  (XL_MANDATORY_FLAG_JSON)
+#define XL_MANDATORY_FLAG_STREAMv2 (1U << 1) /* stream is v2 */
+#define XL_MANDATORY_FLAG_ALL  (XL_MANDATORY_FLAG_JSON |        \
+                                XL_MANDATORY_FLAG_STREAMv2)
+
 struct save_file_header {
     char magic[32]; /* savefileheader_magic */
     /* All uint32_ts are in domain's byte order. */
@@ -151,7 +154,7 @@ struct domain_create {
     int console_autoconnect;
     int checkpointed_stream;
     const char *config_file;
-    const char *extra_config; /* extra config string */
+    char *extra_config; /* extra config string */
     const char *restore_file;
     int migrate_fd; /* -1 means none */
     char **migration_domname_r; /* from malloc */
@@ -323,15 +326,23 @@ static char *xstrdup(const char *x)
     return r;
 }
 
-#define ARRAY_EXTEND_INIT(array,count,initfn)                           \
+#define ARRAY_EXTEND_INIT__CORE(array,count,initfn,more)                \
     ({                                                                  \
         typeof((count)) array_extend_old_count = (count);               \
         (count)++;                                                      \
         (array) = xrealloc((array), sizeof(*array) * (count));          \
         (initfn)(&(array)[array_extend_old_count]);                     \
-        (array)[array_extend_old_count].devid = array_extend_old_count; \
+        more;                                                           \
         &(array)[array_extend_old_count];                               \
     })
+
+#define ARRAY_EXTEND_INIT(array,count,initfn)                           \
+    ARRAY_EXTEND_INIT__CORE((array),(count),(initfn), ({                \
+        (array)[array_extend_old_count].devid = array_extend_old_count; \
+        }))
+
+#define ARRAY_EXTEND_INIT_NODEVID(array,count,initfn) \
+    ARRAY_EXTEND_INIT__CORE((array),(count),(initfn), /* nothing */ )
 
 #define LOG(_f, _a...)   dolog(__FILE__, __LINE__, __func__, _f "\n", ##_a)
 
@@ -352,6 +363,27 @@ static void dolog(const char *file, int line, const char *func, char *fmt, ...)
          * the alternative would be to abort the whole program */
         libxl_write_exactly(NULL, logfile, s, rc, NULL, NULL);
     free(s);
+}
+
+static void xvasprintf(char **strp, const char *fmt, va_list ap)
+    __attribute__((format(printf,2,0)));
+static void xvasprintf(char **strp, const char *fmt, va_list ap)
+{
+    int r = vasprintf(strp, fmt, ap);
+    if (r == -1) {
+        perror("asprintf failed");
+        exit(-ERROR_FAIL);
+    }
+}
+
+static void xasprintf(char **strp, const char *fmt, ...)
+    __attribute__((format(printf,2,3)));
+static void xasprintf(char **strp, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    xvasprintf(strp, fmt, ap);
+    va_end(ap);
 }
 
 static yajl_gen_status printf_info_one_json(yajl_gen hand, int domid,
@@ -389,6 +421,20 @@ static yajl_gen_status printf_info_one_json(yajl_gen hand, int domid,
 out:
     return s;
 }
+
+static void flush_stream(FILE *fh)
+{
+    const char *fh_name =
+        fh == stdout ? "stdout" :
+        fh == stderr ? "stderr" :
+        (abort(), (const char*)0);
+
+    if (ferror(fh) || fflush(fh)) {
+        perror(fh_name);
+        exit(-1);
+    }
+}
+
 static void printf_info(enum output_format output_format,
                         int domid,
                         libxl_domain_config *d_config, FILE *fh)
@@ -424,16 +470,10 @@ out:
         fprintf(stderr,
                 "unable to format domain config as JSON (YAJL:%d)\n", s);
 
-    if (ferror(fh) || fflush(fh)) {
-        if (fh == stdout)
-            perror("stdout");
-        else
-            perror("stderr");
-        exit(-1);
-    }
+    flush_stream(fh);
 }
 
-static int do_daemonize(char *name)
+static int do_daemonize(char *name, const char *pidfile)
 {
     char *fullname;
     pid_t child1;
@@ -464,6 +504,33 @@ static int do_daemonize(char *name)
     dup2(logfile, 2);
 
     CHK_SYSCALL(daemon(0, 1));
+
+    if (pidfile) {
+        int fd = open(pidfile, O_RDWR | O_CREAT, S_IRUSR|S_IWUSR);
+        char *pid = NULL;
+
+        if (fd == -1) {
+            perror("Unable to open pidfile");
+            exit(1);
+        }
+
+        if (asprintf(&pid, "%ld\n", (long)getpid()) == -1) {
+            perror("Formatting pid");
+            exit(1);
+        }
+
+        if (write(fd, pid, strlen(pid)) < 0) {
+            perror("Writing pid");
+            exit(1);
+        }
+
+        if (close(fd) < 0) {
+            perror("Closing pidfile");
+            exit(1);
+        }
+
+        free(pid);
+    }
 
 out:
     return ret;
@@ -610,26 +677,25 @@ typedef int (*char_predicate_t)(const int c);
 
 static void trim(char_predicate_t predicate, const char *input, char **output)
 {
-    char *p, *q, *tmp;
+    const char *first, *after;
 
-    *output = NULL;
-    if (*input == '\000')
-        return;
-    /* Input has length >= 1 */
+    for (first = input;
+         *first && predicate((unsigned char)first[0]);
+         first++)
+        ;
 
-    p = tmp = xstrdup(input);
-    /* Skip past the characters for which predicate is true */
-    while ((*p != '\000') && (predicate((unsigned char)*p)))
-        p ++;
-    q = p + strlen(p) - 1;
-    /* q points to the last non-NULL character */
-    while ((q > p) && (predicate((unsigned char)*q)))
-        q --;
-    /* q points to the last character we want */
-    q ++;
-    *q = '\000';
-    *output = xstrdup(p);
-    free(tmp);
+    for (after = first + strlen(first);
+         after > first && predicate((unsigned char)after[-1]);
+         after--)
+        ;
+
+    size_t len_nonnull = after - first;
+    char *result = xmalloc(len_nonnull + 1);
+
+    memcpy(result, first, len_nonnull);
+    result[len_nonnull] = 0;
+
+    *output = result;
 }
 
 static int split_string_into_pair(const char *str,
@@ -824,11 +890,9 @@ static char *parse_cmdline(XLU_Config *config)
                     "in favour of cmdline=\n");
     } else {
         if (root && extra) {
-            if (asprintf(&cmdline, "root=%s %s", root, extra) == -1)
-                cmdline = NULL;
+            xasprintf(&cmdline, "root=%s %s", root, extra);
         } else if (root) {
-            if (asprintf(&cmdline, "root=%s", root) == -1)
-                cmdline = NULL;
+            xasprintf(&cmdline, "root=%s", root);
         } else if (extra) {
             cmdline = strdup(extra);
         }
@@ -1014,9 +1078,7 @@ static void parse_vnuma_config(const XLU_Config *config,
     /* Temporary storage for parsed vcpus information to avoid
      * parsing config twice. This array has num_vnuma elements.
      */
-    struct vcpu_range_parsed {
-        unsigned long start, end;
-    } *vcpu_range_parsed;
+    libxl_bitmap *vcpu_parsed;
 
     libxl_physinfo_init(&physinfo);
     if (libxl_get_physinfo(ctx, &physinfo) != 0) {
@@ -1033,7 +1095,14 @@ static void parse_vnuma_config(const XLU_Config *config,
 
     b_info->num_vnuma_nodes = num_vnuma;
     b_info->vnuma_nodes = xcalloc(num_vnuma, sizeof(libxl_vnode_info));
-    vcpu_range_parsed = xcalloc(num_vnuma, sizeof(*vcpu_range_parsed));
+    vcpu_parsed = xcalloc(num_vnuma, sizeof(libxl_bitmap));
+    for (i = 0; i < num_vnuma; i++) {
+        libxl_bitmap_init(&vcpu_parsed[i]);
+        if (libxl_cpu_bitmap_alloc(ctx, &vcpu_parsed[i], b_info->max_vcpus)) {
+            fprintf(stderr, "libxl_node_bitmap_alloc failed.\n");
+            exit(1);
+        }
+    }
 
     for (i = 0; i < b_info->num_vnuma_nodes; i++) {
         libxl_vnode_info *p = &b_info->vnuma_nodes[i];
@@ -1103,12 +1172,22 @@ static void parse_vnuma_config(const XLU_Config *config,
                     split_string_into_string_list(value, ",", &cpu_spec_list);
                     len = libxl_string_list_length(&cpu_spec_list);
 
-                    for (j = 0; j < len; j++)
+                    for (j = 0; j < len; j++) {
                         parse_range(cpu_spec_list[j], &s, &e);
+                        for (; s <= e; s++) {
+                            /*
+                             * Note that if we try to set a bit beyond
+                             * the size of bitmap, libxl_bitmap_set
+                             * has no effect. The resulted bitmap
+                             * doesn't reflect what user wants. The
+                             * fallout is dealt with later after
+                             * parsing.
+                             */
+                            libxl_bitmap_set(&vcpu_parsed[i], s);
+                            max_vcpus++;
+                        }
+                    }
 
-                    vcpu_range_parsed[i].start = s;
-                    vcpu_range_parsed[i].end   = e;
-                    max_vcpus += (e - s + 1);
                     libxl_string_list_dispose(&cpu_spec_list);
                 } else if (!strcmp("vdistances", option)) {
                     libxl_string_list vdist;
@@ -1117,7 +1196,7 @@ static void parse_vnuma_config(const XLU_Config *config,
                     len = libxl_string_list_length(&vdist);
 
                     for (j = 0; j < len; j++) {
-                        val = parse_ulong(value);
+                        val = parse_ulong(vdist[j]);
                         p->distances[j] = val;
                     }
                     libxl_string_list_dispose(&vdist);
@@ -1131,11 +1210,27 @@ static void parse_vnuma_config(const XLU_Config *config,
     }
 
     /* User has specified maxvcpus= */
-    if (b_info->max_vcpus != 0 &&  b_info->max_vcpus != max_vcpus) {
-        fprintf(stderr, "xl: vnuma vcpus and maxvcpus= mismatch\n");
-        exit(1);
-    } else
+    if (b_info->max_vcpus != 0) {
+        if (b_info->max_vcpus != max_vcpus) {
+            fprintf(stderr, "xl: vnuma vcpus and maxvcpus= mismatch\n");
+            exit(1);
+        }
+    } else {
+        int host_cpus = libxl_get_online_cpus(ctx);
+
+        if (host_cpus < 0) {
+            fprintf(stderr, "Failed to get online cpus\n");
+            exit(1);
+        }
+
+        if (host_cpus < max_vcpus) {
+            fprintf(stderr, "xl: vnuma specifies more vcpus than pcpus, "\
+                    "use maxvcpus= to override this check.\n");
+            exit(1);
+        }
+
         b_info->max_vcpus = max_vcpus;
+    }
 
     /* User has specified maxmem= */
     if (b_info->max_memkb != LIBXL_MEMKB_DEFAULT &&
@@ -1147,17 +1242,12 @@ static void parse_vnuma_config(const XLU_Config *config,
 
     for (i = 0; i < b_info->num_vnuma_nodes; i++) {
         libxl_vnode_info *p = &b_info->vnuma_nodes[i];
-        int cpu;
 
-        libxl_cpu_bitmap_alloc(ctx, &p->vcpus, b_info->max_vcpus);
-        libxl_bitmap_set_none(&p->vcpus);
-        for (cpu = vcpu_range_parsed[i].start;
-             cpu <= vcpu_range_parsed[i].end;
-             cpu++)
-            libxl_bitmap_set(&p->vcpus, cpu);
+        libxl_bitmap_copy_alloc(ctx, &p->vcpus, &vcpu_parsed[i]);
+        libxl_bitmap_dispose(&vcpu_parsed[i]);
     }
 
-    free(vcpu_range_parsed);
+    free(vcpu_parsed);
 }
 
 static void parse_config_data(const char *config_source,
@@ -1500,6 +1590,8 @@ static void parse_config_data(const char *config_source,
 
         xlu_cfg_get_defbool(config, "nestedhvm", &b_info->u.hvm.nested_hvm, 0);
 
+        xlu_cfg_get_defbool(config, "altp2mhvm", &b_info->u.hvm.altp2m, 0);
+
         xlu_cfg_replace_string(config, "smbios_firmware",
                                &b_info->u.hvm.smbios_firmware, 0);
         xlu_cfg_replace_string(config, "acpi_firmware",
@@ -1519,6 +1611,9 @@ static void parse_config_data(const char *config_source,
                     exit(1);
             }
         }
+
+        if (!xlu_cfg_get_long (config, "rdm_mem_boundary", &l, 0))
+            b_info->u.hvm.rdm_mem_boundary_memkb = l * 1024;
         break;
     case LIBXL_DOMAIN_TYPE_PV:
     {
@@ -1675,12 +1770,12 @@ static void parse_config_data(const char *config_source,
             libxl_device_disk *disk;
             char *buf2 = strdup(buf);
 
-            d_config->disks = (libxl_device_disk *) realloc(d_config->disks, sizeof (libxl_device_disk) * (d_config->num_disks + 1));
-            disk = d_config->disks + d_config->num_disks;
+            disk = ARRAY_EXTEND_INIT_NODEVID(d_config->disks,
+                                             d_config->num_disks,
+                                             libxl_device_disk_init);
             parse_disk_config(&config, buf2, disk);
 
             free(buf2);
-            d_config->num_disks++;
         }
     }
 
@@ -1704,11 +1799,9 @@ static void parse_config_data(const char *config_source,
             char *p, *p2;
             bool got_backend = false;
 
-            d_config->vtpms = (libxl_device_vtpm *) realloc(d_config->vtpms,
-                  sizeof(libxl_device_vtpm) * (d_config->num_vtpms+1));
-            vtpm = d_config->vtpms + d_config->num_vtpms;
-            libxl_device_vtpm_init(vtpm);
-            vtpm->devid = d_config->num_vtpms;
+            vtpm = ARRAY_EXTEND_INIT(d_config->vtpms,
+                                     d_config->num_vtpms,
+                                     libxl_device_vtpm_init);
 
             p = strtok(buf2, ",");
             if(p) {
@@ -1738,7 +1831,6 @@ static void parse_config_data(const char *config_source,
                exit(1);
             }
             free(buf2);
-            d_config->num_vtpms++;
         }
     }
 
@@ -1828,10 +1920,9 @@ static void parse_config_data(const char *config_source,
             char *buf2 = strdup(buf);
             char *p;
 
-            d_config->nics = (libxl_device_nic *) realloc(d_config->nics, sizeof (libxl_device_nic) * (d_config->num_nics+1));
-            nic = d_config->nics + d_config->num_nics;
-            libxl_device_nic_init(nic);
-            nic->devid = d_config->num_nics;
+            nic = ARRAY_EXTEND_INIT(d_config->nics,
+                                    d_config->num_nics,
+                                    libxl_device_nic_init);
             set_default_nic_values(nic);
 
             p = strtok(buf2, ",");
@@ -1844,7 +1935,6 @@ static void parse_config_data(const char *config_source,
             } while ((p = strtok(NULL, ",")) != NULL);
 skip_nic:
             free(buf2);
-            d_config->num_nics++;
         }
     }
 
@@ -1931,22 +2021,39 @@ skip_vfb:
         xlu_cfg_get_defbool(config, "e820_host", &b_info->u.pv.e820_host, 0);
     }
 
+    if (!xlu_cfg_get_string(config, "rdm", &buf, 0)) {
+        libxl_rdm_reserve rdm;
+        if (!xlu_rdm_parse(config, &rdm, buf)) {
+            b_info->u.hvm.rdm.strategy = rdm.strategy;
+            b_info->u.hvm.rdm.policy = rdm.policy;
+        }
+    }
+
     if (!xlu_cfg_get_list (config, "pci", &pcis, 0, 0)) {
         d_config->num_pcidevs = 0;
         d_config->pcidevs = NULL;
         for(i = 0; (buf = xlu_cfg_get_listitem (pcis, i)) != NULL; i++) {
             libxl_device_pci *pcidev;
 
-            d_config->pcidevs = (libxl_device_pci *) realloc(d_config->pcidevs, sizeof (libxl_device_pci) * (d_config->num_pcidevs + 1));
-            pcidev = d_config->pcidevs + d_config->num_pcidevs;
-            libxl_device_pci_init(pcidev);
-
+            pcidev = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
+                                               d_config->num_pcidevs,
+                                               libxl_device_pci_init);
             pcidev->msitranslate = pci_msitranslate;
             pcidev->power_mgmt = pci_power_mgmt;
             pcidev->permissive = pci_permissive;
             pcidev->seize = pci_seize;
-            if (!xlu_pci_parse_bdf(config, pcidev, buf))
-                d_config->num_pcidevs++;
+            /*
+             * Like other pci option, the per-device policy always follows
+             * the global policy by default.
+             */
+            pcidev->rdm_policy = b_info->u.hvm.rdm.policy;
+            e = xlu_pci_parse_bdf(config, pcidev, buf);
+            if (e) {
+                fprintf(stderr,
+                        "unable to parse PCI BDF `%s' for passthrough\n",
+                        buf);
+                exit(-e);
+            }
         }
         if (d_config->num_pcidevs && c_info->type == LIBXL_DOMAIN_TYPE_PV)
             libxl_defbool_set(&b_info->u.pv.e820_host, true);
@@ -1958,17 +2065,15 @@ skip_vfb:
         for (i = 0; (buf = xlu_cfg_get_listitem(dtdevs, i)) != NULL; i++) {
             libxl_device_dtdev *dtdev;
 
-            d_config->dtdevs = xrealloc(d_config->dtdevs,
-                                        sizeof (libxl_device_dtdev) * (i + 1));
-            dtdev = d_config->dtdevs + d_config->num_dtdevs;
-            libxl_device_dtdev_init(dtdev);
+            dtdev = ARRAY_EXTEND_INIT_NODEVID(d_config->dtdevs,
+                                              d_config->num_dtdevs,
+                                              libxl_device_dtdev_init);
 
             dtdev->path = strdup(buf);
             if (dtdev->path == NULL) {
                 fprintf(stderr, "unable to duplicate string for dtdevs\n");
                 exit(-1);
             }
-            d_config->num_dtdevs++;
         }
     }
 
@@ -2157,6 +2262,13 @@ skip_vfb:
             b_info->u.hvm.vga.kind = l ? LIBXL_VGA_INTERFACE_TYPE_STD :
                                          LIBXL_VGA_INTERFACE_TYPE_CIRRUS;
 
+        if (!xlu_cfg_get_string(config, "hdtype", &buf, 0) &&
+            libxl_hdtype_from_string(buf, &b_info->u.hvm.hdtype)) {
+                fprintf(stderr, "ERROR: invalid value \"%s\" for \"hdtype\"\n",
+                    buf);
+                exit (1);
+        }
+
         xlu_cfg_replace_string (config, "keymap", &b_info->u.hvm.keymap, 0);
         xlu_cfg_get_defbool (config, "spice", &b_info->u.hvm.spice.enable, 0);
         if (!xlu_cfg_get_long (config, "spiceport", &l, 0))
@@ -2253,6 +2365,15 @@ skip_vfb:
         }
     }
 
+    if (!xlu_cfg_get_string (config, "gic_version", &buf, 1)) {
+        e = libxl_gic_version_from_string(buf, &b_info->arch_arm.gic_version);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown gic_version \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+     }
+
     xlu_cfg_destroy(config);
 }
 
@@ -2335,14 +2456,11 @@ static int handle_domain_death(uint32_t *r_domid,
         char *corefile;
         int rc;
 
-        if (asprintf(&corefile, XEN_DUMP_DIR "/%s", d_config->c_info.name) < 0) {
-            LOG("failed to construct core dump path");
-        } else {
-            LOG("dumping core to %s", corefile);
-            rc=libxl_domain_core_dump(ctx, *r_domid, corefile, NULL);
-            if (rc) LOG("core dump failed (rc=%d).", rc);
-            free(corefile);
-        }
+        xasprintf(&corefile, XEN_DUMP_DIR "/%s", d_config->c_info.name);
+        LOG("dumping core to %s", corefile);
+        rc = libxl_domain_core_dump(ctx, *r_domid, corefile, NULL);
+        if (rc) LOG("core dump failed (rc=%d).", rc);
+        free(corefile);
         /* No point crying over spilled milk, continue on failure. */
 
         if (action == LIBXL_ACTION_ON_SHUTDOWN_COREDUMP_DESTROY)
@@ -2544,6 +2662,7 @@ static uint32_t create_domain(struct domain_create *dom_info)
     void *config_data = 0;
     int config_len = 0;
     int restore_fd = -1;
+    int restore_fd_to_close = -1;
     const libxl_asyncprogress_how *autoconnect_console_how;
     struct save_file_header hdr;
 
@@ -2567,6 +2686,7 @@ static uint32_t create_domain(struct domain_create *dom_info)
                 fprintf(stderr, "Can't open restore file: %s\n", strerror(errno));
                 return ERROR_INVAL;
             }
+            restore_fd_to_close = restore_fd;
             rc = libxl_fd_set_cloexec(ctx, restore_fd, 1);
             if (rc) return rc;
         }
@@ -2645,7 +2765,7 @@ static uint32_t create_domain(struct domain_create *dom_info)
         }
         if (!restoring && extra_config && strlen(extra_config)) {
             if (config_len > INT_MAX - (strlen(extra_config) + 2 + 1)) {
-                fprintf(stderr, "Failed to attach extra configration\n");
+                fprintf(stderr, "Failed to attach extra configuration\n");
                 return ERROR_FAIL;
             }
             /* allocate space for the extra config plus two EOLs plus \0 */
@@ -2689,18 +2809,28 @@ static uint32_t create_domain(struct domain_create *dom_info)
             common_domname = d_config.c_info.name;
             d_config.c_info.name = 0; /* steals allocation from config */
 
-            if (asprintf(&d_config.c_info.name,
-                         "%s--incoming", common_domname) < 0) {
-                fprintf(stderr, "Failed to allocate memory in asprintf\n");
-                exit(1);
-            }
+            xasprintf(&d_config.c_info.name, "%s--incoming", common_domname);
             *dom_info->migration_domname_r = strdup(d_config.c_info.name);
         }
     }
 
-    if (debug || dom_info->dryrun)
-        printf_info(default_output_format, -1, &d_config,
-                    debug ? stderr : stdout);
+    if (debug || dom_info->dryrun) {
+        FILE *cfg_print_fh = (debug && !dom_info->dryrun) ? stderr : stdout;
+        if (default_output_format == OUTPUT_FORMAT_SXP) {
+            printf_info_sexp(-1, &d_config, cfg_print_fh);
+        } else {
+            char *json = libxl_domain_config_to_json(ctx, &d_config);
+            if (!json) {
+                fprintf(stderr,
+                        "Failed to convert domain configuration to JSON\n");
+                exit(1);
+            }
+            fputs(json, cfg_print_fh);
+            free(json);
+            flush_stream(cfg_print_fh);
+        }
+    }
+
 
     ret = 0;
     if (dom_info->dryrun)
@@ -2734,6 +2864,9 @@ start:
         libxl_domain_restore_params_init(&params);
 
         params.checkpointed_stream = dom_info->checkpointed_stream;
+        params.stream_version =
+            (hdr.mandatory_flags & XL_MANDATORY_FLAG_STREAMv2) ? 2 : 1;
+
         ret = libxl_domain_create_restore(ctx, &d_config,
                                           &domid, restore_fd,
                                           &params,
@@ -2755,6 +2888,13 @@ start:
 
     release_lock();
 
+    if (restore_fd_to_close >= 0) {
+        if (close(restore_fd_to_close))
+            fprintf(stderr, "Failed to close restoring file, fd %d, errno %d\n",
+                    restore_fd_to_close, errno);
+        restore_fd_to_close = -1;
+    }
+
     if (!paused)
         libxl_domain_unpause(ctx, domid);
 
@@ -2768,11 +2908,8 @@ start:
     if (need_daemon) {
         char *name;
 
-        if (asprintf(&name, "xl-%s", d_config.c_info.name) < 0) {
-            LOG("Failed to allocate memory in asprintf");
-            exit(1);
-        }
-        ret = do_daemonize(name);
+        xasprintf(&name, "xl-%s", d_config.c_info.name);
+        ret = do_daemonize(name, NULL);
         free(name);
         if (ret) {
             ret = (ret == 1) ? domid : ret;
@@ -2984,7 +3121,9 @@ static int64_t parse_mem_size_kb(const char *mem)
     return kbytes;
 }
 
-#define COMMON_LONG_OPTS {"help", 0, 0, 'h'}
+/* Must be last in list */
+#define COMMON_LONG_OPTS {"help", 0, 0, 'h'}, \
+                         {0, 0, 0, 0}
 
 /*
  * Callers should use SWITCH_FOREACH_OPT in preference to calling this
@@ -2997,8 +3136,7 @@ static int def_getopt(int argc, char * const argv[],
 {
     int opt;
     const struct option def_options[] = {
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
     if (!longopts)
@@ -3032,14 +3170,15 @@ static int def_getopt(int argc, char * const argv[],
  * Wraps def_getopt into a convenient loop+switch to process all
  * arguments. This macro is intended to be called from main_XXX().
  *
- *   SWITCH_FOREACH_OPT(int *opt, const char *opts,
+ *   SWITCH_FOREACH_OPT(int *opt, "OPTS",
  *                      const struct option *longopts,
  *                      const char *commandname,
  *                      int num_opts_req) { ...
  *
  * opt:               pointer to an int variable, holds the current option
  *                    during processing.
- * opts:              short options, as per getopt_long(3)'s optstring argument.
+ * OPTS:              short options, as per getopt_long(3)'s optstring argument.
+ *                    do not include "h"; will be provided automatically
  * longopts:          long options, as per getopt_long(3)'s longopts argument.
  *                    May be null.
  * commandname:       name of this command, for usage string.
@@ -3083,7 +3222,7 @@ static int def_getopt(int argc, char * const argv[],
  */
 #define SWITCH_FOREACH_OPT(opt, opts, longopts,                         \
                            commandname, num_required_opts)              \
-    while (((opt) = def_getopt(argc, argv, (opts), (longopts),          \
+    while (((opt) = def_getopt(argc, argv, "h" opts, (longopts),          \
                                 (commandname), (num_required_opts))) != -1) \
         switch (opt)
 
@@ -3164,11 +3303,8 @@ static int cd_insert(uint32_t domid, const char *virtdev, char *phys)
     struct stat b;
     int rc = 0;
 
-    if (asprintf(&buf, "vdev=%s,access=r,devtype=cdrom,target=%s",
-                 virtdev, phys ? phys : "") < 0) {
-        fprintf(stderr, "out of memory\n");
-        return 1;
-    }
+    xasprintf(&buf, "vdev=%s,access=r,devtype=cdrom,target=%s",
+              virtdev, phys ? phys : "");
 
     parse_disk_config(&config, buf, &disk);
 
@@ -3266,13 +3402,12 @@ int main_vncviewer(int argc, char **argv)
     static const struct option opts[] = {
         {"autopass", 0, 0, 'a'},
         {"vncviewer-autopass", 0, 0, 'a'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
     uint32_t domid;
     int opt, autopass = 0;
 
-    SWITCH_FOREACH_OPT(opt, "ah", opts, "vncviewer", 1) {
+    SWITCH_FOREACH_OPT(opt, "a", opts, "vncviewer", 1) {
     case 'a':
         autopass = 1;
         break;
@@ -3894,6 +4029,7 @@ static void save_domain_core_writeconfig(int fd, const char *source,
     memset(&hdr, 0, sizeof(hdr));
     memcpy(hdr.magic, savefileheader_magic, sizeof(hdr.magic));
     hdr.byteorder = SAVEFILE_BYTEORDER_VALUE;
+    hdr.mandatory_flags = XL_MANDATORY_FLAG_STREAMv2;
 
     optdata_begin= 0;
 
@@ -3972,7 +4108,7 @@ static pid_t create_migration_child(const char *rune, int *send_fd,
                                         int *recv_fd)
 {
     int sendpipe[2], recvpipe[2];
-    pid_t child = -1;
+    pid_t child;
 
     if (!rune || !send_fd || !recv_fd)
         return -1;
@@ -4169,8 +4305,7 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     fprintf(stderr, "migration sender: Target has acknowledged transfer.\n");
 
     if (common_domname) {
-        if (asprintf(&away_domname, "%s--migratedaway", common_domname) < 0)
-            goto failed_resume;
+        xasprintf(&away_domname, "%s--migratedaway", common_domname);
         rc = libxl_domain_rename(ctx, domid, common_domname, away_domname);
         if (rc) goto failed_resume;
     }
@@ -4400,11 +4535,10 @@ int main_restore(int argc, char **argv)
     static struct option opts[] = {
         {"vncviewer", 0, 0, 'V'},
         {"vncviewer-autopass", 0, 0, 'A'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "FhcpdeVA", opts, "restore", 1) {
+    SWITCH_FOREACH_OPT(opt, "FcpdeVA", opts, "restore", 1) {
     case 'c':
         console_autoconnect = 1;
         break;
@@ -4533,8 +4667,7 @@ int main_migrate(int argc, char **argv)
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
     SWITCH_FOREACH_OPT(opt, "FC:s:e", opts, "migrate", 2) {
@@ -4578,13 +4711,12 @@ int main_migrate(int argc, char **argv)
         } else {
             verbose_len = (minmsglevel_default - minmsglevel) + 2;
         }
-        if (asprintf(&rune, "exec %s %s xl%s%.*s migrate-receive%s%s",
-                     ssh_command, host,
-                     pass_tty_arg ? " -t" : "",
-                     verbose_len, verbose_buf,
-                     daemonize ? "" : " -e",
-                     debug ? " -d" : "") < 0)
-            return 1;
+        xasprintf(&rune, "exec %s %s xl%s%.*s migrate-receive%s%s",
+                  ssh_command, host,
+                  pass_tty_arg ? " -t" : "",
+                  verbose_len, verbose_buf,
+                  daemonize ? "" : " -e",
+                  debug ? " -d" : "");
     }
 
     migrate_domain(domid, rune, debug, config_filename);
@@ -4657,8 +4789,7 @@ static int main_shutdown_or_reboot(int do_reboot, int argc, char **argv)
     static struct option opts[] = {
         {"all", 0, 0, 'a'},
         {"wait", 0, 0, 'w'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
     SWITCH_FOREACH_OPT(opt, "awF", opts, what, 0) {
@@ -4696,8 +4827,10 @@ static int main_shutdown_or_reboot(int do_reboot, int argc, char **argv)
                fallback_trigger);
         }
 
-        if (wait_for_it)
+        if (wait_for_it) {
             wait_for_domain_deaths(deathws, nb_domain - 1 /* not dom 0 */);
+            free(deathws);
+        }
 
         libxl_dominfo_list_free(dominfo, nb_domain);
     } else {
@@ -4738,8 +4871,7 @@ int main_list(int argc, char **argv)
         {"context", 0, 0, 'Z'},
         {"cpupool", 0, 0, 'c'},
         {"numa", 0, 0, 'n'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
     libxl_dominfo info_buf;
@@ -4763,6 +4895,8 @@ int main_list(int argc, char **argv)
         numa = true;
         break;
     }
+
+    libxl_dominfo_init(&info_buf);
 
     if (optind >= argc) {
         info = libxl_list_domain(ctx, &nb_domain);
@@ -4798,8 +4932,8 @@ int main_list(int argc, char **argv)
 
     if (info_free)
         libxl_dominfo_list_free(info, nb_domain);
-    else
-        libxl_dominfo_dispose(info);
+
+    libxl_dominfo_dispose(&info_buf);
 
     return 0;
 }
@@ -4816,11 +4950,25 @@ int main_vm_list(int argc, char **argv)
     return 0;
 }
 
+static void string_realloc_append(char **accumulate, const char *more)
+{
+    /* Appends more to accumulate.  Accumulate is either NULL, or
+     * points (always) to a malloc'd nul-terminated string. */
+
+    size_t oldlen = *accumulate ? strlen(*accumulate) : 0;
+    size_t morelen = strlen(more) + 1/*nul*/;
+    if (oldlen > SSIZE_MAX || morelen > SSIZE_MAX - oldlen) {
+        fprintf(stderr,"Additional config data far too large\n");
+        exit(-ERROR_FAIL);
+    }
+
+    *accumulate = xrealloc(*accumulate, oldlen + morelen);
+    memcpy(*accumulate + oldlen, more, morelen);
+}
+
 int main_create(int argc, char **argv)
 {
     const char *filename = NULL;
-    char *p;
-    char extra_config[1024];
     struct domain_create dom_info;
     int paused = 0, debug = 0, daemonize = 1, console_autoconnect = 0,
         quiet = 0, monitor = 1, vnc = 0, vncautopass = 0;
@@ -4831,16 +4979,17 @@ int main_create(int argc, char **argv)
         {"defconfig", 1, 0, 'f'},
         {"vncviewer", 0, 0, 'V'},
         {"vncviewer-autopass", 0, 0, 'A'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
+
+    dom_info.extra_config = NULL;
 
     if (argv[1] && argv[1][0] != '-' && !strchr(argv[1], '=')) {
         filename = argv[1];
         argc--; argv++;
     }
 
-    SWITCH_FOREACH_OPT(opt, "Fhnqf:pcdeVA", opts, "create", 0) {
+    SWITCH_FOREACH_OPT(opt, "Fnqf:pcdeVA", opts, "create", 0) {
     case 'f':
         filename = optarg;
         break;
@@ -4874,20 +5023,21 @@ int main_create(int argc, char **argv)
         break;
     }
 
-    extra_config[0] = '\0';
-    for (p = extra_config; optind < argc; optind++) {
+    memset(&dom_info, 0, sizeof(dom_info));
+
+    for (; optind < argc; optind++) {
         if (strchr(argv[optind], '=') != NULL) {
-            p += snprintf(p, sizeof(extra_config) - (p - extra_config),
-                "%s\n", argv[optind]);
+            string_realloc_append(&dom_info.extra_config, argv[optind]);
+            string_realloc_append(&dom_info.extra_config, "\n");
         } else if (!filename) {
             filename = argv[optind];
         } else {
             help("create");
+            free(dom_info.extra_config);
             return 2;
         }
     }
 
-    memset(&dom_info, 0, sizeof(dom_info));
     dom_info.debug = debug;
     dom_info.daemonize = daemonize;
     dom_info.monitor = monitor;
@@ -4895,16 +5045,18 @@ int main_create(int argc, char **argv)
     dom_info.dryrun = dryrun_only;
     dom_info.quiet = quiet;
     dom_info.config_file = filename;
-    dom_info.extra_config = extra_config;
     dom_info.migrate_fd = -1;
     dom_info.vnc = vnc;
     dom_info.vncautopass = vncautopass;
     dom_info.console_autoconnect = console_autoconnect;
 
     rc = create_domain(&dom_info);
-    if (rc < 0)
+    if (rc < 0) {
+        free(dom_info.extra_config);
         return -rc;
+    }
 
+    free(dom_info.extra_config);
     return 0;
 }
 
@@ -4912,8 +5064,7 @@ int main_config_update(int argc, char **argv)
 {
     uint32_t domid;
     const char *filename = NULL;
-    char *p;
-    char extra_config[1024];
+    char *extra_config = NULL;
     void *config_data = 0;
     int config_len = 0;
     libxl_domain_config d_config;
@@ -4921,8 +5072,7 @@ int main_config_update(int argc, char **argv)
     int debug = 0;
     static struct option opts[] = {
         {"defconfig", 1, 0, 'f'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
     if (argc < 2) {
@@ -4942,7 +5092,7 @@ int main_config_update(int argc, char **argv)
         argc--; argv++;
     }
 
-    SWITCH_FOREACH_OPT(opt, "dhqf:", opts, "config_update", 0) {
+    SWITCH_FOREACH_OPT(opt, "dqf:", opts, "config_update", 0) {
     case 'd':
         debug = 1;
         break;
@@ -4951,15 +5101,15 @@ int main_config_update(int argc, char **argv)
         break;
     }
 
-    extra_config[0] = '\0';
-    for (p = extra_config; optind < argc; optind++) {
+    for (; optind < argc; optind++) {
         if (strchr(argv[optind], '=') != NULL) {
-            p += snprintf(p, sizeof(extra_config) - (p - extra_config),
-                "%s\n", argv[optind]);
+            string_realloc_append(&extra_config, argv[optind]);
+            string_realloc_append(&extra_config, "\n");
         } else if (!filename) {
             filename = argv[optind];
         } else {
             help("create");
+            free(extra_config);
             return 2;
         }
     }
@@ -4968,10 +5118,11 @@ int main_config_update(int argc, char **argv)
         rc = libxl_read_file_contents(ctx, filename,
                                       &config_data, &config_len);
         if (rc) { fprintf(stderr, "Failed to read config file: %s: %s\n",
-                           filename, strerror(errno)); return ERROR_FAIL; }
-        if (strlen(extra_config)) {
+                           filename, strerror(errno));
+                  free(extra_config); return ERROR_FAIL; }
+        if (extra_config && strlen(extra_config)) {
             if (config_len > INT_MAX - (strlen(extra_config) + 2 + 1)) {
-                fprintf(stderr, "Failed to attach extra configration\n");
+                fprintf(stderr, "Failed to attach extra configuration\n");
                 exit(1);
             }
             /* allocate space for the extra config plus two EOLs plus \0 */
@@ -5009,7 +5160,7 @@ int main_config_update(int argc, char **argv)
     libxl_domain_config_dispose(&d_config);
 
     free(config_data);
-
+    free(extra_config);
     return 0;
 }
 
@@ -5315,7 +5466,7 @@ int main_vcpuset(int argc, char **argv)
 {
     static struct option opts[] = {
         {"ignore-host", 0, 0, 'i'},
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
     int opt, check_host = 1;
 
@@ -5527,12 +5678,11 @@ int main_info(int argc, char **argv)
     int opt;
     static struct option opts[] = {
         {"numa", 0, 0, 'n'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
     int numa = 0;
 
-    SWITCH_FOREACH_OPT(opt, "hn", opts, "info", 0) {
+    SWITCH_FOREACH_OPT(opt, "n", opts, "info", 0) {
     case 'n':
         numa = 1;
         break;
@@ -5736,37 +5886,6 @@ static int sched_credit2_domain_output(
     return 0;
 }
 
-static int sched_sedf_domain_output(
-    int domid)
-{
-    char *domname;
-    libxl_domain_sched_params scinfo;
-    int rc;
-
-    if (domid < 0) {
-        printf("%-33s %4s %6s %-6s %7s %5s %6s\n", "Name", "ID", "Period",
-               "Slice", "Latency", "Extra", "Weight");
-        return 0;
-    }
-
-    libxl_domain_sched_params_init(&scinfo);
-    rc = sched_domain_get(LIBXL_SCHEDULER_SEDF, domid, &scinfo);
-    if (rc)
-        return rc;
-    domname = libxl_domid_to_name(ctx, domid);
-    printf("%-33s %4d %6d %6d %7d %5d %6d\n",
-        domname,
-        domid,
-        scinfo.period,
-        scinfo.slice,
-        scinfo.latency,
-        scinfo.extratime,
-        scinfo.weight);
-    free(domname);
-    libxl_domain_sched_params_dispose(&scinfo);
-    return 0;
-}
-
 static int sched_rtds_domain_output(
     int domid)
 {
@@ -5897,11 +6016,10 @@ int main_sched_credit(int argc, char **argv)
         {"tslice_ms", 1, 0, 't'},
         {"ratelimit_us", 1, 0, 'r'},
         {"cpupool", 1, 0, 'p'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "d:w:c:p:t:r:hs", opts, "sched-credit", 0) {
+    SWITCH_FOREACH_OPT(opt, "d:w:c:p:t:r:s", opts, "sched-credit", 0) {
     case 'd':
         dom = optarg;
         break;
@@ -6013,11 +6131,10 @@ int main_sched_credit2(int argc, char **argv)
         {"domain", 1, 0, 'd'},
         {"weight", 1, 0, 'w'},
         {"cpupool", 1, 0, 'p'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "d:w:p:h", opts, "sched-credit2", 0) {
+    SWITCH_FOREACH_OPT(opt, "d:w:p:", opts, "sched-credit2", 0) {
     case 'd':
         dom = optarg;
         break;
@@ -6067,114 +6184,6 @@ int main_sched_credit2(int argc, char **argv)
     return 0;
 }
 
-int main_sched_sedf(int argc, char **argv)
-{
-    const char *dom = NULL;
-    const char *cpupool = NULL;
-    int period = 0, opt_p = 0;
-    int slice = 0, opt_s = 0;
-    int latency = 0, opt_l = 0;
-    int extra = 0, opt_e = 0;
-    int weight = 0, opt_w = 0;
-    int opt, rc;
-    static struct option opts[] = {
-        {"period", 1, 0, 'p'},
-        {"slice", 1, 0, 's'},
-        {"latency", 1, 0, 'l'},
-        {"extra", 1, 0, 'e'},
-        {"weight", 1, 0, 'w'},
-        {"cpupool", 1, 0, 'c'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
-    };
-
-    SWITCH_FOREACH_OPT(opt, "d:p:s:l:e:w:c:h", opts, "sched-sedf", 0) {
-    case 'd':
-        dom = optarg;
-        break;
-    case 'p':
-        period = strtol(optarg, NULL, 10);
-        opt_p = 1;
-        break;
-    case 's':
-        slice = strtol(optarg, NULL, 10);
-        opt_s = 1;
-        break;
-    case 'l':
-        latency = strtol(optarg, NULL, 10);
-        opt_l = 1;
-        break;
-    case 'e':
-        extra = strtol(optarg, NULL, 10);
-        opt_e = 1;
-        break;
-    case 'w':
-        weight = strtol(optarg, NULL, 10);
-        opt_w = 1;
-        break;
-    case 'c':
-        cpupool = optarg;
-        break;
-    }
-
-    if (cpupool && (dom || opt_p || opt_s || opt_l || opt_e || opt_w)) {
-        fprintf(stderr, "Specifying a cpupool is not allowed with other "
-                "options.\n");
-        return 1;
-    }
-    if (!dom && (opt_p || opt_s || opt_l || opt_e || opt_w)) {
-        fprintf(stderr, "Must specify a domain.\n");
-        return 1;
-    }
-    if (opt_w && (opt_p || opt_s)) {
-        fprintf(stderr, "Specifying a weight AND period or slice is not "
-                "allowed.\n");
-    }
-
-    if (!dom) { /* list all domain's credit scheduler info */
-        return -sched_domain_output(LIBXL_SCHEDULER_SEDF,
-                                    sched_sedf_domain_output,
-                                    sched_default_pool_output,
-                                    cpupool);
-    } else {
-        uint32_t domid = find_domain(dom);
-
-        if (!opt_p && !opt_s && !opt_l && !opt_e && !opt_w) {
-            /* output sedf scheduler info */
-            sched_sedf_domain_output(-1);
-            return -sched_sedf_domain_output(domid);
-        } else { /* set sedf scheduler paramaters */
-            libxl_domain_sched_params scinfo;
-            libxl_domain_sched_params_init(&scinfo);
-            scinfo.sched = LIBXL_SCHEDULER_SEDF;
-
-            if (opt_p) {
-                scinfo.period = period;
-                scinfo.weight = 0;
-            }
-            if (opt_s) {
-                scinfo.slice = slice;
-                scinfo.weight = 0;
-            }
-            if (opt_l)
-                scinfo.latency = latency;
-            if (opt_e)
-                scinfo.extratime = extra;
-            if (opt_w) {
-                scinfo.weight = weight;
-                scinfo.period = 0;
-                scinfo.slice = 0;
-            }
-            rc = sched_domain_set(domid, &scinfo);
-            libxl_domain_sched_params_dispose(&scinfo);
-            if (rc)
-                return -rc;
-        }
-    }
-
-    return 0;
-}
-
 /*
  * <nothing>            : List all domain paramters and sched params
  * -d [domid]           : List domain params for domain
@@ -6194,11 +6203,10 @@ int main_sched_rtds(int argc, char **argv)
         {"period", 1, 0, 'p'},
         {"budget", 1, 0, 'b'},
         {"cpupool", 1, 0, 'c'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "d:p:b:c:h", opts, "sched-rtds", 0) {
+    SWITCH_FOREACH_OPT(opt, "d:p:b:c:", opts, "sched-rtds", 0) {
     case 'd':
         dom = optarg;
         break;
@@ -6454,11 +6462,6 @@ int main_networkattach(int argc, char **argv)
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "network-attach", 1) {
         /* No options */
-    }
-
-    if (argc-optind > 11) {
-        help("network-attach");
-        return 0;
     }
 
     domid = find_domain(argv[optind]);
@@ -7026,7 +7029,6 @@ static char *uptime_to_string(unsigned long uptime, int short_mode)
 {
     int sec, min, hour, day;
     char *time_string;
-    int ret;
 
     day = (int)(uptime / 86400);
     uptime -= (day * 86400);
@@ -7038,21 +7040,19 @@ static char *uptime_to_string(unsigned long uptime, int short_mode)
 
     if (short_mode)
         if (day > 1)
-            ret = asprintf(&time_string, "%d days, %2d:%02d", day, hour, min);
+            xasprintf(&time_string, "%d days, %2d:%02d", day, hour, min);
         else if (day == 1)
-            ret = asprintf(&time_string, "%d day, %2d:%02d", day, hour, min);
+            xasprintf(&time_string, "%d day, %2d:%02d", day, hour, min);
         else
-            ret = asprintf(&time_string, "%2d:%02d", hour, min);
+            xasprintf(&time_string, "%2d:%02d", hour, min);
     else
         if (day > 1)
-            ret = asprintf(&time_string, "%d days, %2d:%02d:%02d", day, hour, min, sec);
+            xasprintf(&time_string, "%d days, %2d:%02d:%02d", day, hour, min, sec);
         else if (day == 1)
-            ret = asprintf(&time_string, "%d day, %2d:%02d:%02d", day, hour, min, sec);
+            xasprintf(&time_string, "%d day, %2d:%02d:%02d", day, hour, min, sec);
         else
-            ret = asprintf(&time_string, "%2d:%02d:%02d", hour, min, sec);
+            xasprintf(&time_string, "%2d:%02d:%02d", hour, min, sec);
 
-    if (ret < 0)
-        return NULL;
     return time_string;
 }
 
@@ -7458,13 +7458,12 @@ int main_cpupoolcreate(int argc, char **argv)
 {
     const char *filename = NULL, *config_src=NULL;
     const char *p;
-    char extra_config[1024];
+    char *extra_config = NULL;
     int opt;
     static struct option opts[] = {
         {"defconfig", 1, 0, 'f'},
         {"dryrun", 0, 0, 'n'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
     int ret;
     char *config_data = 0;
@@ -7483,7 +7482,7 @@ int main_cpupoolcreate(int argc, char **argv)
     libxl_cputopology *topology;
     int rc = 1;
 
-    SWITCH_FOREACH_OPT(opt, "hnf:", opts, "cpupool-create", 0) {
+    SWITCH_FOREACH_OPT(opt, "nf:", opts, "cpupool-create", 0) {
     case 'f':
         filename = optarg;
         break;
@@ -7492,13 +7491,13 @@ int main_cpupoolcreate(int argc, char **argv)
         break;
     }
 
-    memset(extra_config, 0, sizeof(extra_config));
+    libxl_bitmap_init(&freemap);
+    libxl_bitmap_init(&cpumap);
+
     while (optind < argc) {
         if ((p = strchr(argv[optind], '='))) {
-            if (strlen(extra_config) + 1 + strlen(argv[optind]) < sizeof(extra_config)) {
-                strcat(extra_config, "\n");
-                strcat(extra_config, argv[optind]);
-            }
+            string_realloc_append(&extra_config, "\n");
+            string_realloc_append(&extra_config, argv[optind]);
         } else if (!filename) {
             filename = argv[optind];
         } else {
@@ -7521,9 +7520,9 @@ int main_cpupoolcreate(int argc, char **argv)
     else
         config_src="command line";
 
-    if (strlen(extra_config)) {
+    if (extra_config && strlen(extra_config)) {
         if (config_len > INT_MAX - (strlen(extra_config) + 2)) {
-            fprintf(stderr, "Failed to attach extra configration\n");
+            fprintf(stderr, "Failed to attach extra configuration\n");
             goto out;
         }
         config_data = xrealloc(config_data,
@@ -7656,8 +7655,11 @@ int main_cpupoolcreate(int argc, char **argv)
 out_cfg:
     xlu_cfg_destroy(config);
 out:
+    libxl_bitmap_dispose(&freemap);
+    libxl_bitmap_dispose(&cpumap);
     free(name);
     free(config_data);
+    free(extra_config);
     return rc;
 }
 
@@ -7666,8 +7668,7 @@ int main_cpupoollist(int argc, char **argv)
     int opt;
     static struct option opts[] = {
         {"cpus", 0, 0, 'c'},
-        COMMON_LONG_OPTS,
-        {0, 0, 0, 0}
+        COMMON_LONG_OPTS
     };
     int opt_cpus = 0;
     const char *pool = NULL;
@@ -7676,7 +7677,7 @@ int main_cpupoollist(int argc, char **argv)
     uint32_t poolid;
     char *name;
 
-    SWITCH_FOREACH_OPT(opt, "hc", opts, "cpupool-list", 0) {
+    SWITCH_FOREACH_OPT(opt, "c", opts, "cpupool-list", 0) {
     case 'c':
         opt_cpus = 1;
         break;
@@ -7901,7 +7902,7 @@ int main_cpupoolnumasplit(int argc, char **argv)
     int n_pools;
     int node;
     int n_cpus;
-    char name[16];
+    char *name = NULL;
     libxl_uuid uuid;
     libxl_bitmap cpumap;
     libxl_cpupoolinfo *poolinfo;
@@ -7911,6 +7912,8 @@ int main_cpupoolnumasplit(int argc, char **argv)
     SWITCH_FOREACH_OPT(opt, "", NULL, "cpupool-numa-split", 0) {
         /* No options */
     }
+
+    libxl_dominfo_init(&info);
 
     rc = 1;
 
@@ -7949,7 +7952,7 @@ int main_cpupoolnumasplit(int argc, char **argv)
         goto out;
     }
 
-    snprintf(name, 15, "Pool-node%d", node);
+    xasprintf(&name, "Pool-node%d", node);
     if (libxl_cpupool_rename(ctx, name, 0)) {
         fprintf(stderr, "error on renaming Pool 0\n");
         goto out;
@@ -7968,6 +7971,12 @@ int main_cpupoolnumasplit(int argc, char **argv)
         goto out;
     }
     for (c = 0; c < 10; c++) {
+        /* We've called libxl_dominfo_init before the loop and will
+         * call libxl_dominfo_dispose after the loop when we're done
+         * with info.
+         */
+        libxl_dominfo_dispose(&info);
+        libxl_dominfo_init(&info);
         if (libxl_domain_info(ctx, &info, 0)) {
             fprintf(stderr, "error on getting info for Domain-0\n");
             goto out;
@@ -7994,7 +8003,8 @@ int main_cpupoolnumasplit(int argc, char **argv)
             goto out;
         }
 
-        snprintf(name, 15, "Pool-node%d", node);
+        free(name);
+        xasprintf(&name, "Pool-node%d", node);
         libxl_uuid_generate(&uuid);
         poolid = 0;
         if (libxl_cpupool_create(ctx, name, sched, cpumap, &uuid, &poolid)) {
@@ -8019,6 +8029,8 @@ int main_cpupoolnumasplit(int argc, char **argv)
 out:
     libxl_cputopology_list_free(topology, n_cpus);
     libxl_bitmap_dispose(&cpumap);
+    libxl_dominfo_dispose(&info);
+    free(name);
 
     return rc;
 }
@@ -8045,7 +8057,7 @@ int main_getenforce(int argc, char **argv)
 
 int main_setenforce(int argc, char **argv)
 {
-    int ret, mode = -1;
+    int ret, mode;
     const char *p = NULL;
 
     if (optind >= argc) {
@@ -8084,7 +8096,7 @@ int main_setenforce(int argc, char **argv)
 int main_loadpolicy(int argc, char **argv)
 {
     const char *polFName;
-    int polFd = 0;
+    int polFd = -1;
     void *polMemCp = NULL;
     struct stat info;
     int ret;
@@ -8096,7 +8108,7 @@ int main_loadpolicy(int argc, char **argv)
 
     polFName = argv[optind];
     polFd = open(polFName, O_RDONLY);
-    if ( polFd < 0 ) {
+    if (polFd < 0) {
         fprintf(stderr, "Error occurred opening policy file '%s': %s\n",
                 polFName, strerror(errno));
         ret = -1;
@@ -8104,7 +8116,7 @@ int main_loadpolicy(int argc, char **argv)
     }
 
     ret = stat(polFName, &info);
-    if ( ret < 0 ) {
+    if (ret < 0) {
         fprintf(stderr, "Error occurred retrieving information about"
                 "policy file '%s': %s\n", polFName, strerror(errno));
         goto done;
@@ -8136,7 +8148,7 @@ int main_loadpolicy(int argc, char **argv)
 
 done:
     free(polMemCp);
-    if ( polFd > 0 )
+    if (polFd >= 0)
         close(polFd);
 
     return ret;
@@ -8207,10 +8219,9 @@ int main_remus(int argc, char **argv)
         if (!ssh_command[0]) {
             rune = host;
         } else {
-            if (asprintf(&rune, "exec %s %s xl migrate-receive -r %s",
-                         ssh_command, host,
-                         daemonize ? "" : " -e") < 0)
-                return 1;
+            xasprintf(&rune, "exec %s %s xl migrate-receive -r %s",
+                      ssh_command, host,
+                      daemonize ? "" : " -e");
         }
 
         save_domain_core_begin(domid, NULL, &config_data, &config_len);
@@ -8261,15 +8272,24 @@ int main_remus(int argc, char **argv)
 int main_devd(int argc, char **argv)
 {
     int ret = 0, opt = 0, daemonize = 1;
+    const char *pidfile = NULL;
+    static const struct option opts[] = {
+        {"pidfile", 1, 0, 'p'},
+        COMMON_LONG_OPTS,
+        {0, 0, 0, 0}
+    };
 
-    SWITCH_FOREACH_OPT(opt, "F", NULL, "devd", 0) {
+    SWITCH_FOREACH_OPT(opt, "Fp:", opts, "devd", 0) {
     case 'F':
         daemonize = 0;
+        break;
+    case 'p':
+        pidfile = optarg;
         break;
     }
 
     if (daemonize) {
-        ret = do_daemonize("xldevd");
+        ret = do_daemonize("xldevd", pidfile);
         if (ret) {
             ret = (ret == 1) ? 0 : ret;
             goto out;
@@ -8283,6 +8303,36 @@ out:
 }
 
 #ifdef LIBXL_HAVE_PSR_CMT
+static int psr_cmt_hwinfo(void)
+{
+    int rc;
+    int enabled;
+    uint32_t total_rmid;
+
+    printf("Cache Monitoring Technology (CMT):\n");
+
+    enabled = libxl_psr_cmt_enabled(ctx);
+    printf("%-16s: %s\n", "Enabled", enabled ? "1" : "0");
+    if (!enabled)
+        return 0;
+
+    rc = libxl_psr_cmt_get_total_rmid(ctx, &total_rmid);
+    if (rc) {
+        fprintf(stderr, "Failed to get max RMID value\n");
+        return rc;
+    }
+    printf("%-16s: %u\n", "Total RMID", total_rmid);
+
+    printf("Supported monitor types:\n");
+    if (libxl_psr_cmt_type_supported(ctx, LIBXL_PSR_CMT_TYPE_CACHE_OCCUPANCY))
+        printf("cache-occupancy\n");
+    if (libxl_psr_cmt_type_supported(ctx, LIBXL_PSR_CMT_TYPE_TOTAL_MEM_COUNT))
+        printf("total-mem-bandwidth\n");
+    if (libxl_psr_cmt_type_supported(ctx, LIBXL_PSR_CMT_TYPE_LOCAL_MEM_COUNT))
+        printf("local-mem-bandwidth\n");
+
+    return rc;
+}
 
 #define MBM_SAMPLE_RETRY_MAX 4
 static int psr_cmt_get_mem_bandwidth(uint32_t domid,
@@ -8429,11 +8479,14 @@ static int psr_cmt_show(libxl_psr_cmt_type type, uint32_t domid)
     /* Each domain */
     if (domid != INVALID_DOMID) {
         libxl_dominfo dominfo;
+
+        libxl_dominfo_init(&dominfo);
         if (libxl_domain_info(ctx, &dominfo, domid)) {
             fprintf(stderr, "Failed to get domain info for %d\n", domid);
             return -1;
         }
         psr_cmt_print_domain_info(&dominfo, type, nr_sockets);
+        libxl_dominfo_dispose(&dominfo);
     }
     else
     {
@@ -8489,11 +8542,11 @@ int main_psr_cmt_show(int argc, char **argv)
         /* No options */
     }
 
-    if (!strcmp(argv[optind], "cache_occupancy"))
+    if (!strcmp(argv[optind], "cache-occupancy"))
         type = LIBXL_PSR_CMT_TYPE_CACHE_OCCUPANCY;
-    else if (!strcmp(argv[optind], "total_mem_bandwidth"))
+    else if (!strcmp(argv[optind], "total-mem-bandwidth"))
         type = LIBXL_PSR_CMT_TYPE_TOTAL_MEM_COUNT;
-    else if (!strcmp(argv[optind], "local_mem_bandwidth"))
+    else if (!strcmp(argv[optind], "local-mem-bandwidth"))
         type = LIBXL_PSR_CMT_TYPE_LOCAL_MEM_COUNT;
     else {
         help("psr-cmt-show");
@@ -8513,6 +8566,228 @@ int main_psr_cmt_show(int argc, char **argv)
 
     return ret;
 }
+#endif
+
+#ifdef LIBXL_HAVE_PSR_CAT
+static int psr_cat_hwinfo(void)
+{
+    int rc;
+    int socketid, nr_sockets;
+    uint32_t l3_cache_size;
+    libxl_psr_cat_info *info;
+
+    printf("Cache Allocation Technology (CAT):\n");
+
+    rc = libxl_psr_cat_get_l3_info(ctx, &info, &nr_sockets);
+    if (rc) {
+        fprintf(stderr, "Failed to get cat info\n");
+        return rc;
+    }
+
+    for (socketid = 0; socketid < nr_sockets; socketid++) {
+        rc = libxl_psr_cmt_get_l3_cache_size(ctx, socketid, &l3_cache_size);
+        if (rc) {
+            fprintf(stderr, "Failed to get l3 cache size for socket:%d\n",
+                    socketid);
+            goto out;
+        }
+        printf("%-16s: %u\n", "Socket ID", socketid);
+        printf("%-16s: %uKB\n", "L3 Cache", l3_cache_size);
+        printf("%-16s: %u\n", "Maximum COS", info->cos_max);
+        printf("%-16s: %u\n", "CBM length", info->cbm_len);
+        printf("%-16s: %#llx\n", "Default CBM",
+               (1ull << info->cbm_len) - 1);
+    }
+
+out:
+    libxl_psr_cat_info_list_free(info, nr_sockets);
+    return rc;
+}
+
+static void psr_cat_print_one_domain_cbm(uint32_t domid, uint32_t socketid)
+{
+    char *domain_name;
+    uint64_t cbm;
+
+    domain_name = libxl_domid_to_name(ctx, domid);
+    printf("%5d%25s", domid, domain_name);
+    free(domain_name);
+
+    if (!libxl_psr_cat_get_cbm(ctx, domid, LIBXL_PSR_CBM_TYPE_L3_CBM,
+                               socketid, &cbm))
+         printf("%#16"PRIx64, cbm);
+
+    printf("\n");
+}
+
+static int psr_cat_print_domain_cbm(uint32_t domid, uint32_t socketid)
+{
+    int i, nr_domains;
+    libxl_dominfo *list;
+
+    if (domid != INVALID_DOMID) {
+        psr_cat_print_one_domain_cbm(domid, socketid);
+        return 0;
+    }
+
+    if (!(list = libxl_list_domain(ctx, &nr_domains))) {
+        fprintf(stderr, "Failed to get domain list for cbm display\n");
+        return -1;
+    }
+
+    for (i = 0; i < nr_domains; i++)
+        psr_cat_print_one_domain_cbm(list[i].domid, socketid);
+    libxl_dominfo_list_free(list, nr_domains);
+
+    return 0;
+}
+
+static int psr_cat_print_socket(uint32_t domid, uint32_t socketid,
+                                libxl_psr_cat_info *info)
+{
+    int rc;
+    uint32_t l3_cache_size;
+
+    rc = libxl_psr_cmt_get_l3_cache_size(ctx, socketid, &l3_cache_size);
+    if (rc) {
+        fprintf(stderr, "Failed to get l3 cache size for socket:%d\n",
+                socketid);
+        return -1;
+    }
+
+    printf("%-16s: %u\n", "Socket ID", socketid);
+    printf("%-16s: %uKB\n", "L3 Cache", l3_cache_size);
+    printf("%-16s: %#llx\n", "Default CBM", (1ull << info->cbm_len) - 1);
+    printf("%5s%25s%16s\n", "ID", "NAME", "CBM");
+
+    return psr_cat_print_domain_cbm(domid, socketid);
+}
+
+static int psr_cat_show(uint32_t domid)
+{
+    int socketid, nr_sockets;
+    int rc;
+    libxl_psr_cat_info *info;
+
+    rc = libxl_psr_cat_get_l3_info(ctx, &info, &nr_sockets);
+    if (rc) {
+        fprintf(stderr, "Failed to get cat info\n");
+        return rc;
+    }
+
+    for (socketid = 0; socketid < nr_sockets; socketid++) {
+        rc = psr_cat_print_socket(domid, socketid, info + socketid);
+        if (rc)
+            goto out;
+    }
+
+out:
+    libxl_psr_cat_info_list_free(info, nr_sockets);
+    return rc;
+}
+
+int main_psr_cat_cbm_set(int argc, char **argv)
+{
+    uint32_t domid;
+    libxl_psr_cbm_type type = LIBXL_PSR_CBM_TYPE_L3_CBM;
+    uint64_t cbm;
+    int ret, opt = 0;
+    libxl_bitmap target_map;
+    char *value;
+    libxl_string_list socket_list;
+    unsigned long start, end;
+    int i, j, len;
+
+    static struct option opts[] = {
+        {"socket", 1, 0, 's'},
+        COMMON_LONG_OPTS
+    };
+
+    libxl_socket_bitmap_alloc(ctx, &target_map, 0);
+    libxl_bitmap_set_none(&target_map);
+
+    SWITCH_FOREACH_OPT(opt, "s:", opts, "psr-cat-cbm-set", 2) {
+    case 's':
+        trim(isspace, optarg, &value);
+        split_string_into_string_list(value, ",", &socket_list);
+        len = libxl_string_list_length(&socket_list);
+        for (i = 0; i < len; i++) {
+            parse_range(socket_list[i], &start, &end);
+            for (j = start; j < end; j++)
+                libxl_bitmap_set(&target_map, j);
+        }
+
+        libxl_string_list_dispose(&socket_list);
+        free(value);
+        break;
+    }
+
+    if (libxl_bitmap_is_empty(&target_map))
+        libxl_bitmap_set_any(&target_map);
+
+    if (argc != optind + 2) {
+        help("psr-cat-cbm-set");
+        return 2;
+    }
+
+    domid = find_domain(argv[optind]);
+    cbm = strtoll(argv[optind + 1], NULL , 0);
+
+    ret = libxl_psr_cat_set_cbm(ctx, domid, type, &target_map, cbm);
+
+    libxl_bitmap_dispose(&target_map);
+    return ret;
+}
+
+int main_psr_cat_show(int argc, char **argv)
+{
+    int opt;
+    uint32_t domid;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "psr-cat-show", 0) {
+        /* No options */
+    }
+
+    if (optind >= argc)
+        domid = INVALID_DOMID;
+    else if (optind == argc - 1)
+        domid = find_domain(argv[optind]);
+    else {
+        help("psr-cat-show");
+        return 2;
+    }
+
+    return psr_cat_show(domid);
+}
+
+int main_psr_hwinfo(int argc, char **argv)
+{
+    int opt, ret = 0;
+    bool all = true, cmt = false, cat = false;
+    static struct option opts[] = {
+        {"cmt", 0, 0, 'm'},
+        {"cat", 0, 0, 'a'},
+        COMMON_LONG_OPTS
+    };
+
+    SWITCH_FOREACH_OPT(opt, "ma", opts, "psr-hwinfo", 0) {
+    case 'm':
+        all = false; cmt = true;
+        break;
+    case 'a':
+        all = false; cat = true;
+        break;
+    }
+
+    if (!ret && (all || cmt))
+        ret = psr_cmt_hwinfo();
+
+    if (!ret && (all || cat))
+        ret = psr_cat_hwinfo();
+
+    return ret;
+}
+
 #endif
 
 /*

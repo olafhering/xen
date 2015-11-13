@@ -149,6 +149,7 @@
 #define X86_FEATURE_CMT 	(7*32+12) /* Cache Monitoring Technology */
 #define X86_FEATURE_NO_FPU_SEL 	(7*32+13) /* FPU CS/DS stored as zero */
 #define X86_FEATURE_MPX		(7*32+14) /* Memory Protection Extensions */
+#define X86_FEATURE_CAT 	(7*32+15) /* Cache Allocation Technology */
 #define X86_FEATURE_RDSEED	(7*32+18) /* RDSEED instruction */
 #define X86_FEATURE_ADX		(7*32+19) /* ADCX, ADOX instructions */
 #define X86_FEATURE_SMAP	(7*32+20) /* Supervisor Mode Access Prevention */
@@ -215,6 +216,8 @@
 #define cpu_has_vmx		boot_cpu_has(X86_FEATURE_VMXE)
 
 #define cpu_has_cpuid_faulting	boot_cpu_has(X86_FEATURE_CPUID_FAULTING)
+
+#define cpu_has_cx16            boot_cpu_has(X86_FEATURE_CX16)
 
 enum _cache_type {
     CACHE_TYPE_NULL = 0,

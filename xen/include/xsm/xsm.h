@@ -137,7 +137,6 @@ struct xsm_operations {
 
     int (*page_offline)(uint32_t cmd);
     int (*tmem_op)(void);
-    int (*tmem_control)(void);
 
     long (*do_xsm_op) (XEN_GUEST_HANDLE_PARAM(xsm_op_t) op);
 #ifdef CONFIG_COMPAT
@@ -147,6 +146,8 @@ struct xsm_operations {
     int (*hvm_param) (struct domain *d, unsigned long op);
     int (*hvm_control) (struct domain *d, unsigned long op);
     int (*hvm_param_nested) (struct domain *d);
+    int (*hvm_param_altp2mhvm) (struct domain *d);
+    int (*hvm_altp2mhvm_op) (struct domain *d);
     int (*get_vnumainfo) (struct domain *d);
 
     int (*vm_event_control) (struct domain *d, int mode, int op);
@@ -188,6 +189,7 @@ struct xsm_operations {
     int (*priv_mapping) (struct domain *d, struct domain *t);
     int (*ioport_permission) (struct domain *d, uint32_t s, uint32_t e, uint8_t allow);
     int (*ioport_mapping) (struct domain *d, uint32_t s, uint32_t e, uint8_t allow);
+    int (*pmu_op) (struct domain *d, unsigned int op);
 #endif
 };
 
@@ -554,11 +556,6 @@ static inline int xsm_tmem_op(xsm_default_t def)
     return xsm_ops->tmem_op();
 }
 
-static inline int xsm_tmem_control(xsm_default_t def)
-{
-    return xsm_ops->tmem_control();
-}
-
 static inline long xsm_do_xsm_op (XEN_GUEST_HANDLE_PARAM(xsm_op_t) op)
 {
     return xsm_ops->do_xsm_op(op);
@@ -584,6 +581,16 @@ static inline int xsm_hvm_control(xsm_default_t def, struct domain *d, unsigned 
 static inline int xsm_hvm_param_nested (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->hvm_param_nested(d);
+}
+
+static inline int xsm_hvm_param_altp2mhvm (xsm_default_t def, struct domain *d)
+{
+    return xsm_ops->hvm_param_altp2mhvm(d);
+}
+
+static inline int xsm_hvm_altp2mhvm_op (xsm_default_t def, struct domain *d)
+{
+    return xsm_ops->hvm_altp2mhvm_op(d);
 }
 
 static inline int xsm_get_vnumainfo (xsm_default_t def, struct domain *d)
@@ -713,6 +720,11 @@ static inline int xsm_ioport_permission (xsm_default_t def, struct domain *d, ui
 static inline int xsm_ioport_mapping (xsm_default_t def, struct domain *d, uint32_t s, uint32_t e, uint8_t allow)
 {
     return xsm_ops->ioport_mapping(d, s, e, allow);
+}
+
+static inline int xsm_pmu_op (xsm_default_t def, struct domain *d, unsigned int op)
+{
+    return xsm_ops->pmu_op(d, op);
 }
 
 #endif /* CONFIG_X86 */

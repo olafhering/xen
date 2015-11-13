@@ -19,10 +19,12 @@ include Config.mk
 
 .PHONY: mini-os-dir
 mini-os-dir:
-	GIT=$(GIT) $(XEN_ROOT)/scripts/git-checkout.sh \
-		$(MINIOS_UPSTREAM_URL) \
-		$(MINIOS_UPSTREAM_REVISION) \
-		$(XEN_ROOT)/extras/mini-os
+	if [ ! -d $(XEN_ROOT)/extras/mini-os ]; then \
+		GIT=$(GIT) $(XEN_ROOT)/scripts/git-checkout.sh \
+			$(MINIOS_UPSTREAM_URL) \
+			$(MINIOS_UPSTREAM_REVISION) \
+			$(XEN_ROOT)/extras/mini-os ; \
+	fi
 
 .PHONY: mini-os-dir-force-update
 mini-os-dir-force-update: mini-os-dir
@@ -226,16 +228,23 @@ help:
 	@echo '  install-stubdom       - build and install the stubdomain images'
 	@echo '  install-docs          - build and install user documentation'
 	@echo ''
-	@echo 'Building targets:'
+	@echo 'Local dist targets:'
 	@echo '  dist                  - build and install everything into local dist directory'
 	@echo '  world                 - clean everything then make dist'
-	@echo '  xen                   - build and install Xen hypervisor'
-	@echo '  tools                 - build and install tools'
-	@echo '  stubdom               - build and install the stubdomain images'
-	@echo '  docs                  - build and install user documentation'
+	@echo '  dist-xen              - build Xen hypervisor and install into local dist'
+	@echo '  dist-tools            - build the tools and install into local dist'
+	@echo '  dist-stubdom          - build the stubdomain images and install into local dist'
+	@echo '  dist-docs             - build user documentation and install into local dist'
+	@echo ''
+	@echo 'Building targets:'
+	@echo '  build                 - build everything'
+	@echo '  build-xen             - build Xen hypervisor'
+	@echo '  build-tools           - build the tools'
+	@echo '  build-stubdom         - build the stubdomain images'
+	@echo '  build-docs            - build user documentation'
 	@echo ''
 	@echo 'Cleaning targets:'
-	@echo '  clean                 - clean the Xen, tools and docs (but not guest kernel trees)'
+	@echo '  clean                 - clean the Xen, tools and docs'
 	@echo '  distclean             - clean plus delete kernel build trees and'
 	@echo '                          local downloaded files'
 	@echo '  subtree-force-update  - Call *-force-update on all git subtrees (qemu, seabios, ovmf)'

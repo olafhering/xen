@@ -198,7 +198,7 @@ For more details, see F<docs/misc/xl-numa-placement.markdown>.
 A domain with a weight of 512 will get twice as much CPU as a domain
 with a weight of 256 on a contended host.
 Legal weights range from 1 to 65535 and the default is 256.
-Honoured by the credit, credit2 and sedf schedulers.
+Honoured by the credit and credit2 schedulers.
 
 =item B<cap=N>
 
@@ -221,28 +221,6 @@ that your VM gets 25% of the available power (50% of 1GHz) rather than
 50% (50% of 2GHz).  If you are not getting the performance you expect,
 look at performance and cpufreq options in your operating system and
 your BIOS.
-
-=item B<period=NANOSECONDS>
-
-The normal EDF scheduling usage in nanoseconds. This means every period
-the domain gets cpu time defined in slice.
-Honoured by the sedf scheduler.
-
-=item B<slice=NANOSECONDS>
-
-The normal EDF scheduling usage in nanoseconds. it defines the time 
-a domain get every period time.
-Honoured by the sedf scheduler.
-
-=item B<latency=N>
-
-Scaled period if domain is doing heavy I/O.
-Honoured by the sedf scheduler.
-
-=item B<extratime=BOOLEAN>
-
-Flag for allowing domain to run in extra time.
-Honoured by the sedf scheduler.
 
 =back
 
@@ -282,6 +260,9 @@ of having to track the unused pages.
 Specify virtual NUMA configuration with positional arguments. The
 nth B<VNODE_SPEC> in the list specifies the configuration of nth
 virtual node.
+
+Note that virtual NUMA for PV guest is not yet supported, because
+there is an issue with cpuid handling that affects PV virtual NUMA.
 
 Each B<VNODE_SPEC> is a list, which has a form of
 "[VNODE_CONFIG_OPTION,VNODE_CONFIG_OPTION, ... ]"  (without quotes).
@@ -710,6 +691,79 @@ assigned slave device.
 
 =back
 
+=item B<rdm="RDM_RESERVATION_STRING">
+
+(HVM/x86 only) Specifies information about Reserved Device Memory (RDM),
+which is necessary to enable robust device passthrough. One example of RDM
+is reported through ACPI Reserved Memory Region Reporting (RMRR) structure
+on x86 platform.
+
+B<RDM_RESERVE_STRING> has the form C<[KEY=VALUE,KEY=VALUE,...> where:
+
+=over 4
+
+=item B<KEY=VALUE>
+
+Possible B<KEY>s are:
+
+=over 4
+
+=item B<strategy="STRING">
+
+Currently there is only one valid type:
+
+"host" means all reserved device memory on this platform should be checked to
+reserve regions in this VM's guest address space. This global rdm parameter
+allows user to specify reserved regions explicitly, and using "host" includes
+all reserved regions reported on this platform, which is useful when doing
+hotplug.
+
+By default this isn't set so we don't check all rdms. Instead, we just check
+rdm specific to a given device if you're assigning this kind of device. Note
+this option is not recommended unless you can make sure any conflict does exist.
+
+For example, you're trying to set "memory = 2800" to allocate memory to one
+given VM but the platform owns two RDM regions like,
+
+Device A [sbdf_A]: RMRR region_A: base_addr ac6d3000 end_address ac6e6fff
+Device B [sbdf_B]: RMRR region_B: base_addr ad800000 end_address afffffff
+
+In this conflict case,
+
+#1. If B<strategy> is set to "host", for example,
+
+rdm = "strategy=host,policy=strict" or rdm = "strategy=host,policy=relaxed"
+
+It means all conflicts will be handled according to the policy
+introduced by B<policy> as described below.
+
+#2. If B<strategy> is not set at all, but
+
+pci = [ 'sbdf_A, rdm_policy=xxxxx' ]
+
+It means only one conflict of region_A will be handled according to the policy
+introduced by B<rdm_policy="STRING"> as described inside pci options.
+
+=item B<policy="STRING">
+
+Specifies how to deal with conflicts when reserving reserved device
+memory in guest address space.
+
+When that conflict is unsolved,
+
+"strict" means VM can't be created, or the associated device can't be
+attached in the case of hotplug.
+
+"relaxed" allows VM to be created but may cause VM to crash if
+pass-through device accesses RDM. For exampl,e Windows IGD GFX driver
+always accessed RDM regions so it leads to VM crash.
+
+Note this may be overridden by rdm_policy option in PCI device configuration.
+
+=back
+
+=back
+
 =item B<pci=[ "PCI_SPEC_STRING", "PCI_SPEC_STRING", ... ]>
 
 Specifies the host PCI devices to passthrough to this guest. Each B<PCI_SPEC_STRING>
@@ -771,6 +825,14 @@ dom0 without confirmation.  Please use with care.
 (HVM only) Specifies that the VM should be able to program the
 D0-D3hot power management states for the PCI device. False (0) by
 default.
+
+=item B<rdm_policy="STRING">
+
+(HVM/x86 only) This is same as policy option inside the rdm option but
+just specific to a given device. Therefore the default is "relaxed" as
+same as policy option as well.
+
+Note this would override global B<rdm> option.
 
 =back
 
@@ -840,6 +902,28 @@ primary adapter.
 More information about Xen gfx_passthru feature is available
 on the XenVGAPassthrough L<http://wiki.xen.org/wiki/XenVGAPassthrough>
 wiki page.
+
+=item B<rdm_mem_boundary=MBYTES>
+
+Number of megabytes to set a boundary for checking rdm conflict.
+
+When RDM conflicts with RAM, RDM probably scatter the whole RAM space.
+Especially multiple RDM entries would worsen this to lead a complicated
+memory layout. So here we're trying to figure out a simple solution to
+avoid breaking existing layout. So when a conflict occurs,
+
+    #1. Above a predefined boundary
+        - move lowmem_end below reserved region to solve conflict;
+
+    #2. Below a predefined boundary
+        - Check strict/relaxed policy.
+        "strict" policy leads to fail libxl. Note when both policies
+        are specified on a given region, 'strict' is always preferred.
+        "relaxed" policy issue a warning message and also mask this
+        entry INVALID to indicate we shouldn't expose this entry to
+        hvmloader.
+
+Here the default is 2G.
 
 =item B<dtdev=[ "DTDEV_PATH", "DTDEV_PATH", ... ]>
 
@@ -956,6 +1040,20 @@ disk (B<c>), cd-rom (B<d>) or network/PXE (B<n>). Multiple options can be
 given and will be attempted in the order they are given. e.g. to boot
 from cd-rom but fallback to the hard disk you can give B<dc>. The
 default is B<cd>.
+
+=back
+
+=head3 Emulated disk controller type
+
+=over 4
+
+=item B<hdtype="STRING">
+
+Select the hd disk type (ide|ahci).
+If hdtype=ahci adds ich9 disk controller in AHCI mode and uses it with
+upstream qemu to emulate disks instead of IDE. It decreases boot time
+but may not be supported by default in Windows xp and older Windows.
+The default is ide.
 
 =back
 
@@ -1089,6 +1187,18 @@ Enables or disables HPET (High Precision Event Timer). This option is
 enabled by default and you should usually omit it. It may be necessary
 to disable the HPET in order to improve compatibility with guest
 Operating Systems (X86 only)
+
+=item B<altp2mhvm=BOOLEAN>
+
+Enables or disables hvm guest access to alternate-p2m capability.
+Alternate-p2m allows a guest to manage multiple p2m guest physical
+"memory views" (as opposed to a single p2m). This option is
+disabled by default and is available only to hvm domains.
+You may want this option if you want to access-control/isolate
+access to specific guest physical memory pages accessed by
+the guest, e.g. for HVM domain memory introspection or
+for isolation/access-control of memory between components within
+a single guest hvm domain.
 
 =item B<nestedhvm=BOOLEAN>
 
@@ -1742,6 +1852,40 @@ using. Commonly this includes:
 The default is B<en-us>.
 
 See L<qemu(1)> for more information.
+
+=head2 Architecture Specific options
+
+=head3 ARM
+
+=over 4
+
+=item B<gic_version="vN">
+
+Version of the GIC emulated for the guest. Currently, the following
+versions are supported:
+
+=over 4
+
+=item B<v2>
+
+Emulate a GICv2
+
+=item B<v3>
+
+Emulate a GICv3. Note that the emulated GIC does not support the
+GICv2 compatibility mode.
+
+=item B<default>
+
+Emulate the same version as the native GIC hardware used by host where
+the domain was created.
+
+=back
+
+This requires hardware compatibility with the requested version. Either
+natively or via hardware backwards compatibility support.
+
+=back
 
 =head1 SEE ALSO
 

@@ -501,11 +501,7 @@ int vcpu_initialise(struct vcpu *v)
 
     v->arch.sctlr = SCTLR_GUEST_INIT;
 
-    /*
-     * By default exposes an SMP system with AFF0 set to the VCPU ID
-     * TODO: Handle multi-threading processor and cluster
-     */
-    v->arch.vmpidr = MPIDR_SMP | (v->vcpu_id << MPIDR_AFF0_SHIFT);
+    v->arch.vmpidr = MPIDR_SMP | vcpuid_to_vaffinity(v->vcpu_id);
 
     v->arch.actlr = READ_SYSREG32(ACTLR_EL1);
 
@@ -535,7 +531,6 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
                        struct xen_arch_domainconfig *config)
 {
     int rc;
-    uint8_t gic_version;
 
     d->arch.relmem = RELMEM_not_started;
 
@@ -564,36 +559,43 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     if ( (rc = p2m_alloc_table(d)) != 0 )
         goto fail;
 
-    /*
-     * Currently the vGIC is emulating the same version of the
-     * hardware GIC. Only the value XEN_DOMCTL_CONFIG_GIC_DEFAULT
-     * is allowed. The DOMCTL will return the actual version of the
-     * GIC.
-     */
-    rc = -EOPNOTSUPP;
-    if ( config->gic_version != XEN_DOMCTL_CONFIG_GIC_DEFAULT )
-        goto fail;
-
-    switch ( gic_hw_version() )
+    switch ( config->gic_version )
     {
-    case GIC_V3:
-        gic_version = XEN_DOMCTL_CONFIG_GIC_V3;
-        break;
-    case GIC_V2:
-        gic_version = XEN_DOMCTL_CONFIG_GIC_V2;
-        break;
-    default:
-        BUG();
-    }
-    config->gic_version = gic_version;
+    case XEN_DOMCTL_CONFIG_GIC_NATIVE:
+        switch ( gic_hw_version () )
+        {
+        case GIC_V2:
+            config->gic_version = XEN_DOMCTL_CONFIG_GIC_V2;
+            d->arch.vgic.version = GIC_V2;
+            break;
 
-    if ( (rc = gicv_setup(d)) != 0 )
+        case GIC_V3:
+            config->gic_version = XEN_DOMCTL_CONFIG_GIC_V3;
+            d->arch.vgic.version = GIC_V3;
+            break;
+
+        default:
+            BUG();
+        }
+        break;
+
+    case XEN_DOMCTL_CONFIG_GIC_V2:
+        d->arch.vgic.version = GIC_V2;
+        break;
+
+    case XEN_DOMCTL_CONFIG_GIC_V3:
+        d->arch.vgic.version = GIC_V3;
+        break;
+
+    default:
+        rc = -EOPNOTSUPP;
         goto fail;
+    }
 
     if ( (rc = domain_vgic_init(d, config->nr_spis)) != 0 )
         goto fail;
 
-    if ( (rc = domain_vtimer_init(d)) != 0 )
+    if ( (rc = domain_vtimer_init(d, config)) != 0 )
         goto fail;
 
     /*
@@ -886,6 +888,20 @@ void vcpu_block_unless_event_pending(struct vcpu *v)
     vcpu_block();
     if ( local_events_need_delivery_nomask() )
         vcpu_unblock(current);
+}
+
+unsigned int domain_max_vcpus(const struct domain *d)
+{
+    /*
+     * Since evtchn_init would call domain_max_vcpus for poll_mask
+     * allocation when the vgic_ops haven't been initialised yet,
+     * we return MAX_VIRT_CPUS if d->arch.vgic.handler is null.
+     */
+    if ( !d->arch.vgic.handler )
+        return MAX_VIRT_CPUS;
+    else
+        return min_t(unsigned int, MAX_VIRT_CPUS,
+                     d->arch.vgic.handler->max_vcpus);
 }
 
 /*

@@ -297,12 +297,25 @@ static int cpupool_assign_cpu_locked(struct cpupool *c, unsigned int cpu)
 static long cpupool_unassign_cpu_helper(void *info)
 {
     int cpu = cpupool_moving_cpu;
+    struct cpupool *c = info;
+    struct domain *d;
     long ret;
 
     cpupool_dprintk("cpupool_unassign_cpu(pool=%d,cpu=%d)\n",
                     cpupool_cpu_moving->cpupool_id, cpu);
 
     spin_lock(&cpupool_lock);
+    if ( c != cpupool_cpu_moving )
+    {
+        ret = -EBUSY;
+        goto out;
+    }
+
+    /*
+     * We need this for scanning the domain list, both in
+     * cpu_disable_scheduler(), and at the bottom of this function.
+     */
+    rcu_read_lock(&domlist_read_lock);
     ret = cpu_disable_scheduler(cpu);
     cpumask_set_cpu(cpu, &cpupool_free_cpus);
     if ( !ret )
@@ -319,6 +332,11 @@ static long cpupool_unassign_cpu_helper(void *info)
         cpupool_cpu_moving = NULL;
     }
 
+    for_each_domain_in_cpupool(d, c)
+    {
+        domain_update_node_affinity(d);
+    }
+    rcu_read_unlock(&domlist_read_lock);
 out:
     spin_unlock(&cpupool_lock);
     cpupool_dprintk("cpupool_unassign_cpu ret=%ld\n", ret);
@@ -530,6 +548,7 @@ static int cpupool_cpu_remove(unsigned int cpu)
             if ( cpumask_test_cpu(cpu, (*c)->cpu_valid ) )
             {
                 cpumask_set_cpu(cpu, (*c)->cpu_suspended);
+                cpumask_clear_cpu(cpu, (*c)->cpu_valid);
                 break;
             }
         }
@@ -552,6 +571,7 @@ static int cpupool_cpu_remove(unsigned int cpu)
          * If we are not suspending, we are hot-unplugging cpu, and that is
          * allowed only for CPUs in pool0.
          */
+        cpumask_clear_cpu(cpu, cpupool0->cpu_valid);
         ret = 0;
     }
 
@@ -728,10 +748,10 @@ void dump_runq(unsigned char key)
 
     print_cpumap("Online Cpus", &cpu_online_map);
     if ( !cpumask_empty(&cpupool_free_cpus) )
+    {
         print_cpumap("Free Cpus", &cpupool_free_cpus);
-
-    printk("Idle cpupool:\n");
-    schedule_dump(NULL);
+        schedule_dump(NULL);
+    }
 
     for_each_cpupool(c)
     {

@@ -15,8 +15,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 
@@ -87,7 +86,7 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
 
     /* Map the top-level table and call the tree-walker */
     ASSERT(mfn_valid(mfn_x(top_mfn)));
-    top_map = map_domain_page(mfn_x(top_mfn));
+    top_map = map_domain_page(top_mfn);
 #if GUEST_PAGING_LEVELS == 3
     top_map += (cr3 & ~(PAGE_MASK | 31));
 #endif

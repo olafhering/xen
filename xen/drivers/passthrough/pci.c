@@ -11,8 +11,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/sched.h>
@@ -447,7 +446,6 @@ int __init pci_ro_device(int seg, int bus, int devfn)
     }
 
     __set_bit(PCI_BDF2(bus, devfn), pseg->ro_map);
-    arch_pci_ro_device(seg, PCI_BDF2(bus, devfn));
     _pci_hide_device(pdev);
 
     return 0;
@@ -1335,7 +1333,7 @@ static int device_assigned(u16 seg, u8 bus, u8 devfn)
     return pdev ? 0 : -EBUSY;
 }
 
-static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn)
+static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
 {
     struct hvm_iommu *hd = domain_hvm_iommu(d);
     struct pci_dev *pdev;
@@ -1371,7 +1369,7 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn)
 
     pdev->fault.count = 0;
 
-    if ( (rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev))) )
+    if ( (rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev), flag)) )
         goto done;
 
     for ( ; pdev->phantom_stride; rc = 0 )
@@ -1379,7 +1377,7 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn)
         devfn += pdev->phantom_stride;
         if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             break;
-        rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev));
+        rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev), flag);
         if ( rc )
             printk(XENLOG_G_WARNING "d%d: assign %04x:%02x:%02x.%u failed (%d)\n",
                    d->domain_id, seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
@@ -1496,6 +1494,7 @@ int iommu_do_pci_domctl(
 {
     u16 seg;
     u8 bus, devfn;
+    u32 flag;
     int ret = 0;
     uint32_t machine_sbdf;
 
@@ -1577,9 +1576,15 @@ int iommu_do_pci_domctl(
         seg = machine_sbdf >> 16;
         bus = PCI_BUS(machine_sbdf);
         devfn = PCI_DEVFN2(machine_sbdf);
+        flag = domctl->u.assign_device.flag;
+        if ( flag & ~XEN_DOMCTL_DEV_RDM_RELAXED )
+        {
+            ret = -EINVAL;
+            break;
+        }
 
         ret = device_assigned(seg, bus, devfn) ?:
-              assign_device(d, seg, bus, devfn);
+              assign_device(d, seg, bus, devfn, flag);
         if ( ret == -ERESTART )
             ret = hypercall_create_continuation(__HYPERVISOR_domctl,
                                                 "h", u_domctl);

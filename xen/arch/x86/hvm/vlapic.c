@@ -14,8 +14,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -33,12 +32,12 @@
 #include <asm/page.h>
 #include <asm/apic.h>
 #include <asm/io_apic.h>
+#include <asm/vpmu.h>
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/io.h>
 #include <asm/hvm/support.h>
 #include <asm/hvm/vmx/vmx.h>
 #include <asm/hvm/nestedhvm.h>
-#include <asm/hvm/vpmu.h>
 #include <public/hvm/ioreq.h>
 #include <public/hvm/params.h>
 
@@ -421,18 +420,17 @@ void vlapic_EOI_set(struct vlapic *vlapic)
     if ( hvm_funcs.handle_eoi )
         hvm_funcs.handle_eoi(vector);
 
-    if ( vlapic_test_and_clear_vector(vector, &vlapic->regs->data[APIC_TMR]) )
-        vioapic_update_EOI(vlapic_domain(vlapic), vector);
-
-    hvm_dpci_msi_eoi(current->domain, vector);
+    vlapic_handle_EOI(vlapic, vector);
 }
 
-void vlapic_handle_EOI_induced_exit(struct vlapic *vlapic, int vector)
+void vlapic_handle_EOI(struct vlapic *vlapic, u8 vector)
 {
-    if ( vlapic_test_and_clear_vector(vector, &vlapic->regs->data[APIC_TMR]) )
-        vioapic_update_EOI(vlapic_domain(vlapic), vector);
+    struct domain *d = vlapic_domain(vlapic);
 
-    hvm_dpci_msi_eoi(current->domain, vector);
+    if ( vlapic_test_and_clear_vector(vector, &vlapic->regs->data[APIC_TMR]) )
+        vioapic_update_EOI(d, vector);
+
+    hvm_dpci_msi_eoi(d, vector);
 }
 
 static bool_t is_multicast_dest(struct vlapic *vlapic, unsigned int short_hand,
@@ -557,52 +555,42 @@ static void vlapic_set_tdcr(struct vlapic *vlapic, unsigned int val)
                 "timer_divisor: %d", vlapic->hw.timer_divisor);
 }
 
-static void vlapic_read_aligned(
-    struct vlapic *vlapic, unsigned int offset, unsigned int *result)
+static uint32_t vlapic_read_aligned(struct vlapic *vlapic, unsigned int offset)
 {
     switch ( offset )
     {
     case APIC_PROCPRI:
-        *result = vlapic_get_ppr(vlapic);
-        break;
+        return vlapic_get_ppr(vlapic);
 
     case APIC_TMCCT: /* Timer CCR */
         if ( !vlapic_lvtt_oneshot(vlapic) && !vlapic_lvtt_period(vlapic) )
-        {
-            *result = 0;
             break;
-        }
-        *result = vlapic_get_tmcct(vlapic);
-        break;
+        return vlapic_get_tmcct(vlapic);
 
     case APIC_TMICT: /* Timer ICR */
         if ( !vlapic_lvtt_oneshot(vlapic) && !vlapic_lvtt_period(vlapic) )
-        {
-            *result = 0;
             break;
-        }
+        /* fall through */
     default:
-        *result = vlapic_get_reg(vlapic, offset);
-        break;
+        return vlapic_get_reg(vlapic, offset);
     }
+
+    return 0;
 }
 
 static int vlapic_read(
     struct vcpu *v, unsigned long address,
-    unsigned long len, unsigned long *pval)
+    unsigned int len, unsigned long *pval)
 {
-    unsigned int alignment;
-    unsigned int tmp;
-    unsigned long result = 0;
     struct vlapic *vlapic = vcpu_vlapic(v);
     unsigned int offset = address - vlapic_base_address(vlapic);
+    unsigned int alignment = offset & 3, tmp, result = 0;
 
     if ( offset > (APIC_TDCR + 0x3) )
         goto out;
 
-    alignment = offset & 0x3;
+    tmp = vlapic_read_aligned(vlapic, offset & ~3);
 
-    vlapic_read_aligned(vlapic, offset & ~0x3, &tmp);
     switch ( len )
     {
     case 1:
@@ -622,20 +610,20 @@ static int vlapic_read(
         break;
 
     default:
-        gdprintk(XENLOG_ERR, "Local APIC read with len=%#lx, "
+        gdprintk(XENLOG_ERR, "Local APIC read with len=%#x, "
                  "should be 4 instead.\n", len);
         goto exit_and_crash;
     }
 
-    HVM_DBG_LOG(DBG_LEVEL_VLAPIC, "offset %#x with length %#lx, "
-                "and the result is %#lx", offset, len, result);
+    HVM_DBG_LOG(DBG_LEVEL_VLAPIC, "offset %#x with length %#x, "
+                "and the result is %#x", offset, len, result);
 
  out:
     *pval = result;
     return X86EMUL_OKAY;
 
  unaligned_exit_and_crash:
-    gdprintk(XENLOG_ERR, "Unaligned LAPIC read len=%#lx at offset=%#x.\n",
+    gdprintk(XENLOG_ERR, "Unaligned LAPIC read len=%#x at offset=%#x.\n",
              len, offset);
  exit_and_crash:
     domain_crash(v->domain);
@@ -658,19 +646,17 @@ int hvm_x2apic_msr_read(struct vcpu *v, unsigned int msr, uint64_t *msr_content)
 #undef REGBLOCK
         };
     struct vlapic *vlapic = vcpu_vlapic(v);
-    uint32_t low, high = 0, reg = msr - MSR_IA32_APICBASE_MSR,
-        offset = reg << 4;
+    uint32_t high = 0, reg = msr - MSR_IA32_APICBASE_MSR, offset = reg << 4;
 
     if ( !vlapic_x2apic_mode(vlapic) ||
          (reg >= sizeof(readable) * 8) || !test_bit(reg, readable) )
         return X86EMUL_UNHANDLEABLE;
 
     if ( offset == APIC_ICR )
-        vlapic_read_aligned(vlapic, APIC_ICR2, &high);
+        high = vlapic_read_aligned(vlapic, APIC_ICR2);
 
-    vlapic_read_aligned(vlapic, offset, &low);
-
-    *msr_content = (((uint64_t)high) << 32) | low;
+    *msr_content = ((uint64_t)high << 32) |
+                   vlapic_read_aligned(vlapic, offset);
 
     return X86EMUL_OKAY;
 }
@@ -688,7 +674,7 @@ static void vlapic_tdt_pt_cb(struct vcpu *v, void *data)
 }
 
 static int vlapic_reg_write(struct vcpu *v,
-                            unsigned int offset, unsigned long val)
+                            unsigned int offset, uint32_t val)
 {
     struct vlapic *vlapic = vcpu_vlapic(v);
     int rc = X86EMUL_OKAY;
@@ -798,8 +784,7 @@ static int vlapic_reg_write(struct vcpu *v,
             break;
         }
 
-        period = ((uint64_t)APIC_BUS_CYCLE_NS *
-                  (uint32_t)val * vlapic->hw.timer_divisor);
+        period = (uint64_t)APIC_BUS_CYCLE_NS * val * vlapic->hw.timer_divisor;
         TRACE_2_LONG_3D(TRC_HVM_EMUL_LAPIC_START_TIMER, TRC_PAR_LONG(period),
                  TRC_PAR_LONG(vlapic_lvtt_period(vlapic) ? period : 0LL),
                  vlapic->pt.irq);
@@ -812,7 +797,7 @@ static int vlapic_reg_write(struct vcpu *v,
 
         HVM_DBG_LOG(DBG_LEVEL_VLAPIC,
                     "bus cycle is %uns, "
-                    "initial count %lu, period %"PRIu64"ns",
+                    "initial count %u, period %"PRIu64"ns",
                     APIC_BUS_CYCLE_NS, val, period);
     }
     break;
@@ -833,7 +818,7 @@ static int vlapic_reg_write(struct vcpu *v,
 }
 
 static int vlapic_write(struct vcpu *v, unsigned long address,
-                        unsigned long len, unsigned long val)
+                        unsigned int len, unsigned long val)
 {
     struct vlapic *vlapic = vcpu_vlapic(v);
     unsigned int offset = address - vlapic_base_address(vlapic);
@@ -841,54 +826,48 @@ static int vlapic_write(struct vcpu *v, unsigned long address,
 
     if ( offset != APIC_EOI )
         HVM_DBG_LOG(DBG_LEVEL_VLAPIC,
-                    "offset %#x with length %#lx, and value is %#lx",
+                    "offset %#x with length %#x, and value is %#lx",
                     offset, len, val);
 
     /*
      * According to the IA32 Manual, all accesses should be 32 bits.
      * Some OSes do 8- or 16-byte accesses, however.
      */
-    val = (uint32_t)val;
-    if ( len != 4 )
+    if ( unlikely(len != 4) )
     {
-        unsigned int tmp;
-        unsigned char alignment;
-
-        gdprintk(XENLOG_INFO, "Notice: Local APIC write with len = %lx\n",len);
-
-        alignment = offset & 0x3;
-        (void)vlapic_read_aligned(vlapic, offset & ~0x3, &tmp);
+        unsigned int tmp = vlapic_read_aligned(vlapic, offset & ~3);
+        unsigned char alignment = (offset & 3) * 8;
 
         switch ( len )
         {
         case 1:
-            val = ((tmp & ~(0xff << (8*alignment))) |
-                   ((val & 0xff) << (8*alignment)));
+            val = ((tmp & ~(0xffU << alignment)) |
+                   ((val & 0xff) << alignment));
             break;
 
         case 2:
             if ( alignment & 1 )
                 goto unaligned_exit_and_crash;
-            val = ((tmp & ~(0xffff << (8*alignment))) |
-                   ((val & 0xffff) << (8*alignment)));
+            val = ((tmp & ~(0xffffU << alignment)) |
+                   ((val & 0xffff) << alignment));
             break;
 
         default:
-            gdprintk(XENLOG_ERR, "Local APIC write with len = %lx, "
-                     "should be 4 instead\n", len);
+            gprintk(XENLOG_ERR, "LAPIC write with len %u\n", len);
             goto exit_and_crash;
         }
-    }
-    else if ( (offset & 0x3) != 0 )
-        goto unaligned_exit_and_crash;
 
-    offset &= ~0x3;
+        gdprintk(XENLOG_INFO, "Notice: LAPIC write with len %u\n", len);
+        offset &= ~3;
+    }
+    else if ( unlikely(offset & 3) )
+        goto unaligned_exit_and_crash;
 
     return vlapic_reg_write(v, offset, val);
 
  unaligned_exit_and_crash:
-    gdprintk(XENLOG_ERR, "Unaligned LAPIC write len=%#lx at offset=%#x.\n",
-             len, offset);
+    gprintk(XENLOG_ERR, "Unaligned LAPIC write: len=%u offset=%#x.\n",
+            len, offset);
  exit_and_crash:
     domain_crash(v->domain);
     return rc;
@@ -984,7 +963,7 @@ int hvm_x2apic_msr_write(struct vcpu *v, unsigned int msr, uint64_t msr_content)
             return X86EMUL_UNHANDLEABLE;
     }
 
-    return vlapic_reg_write(v, offset, (uint32_t)msr_content);
+    return vlapic_reg_write(v, offset, msr_content);
 }
 
 static int vlapic_range(struct vcpu *v, unsigned long addr)
@@ -997,10 +976,10 @@ static int vlapic_range(struct vcpu *v, unsigned long addr)
            (offset < PAGE_SIZE);
 }
 
-const struct hvm_mmio_handler vlapic_mmio_handler = {
-    .check_handler = vlapic_range,
-    .read_handler = vlapic_read,
-    .write_handler = vlapic_write
+static const struct hvm_mmio_ops vlapic_mmio_ops = {
+    .check = vlapic_range,
+    .read = vlapic_read,
+    .write = vlapic_write
 };
 
 static void set_x2apic_id(struct vlapic *vlapic)
@@ -1462,6 +1441,9 @@ int vlapic_init(struct vcpu *v)
     tasklet_init(&vlapic->init_sipi.tasklet,
                  vlapic_init_sipi_action,
                  (unsigned long)v);
+
+    if ( v->vcpu_id == 0 )
+        register_mmio_handler(v->domain, &vlapic_mmio_ops);
 
     return 0;
 }

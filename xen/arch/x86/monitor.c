@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
+ * License along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -42,27 +40,54 @@ int status_check(struct xen_domctl_monitor_op *mop, bool_t status)
     return 0;
 }
 
-int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
+static inline uint32_t get_capabilities(struct domain *d)
 {
-    int rc;
-    struct arch_domain *ad = &d->arch;
-
-    rc = xsm_vm_event_control(XSM_PRIV, d, mop->op, mop->event);
-    if ( rc )
-        return rc;
+    uint32_t capabilities = 0;
 
     /*
      * At the moment only Intel HVM domains are supported. However, event
      * delivery could be extended to AMD and PV domains.
      */
     if ( !is_hvm_domain(d) || !cpu_has_vmx )
-        return -EOPNOTSUPP;
+        return capabilities;
+
+    capabilities = (1 << XEN_DOMCTL_MONITOR_EVENT_WRITE_CTRLREG) |
+                   (1 << XEN_DOMCTL_MONITOR_EVENT_MOV_TO_MSR) |
+                   (1 << XEN_DOMCTL_MONITOR_EVENT_SOFTWARE_BREAKPOINT) |
+                   (1 << XEN_DOMCTL_MONITOR_EVENT_GUEST_REQUEST);
+
+    /* Since we know this is on VMX, we can just call the hvm func */
+    if ( hvm_is_singlestep_supported() )
+        capabilities |= (1 << XEN_DOMCTL_MONITOR_EVENT_SINGLESTEP);
+
+    return capabilities;
+}
+
+int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
+{
+    int rc;
+    struct arch_domain *ad = &d->arch;
+    uint32_t capabilities = get_capabilities(d);
+
+    rc = xsm_vm_event_control(XSM_PRIV, d, mop->op, mop->event);
+    if ( rc )
+        return rc;
+
+    if ( mop->op == XEN_DOMCTL_MONITOR_OP_GET_CAPABILITIES )
+    {
+        mop->event = capabilities;
+        return 0;
+    }
 
     /*
      * Sanity check
      */
     if ( mop->op != XEN_DOMCTL_MONITOR_OP_ENABLE &&
          mop->op != XEN_DOMCTL_MONITOR_OP_DISABLE )
+        return -EOPNOTSUPP;
+
+    /* Check if event type is available. */
+    if ( !(capabilities & (1 << mop->event)) )
         return -EOPNOTSUPP;
 
     switch ( mop->event )
@@ -101,7 +126,7 @@ int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
         if ( mop->u.mov_to_cr.index == VM_EVENT_X86_CR3 )
             /* Latches new CR3 mask through CR0 code */
             for_each_vcpu ( d, v )
-                hvm_funcs.update_guest_cr(v, 0);
+                hvm_update_guest_cr(v, 0);
 
         break;
     }
@@ -117,11 +142,8 @@ int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
         if ( mop->op == XEN_DOMCTL_MONITOR_OP_ENABLE &&
              mop->u.mov_to_msr.extended_capture )
         {
-            if ( hvm_funcs.enable_msr_exit_interception )
-            {
+            if ( hvm_enable_msr_exit_interception(d) )
                 ad->monitor.mov_to_msr_extended = 1;
-                hvm_funcs.enable_msr_exit_interception(d);
-            }
             else
                 return -EOPNOTSUPP;
         } else
@@ -157,6 +179,22 @@ int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
 
         domain_pause(d);
         ad->monitor.software_breakpoint_enabled = !status;
+        domain_unpause(d);
+        break;
+    }
+
+    case XEN_DOMCTL_MONITOR_EVENT_GUEST_REQUEST:
+    {
+        bool_t status = ad->monitor.guest_request_enabled;
+
+        rc = status_check(mop, status);
+        if ( rc )
+            return rc;
+
+        ad->monitor.guest_request_sync = mop->u.guest_request.sync;
+
+        domain_pause(d);
+        ad->monitor.guest_request_enabled = !status;
         domain_unpause(d);
         break;
     }

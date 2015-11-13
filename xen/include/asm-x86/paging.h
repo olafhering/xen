@@ -18,8 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef _XEN_PAGING_H
@@ -376,7 +375,7 @@ guest_map_l1e(struct vcpu *v, unsigned long addr, unsigned long *gl1mfn)
          != _PAGE_PRESENT )
         return NULL;
     *gl1mfn = l2e_get_pfn(l2e);
-    return (l1_pgentry_t *)map_domain_page(*gl1mfn) + l1_table_offset(addr);
+    return (l1_pgentry_t *)map_domain_page(_mfn(*gl1mfn)) + l1_table_offset(addr);
 }
 
 /* Pull down the mapping we got from guest_map_l1e() */

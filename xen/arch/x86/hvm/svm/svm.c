@@ -13,8 +13,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -1165,7 +1164,9 @@ static int svm_vcpu_initialise(struct vcpu *v)
         return rc;
     }
 
-    vpmu_initialise(v);
+    /* PVH's VPMU is initialized via hypercall */
+    if ( is_hvm_vcpu(v) )
+        vpmu_initialise(v);
 
     svm_guest_osvw_init(v);
 
@@ -1706,7 +1707,8 @@ static int svm_msr_read_intercept(unsigned int msr, uint64_t *msr_content)
     case MSR_AMD_FAM15H_EVNTSEL3:
     case MSR_AMD_FAM15H_EVNTSEL4:
     case MSR_AMD_FAM15H_EVNTSEL5:
-        vpmu_do_rdmsr(msr, msr_content);
+        if ( vpmu_do_rdmsr(msr, msr_content) )
+            goto gpf;
         break;
 
     case MSR_AMD64_DR0_ADDRESS_MASK:
@@ -1857,7 +1859,8 @@ static int svm_msr_write_intercept(unsigned int msr, uint64_t msr_content)
     case MSR_AMD_FAM15H_EVNTSEL3:
     case MSR_AMD_FAM15H_EVNTSEL4:
     case MSR_AMD_FAM15H_EVNTSEL5:
-        vpmu_do_wrmsr(msr, msr_content, 0);
+        if ( vpmu_do_wrmsr(msr, msr_content, 0) )
+            goto gpf;
         break;
 
     case MSR_IA32_MCx_MISC(4): /* Threshold register */
@@ -1945,7 +1948,7 @@ static void svm_do_msr_access(struct cpu_user_regs *regs)
         if ( (inst_len = __get_instruction_length(v, INSTR_WRMSR)) == 0 )
             return;
         msr_content = ((uint64_t)regs->edx << 32) | (uint32_t)regs->eax;
-        rc = hvm_msr_write_intercept(regs->ecx, msr_content);
+        rc = hvm_msr_write_intercept(regs->ecx, msr_content, 1);
     }
 
     if ( rc == X86EMUL_OKAY )
@@ -2274,12 +2277,8 @@ static struct hvm_function_table __initdata svm_function_table = {
     .nhvm_vcpu_initialise = nsvm_vcpu_initialise,
     .nhvm_vcpu_destroy = nsvm_vcpu_destroy,
     .nhvm_vcpu_reset = nsvm_vcpu_reset,
-    .nhvm_vcpu_hostrestore = nsvm_vcpu_hostrestore,
-    .nhvm_vcpu_vmexit = nsvm_vcpu_vmexit_inject,
     .nhvm_vcpu_vmexit_trap = nsvm_vcpu_vmexit_trap,
-    .nhvm_vcpu_guestcr3 = nsvm_vcpu_guestcr3,
     .nhvm_vcpu_p2m_base = nsvm_vcpu_hostcr3,
-    .nhvm_vcpu_asid = nsvm_vcpu_asid,
     .nhvm_vmcx_guest_intercepts_trap = nsvm_vmcb_guest_intercepts_trap,
     .nhvm_vmcx_hap_enabled = nsvm_vmcb_hap_enabled,
     .nhvm_intr_blocked = nsvm_intr_blocked,

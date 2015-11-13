@@ -213,7 +213,7 @@ void dump_pt_walk(paddr_t ttbr, paddr_t addr,
     else
         root_table = 0;
 
-    mapping = map_domain_page(root_pfn + root_table);
+    mapping = map_domain_page(_mfn(root_pfn + root_table));
 
     for ( level = root_level; ; level++ )
     {
@@ -230,7 +230,7 @@ void dump_pt_walk(paddr_t ttbr, paddr_t addr,
 
         /* For next iteration */
         unmap_domain_page(mapping);
-        mapping = map_domain_page(pte.walk.base);
+        mapping = map_domain_page(_mfn(pte.walk.base));
     }
 
     unmap_domain_page(mapping);
@@ -271,11 +271,9 @@ void clear_fixmap(unsigned map)
 }
 
 #ifdef CONFIG_DOMAIN_PAGE
-void *map_domain_page_global(unsigned long mfn)
+void *map_domain_page_global(mfn_t mfn)
 {
-    mfn_t m = _mfn(mfn);
-
-    return vmap(&m, 1);
+    return vmap(&mfn, 1);
 }
 
 void unmap_domain_page_global(const void *va)
@@ -284,11 +282,11 @@ void unmap_domain_page_global(const void *va)
 }
 
 /* Map a page of domheap memory */
-void *map_domain_page(unsigned long mfn)
+void *map_domain_page(mfn_t mfn)
 {
     unsigned long flags;
     lpae_t *map = this_cpu(xen_dommap);
-    unsigned long slot_mfn = mfn & ~LPAE_ENTRY_MASK;
+    unsigned long slot_mfn = mfn_x(mfn) & ~LPAE_ENTRY_MASK;
     vaddr_t va;
     lpae_t pte;
     int i, slot;
@@ -341,7 +339,7 @@ void *map_domain_page(unsigned long mfn)
 
     va = (DOMHEAP_VIRT_START
           + (slot << SECOND_SHIFT)
-          + ((mfn & LPAE_ENTRY_MASK) << THIRD_SHIFT));
+          + ((mfn_x(mfn) & LPAE_ENTRY_MASK) << THIRD_SHIFT));
 
     /*
      * We may not have flushed this specific subpage at map time,
@@ -388,7 +386,7 @@ unsigned long domain_page_map_to_mfn(const void *ptr)
 
 void flush_page_to_ram(unsigned long mfn)
 {
-    void *v = map_domain_page(mfn);
+    void *v = map_domain_page(_mfn(mfn));
 
     clean_and_invalidate_dcache_va_range(v, PAGE_SIZE);
     unmap_domain_page(v);
@@ -1050,7 +1048,7 @@ int xenmem_add_to_physmap_one(
     switch ( space )
     {
     case XENMAPSPACE_grant_table:
-        spin_lock(&d->grant_table->lock);
+        write_lock(&d->grant_table->lock);
 
         if ( d->grant_table->gt_version == 0 )
             d->grant_table->gt_version = 1;
@@ -1080,7 +1078,7 @@ int xenmem_add_to_physmap_one(
 
         t = p2m_ram_rw;
 
-        spin_unlock(&d->grant_table->lock);
+        write_unlock(&d->grant_table->lock);
         break;
     case XENMAPSPACE_shared_info:
         if ( idx != 0 )
@@ -1116,7 +1114,6 @@ int xenmem_add_to_physmap_one(
         page = get_page_from_gfn(od, idx, &p2mt, P2M_ALLOC);
         if ( !page )
         {
-            dump_p2m_lookup(od, pfn_to_paddr(idx));
             rcu_unlock_domain(od);
             return -EINVAL;
         }
@@ -1172,6 +1169,7 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
 struct domain *page_get_owner_and_reference(struct page_info *page)
 {
     unsigned long x, y = page->count_info;
+    struct domain *owner;
 
     do {
         x = y;
@@ -1184,7 +1182,10 @@ struct domain *page_get_owner_and_reference(struct page_info *page)
     }
     while ( (y = cmpxchg(&page->count_info, x, x + 1)) != x );
 
-    return page_get_owner(page);
+    owner = page_get_owner(page);
+    ASSERT(owner);
+
+    return owner;
 }
 
 void put_page(struct page_info *page)

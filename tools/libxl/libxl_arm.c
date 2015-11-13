@@ -61,7 +61,40 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     xc_config->nr_spis = nr_spis;
     LOG(DEBUG, " - Allocate %u SPIs", nr_spis);
 
-    xc_config->gic_version = XEN_DOMCTL_CONFIG_GIC_DEFAULT;
+    switch (d_config->b_info.arch_arm.gic_version) {
+    case LIBXL_GIC_VERSION_DEFAULT:
+        xc_config->gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
+        break;
+    case LIBXL_GIC_VERSION_V2:
+        xc_config->gic_version = XEN_DOMCTL_CONFIG_GIC_V2;
+        break;
+    case LIBXL_GIC_VERSION_V3:
+        xc_config->gic_version = XEN_DOMCTL_CONFIG_GIC_V3;
+        break;
+    default:
+        LOG(ERROR, "Unknown GIC version %d",
+            d_config->b_info.arch_arm.gic_version);
+        return ERROR_FAIL;
+    }
+
+    return 0;
+}
+
+int libxl__arch_domain_save_config(libxl__gc *gc,
+                                   libxl_domain_config *d_config,
+                                   const xc_domain_configuration_t *xc_config)
+{
+    switch (xc_config->gic_version) {
+    case XEN_DOMCTL_CONFIG_GIC_V2:
+        d_config->b_info.arch_arm.gic_version = LIBXL_GIC_VERSION_V2;
+        break;
+    case XEN_DOMCTL_CONFIG_GIC_V3:
+        d_config->b_info.arch_arm.gic_version = LIBXL_GIC_VERSION_V3;
+        break;
+    default:
+        LOG(ERROR, "Unexpected gic version %u", xc_config->gic_version);
+        return ERROR_FAIL;
+    }
 
     return 0;
 }
@@ -227,6 +260,7 @@ static int make_root_properties(libxl__gc *gc,
 }
 
 static int make_chosen_node(libxl__gc *gc, void *fdt, bool ramdisk,
+                            libxl__domain_build_state *state,
                             const libxl_domain_build_info *info)
 {
     int res;
@@ -235,8 +269,9 @@ static int make_chosen_node(libxl__gc *gc, void *fdt, bool ramdisk,
     res = fdt_begin_node(fdt, "chosen");
     if (res) return res;
 
-    if (info->cmdline) {
-        res = fdt_property_string(fdt, "bootargs", info->cmdline);
+    if (state->pv_cmdline) {
+        LOG(DEBUG, "/chosen/bootargs = %s", state->pv_cmdline);
+        res = fdt_property_string(fdt, "bootargs", state->pv_cmdline);
         if (res) return res;
     }
 
@@ -259,6 +294,7 @@ static int make_cpus_node(libxl__gc *gc, void *fdt, int nr_cpus,
                           const struct arch_info *ainfo)
 {
     int res, i;
+    uint64_t mpidr_aff;
 
     res = fdt_begin_node(fdt, "cpus");
     if (res) return res;
@@ -270,7 +306,16 @@ static int make_cpus_node(libxl__gc *gc, void *fdt, int nr_cpus,
     if (res) return res;
 
     for (i = 0; i < nr_cpus; i++) {
-        const char *name = GCSPRINTF("cpu@%d", i);
+        const char *name;
+
+        /*
+         * According to ARM CPUs bindings, the reg field should match
+         * the MPIDR's affinity bits. We will use AFF0 and AFF1 when
+         * constructing the reg value of the guest at the moment, for it
+         * is enough for the current max vcpu number.
+         */
+        mpidr_aff = (i & 0x0f) | (((i >> 4) & 0xff) << 8);
+        name = GCSPRINTF("cpu@%"PRIx64, mpidr_aff);
 
         res = fdt_begin_node(fdt, name);
         if (res) return res;
@@ -284,7 +329,7 @@ static int make_cpus_node(libxl__gc *gc, void *fdt, int nr_cpus,
         res = fdt_property_string(fdt, "enable-method", "psci");
         if (res) return res;
 
-        res = fdt_property_regs(gc, fdt, 1, 0, 1, (uint64_t)i);
+        res = fdt_property_regs(gc, fdt, 1, 0, 1, mpidr_aff);
         if (res) return res;
 
         res = fdt_end_node(fdt);
@@ -444,7 +489,9 @@ static int make_gicv3_node(libxl__gc *gc, void *fdt)
     return 0;
 }
 
-static int make_timer_node(libxl__gc *gc, void *fdt, const struct arch_info *ainfo)
+static int make_timer_node(libxl__gc *gc, void *fdt,
+                           const struct arch_info *ainfo,
+                           uint32_t frequency)
 {
     int res;
     gic_interrupt ints[3];
@@ -461,6 +508,9 @@ static int make_timer_node(libxl__gc *gc, void *fdt, const struct arch_info *ain
 
     res = fdt_property_interrupts(gc, fdt, ints, 3);
     if (res) return res;
+
+    if ( frequency )
+        fdt_property_u32(fdt, "clock-frequency", frequency);
 
     res = fdt_end_node(fdt);
     if (res) return res;
@@ -516,7 +566,7 @@ static const struct arch_info *get_arch_info(libxl__gc *gc,
         if (!strcmp(dom->guest_type, info->guest_type))
             return info;
     }
-    LOG(ERROR, "Unable to find arch FDT info for %s\n", dom->guest_type);
+    LOG(ERROR, "Unable to find arch FDT info for %s", dom->guest_type);
     return NULL;
 }
 
@@ -783,7 +833,7 @@ next_resize:
         FDT( fdt_begin_node(fdt, "") );
 
         FDT( make_root_properties(gc, vers, fdt) );
-        FDT( make_chosen_node(gc, fdt, !!dom->ramdisk_blob, info) );
+        FDT( make_chosen_node(gc, fdt, !!dom->ramdisk_blob, state, info) );
         FDT( make_cpus_node(gc, fdt, info->max_vcpus, ainfo) );
         FDT( make_psci_node(gc, fdt) );
 
@@ -805,7 +855,7 @@ next_resize:
             goto out;
         }
 
-        FDT( make_timer_node(gc, fdt, ainfo) );
+        FDT( make_timer_node(gc, fdt, ainfo, xc_config->clock_frequency) );
         FDT( make_hypervisor_node(gc, fdt, vers) );
 
         if (pfdt)
@@ -919,6 +969,14 @@ int libxl__arch_vnuma_build_vmemrange(libxl__gc *gc,
 int libxl__arch_domain_map_irq(libxl__gc *gc, uint32_t domid, int irq)
 {
     return xc_domain_bind_pt_spi_irq(CTX->xch, domid, irq, irq);
+}
+
+int libxl__arch_domain_construct_memmap(libxl__gc *gc,
+                                        libxl_domain_config *d_config,
+                                        uint32_t domid,
+                                        struct xc_hvm_build_args *args)
+{
+    return 0;
 }
 
 /*

@@ -14,8 +14,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
+ * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <asm/hvm/vpt.h>
@@ -142,7 +141,7 @@ static void pmt_timer_callback(void *opaque)
 
 /* Handle port I/O to the PM1a_STS and PM1a_EN registers */
 static int handle_evt_io(
-    int dir, uint32_t port, uint32_t bytes, uint32_t *val)
+    int dir, unsigned int port, unsigned int bytes, uint32_t *val)
 {
     struct vcpu *v = current;
     PMTState *s = &v->domain->arch.hvm_domain.pl_time.vpmt;
@@ -205,7 +204,7 @@ static int handle_evt_io(
 
 /* Handle port I/O to the TMR_VAL register */
 static int handle_pmt_io(
-    int dir, uint32_t port, uint32_t bytes, uint32_t *val)
+    int dir, unsigned int port, unsigned int bytes, uint32_t *val)
 {
     struct vcpu *v = current;
     PMTState *s = &v->domain->arch.hvm_domain.pl_time.vpmt;

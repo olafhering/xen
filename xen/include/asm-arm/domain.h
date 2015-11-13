@@ -77,6 +77,8 @@ struct arch_domain
     } virt_timer_base;
 
     struct {
+        /* Version of the vGIC */
+        enum gic_version version;
         /* GIC HW version specific vGIC driver handler */
         const struct vgic_ops *handler;
         /*
@@ -101,9 +103,8 @@ struct arch_domain
         /* Base address for guest GIC */
         paddr_t dbase; /* Distributor base address */
         paddr_t cbase; /* CPU base address */
-#ifdef CONFIG_ARM_64
+#ifdef HAS_GICV3
         /* GIC V3 addressing */
-        paddr_t dbase_size; /* Distributor base size */
         /* List of contiguous occupied by the redistributors */
         struct vgic_rdist_region {
             paddr_t base;                   /* Base address */
@@ -260,9 +261,44 @@ struct arch_vcpu
 void vcpu_show_execution_state(struct vcpu *);
 void vcpu_show_registers(const struct vcpu *);
 
-static inline unsigned int domain_max_vcpus(const struct domain *d)
+unsigned int domain_max_vcpus(const struct domain *);
+
+/*
+ * Due to the restriction of GICv3, the number of vCPUs in AFF0 is
+ * limited to 16, thus only the first 4 bits of AFF0 are legal. We will
+ * use the first 2 affinity levels here, expanding the number of vCPU up
+ * to 4096(==16*256), which is more than the PEs that GIC-500 supports.
+ *
+ * Since we don't save information of vCPU's topology (affinity) in
+ * vMPIDR at the moment, we map the vcpuid to the vMPIDR linearly.
+ */
+static inline unsigned int vaffinity_to_vcpuid(register_t vaff)
 {
-    return MAX_VIRT_CPUS;
+    unsigned int vcpuid;
+
+    vaff &= MPIDR_HWID_MASK;
+
+    vcpuid = MPIDR_AFFINITY_LEVEL(vaff, 0);
+    vcpuid |= MPIDR_AFFINITY_LEVEL(vaff, 1) << 4;
+
+    return vcpuid;
+}
+
+static inline register_t vcpuid_to_vaffinity(unsigned int vcpuid)
+{
+    register_t vaff;
+
+    /*
+     * Right now only AFF0 and AFF1 are supported in virtual affinity.
+     * Since only the first 4 bits in AFF0 are used in GICv3, the
+     * available bits are 12 (4+8).
+     */
+    BUILD_BUG_ON(!(MAX_VIRT_CPUS < ((1 << 12))));
+
+    vaff = (vcpuid & 0x0f) << MPIDR_LEVEL_SHIFT(0);
+    vaff |= ((vcpuid >> 4) & MPIDR_LEVEL_MASK) << MPIDR_LEVEL_SHIFT(1);
+
+    return vaff;
 }
 
 #endif /* __ASM_DOMAIN_H__ */

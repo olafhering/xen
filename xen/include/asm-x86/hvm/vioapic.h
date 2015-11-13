@@ -18,8 +18,7 @@
  *  Lesser General Public License for more details.
  *
  *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *  License along with this library; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __ASM_X86_HVM_VIOAPIC_H__
@@ -62,6 +61,6 @@ int vioapic_init(struct domain *d);
 void vioapic_deinit(struct domain *d);
 void vioapic_reset(struct domain *d);
 void vioapic_irq_positive_edge(struct domain *d, unsigned int irq);
-void vioapic_update_EOI(struct domain *d, int vector);
+void vioapic_update_EOI(struct domain *d, u8 vector);
 
 #endif /* __ASM_X86_HVM_VIOAPIC_H__ */

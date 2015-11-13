@@ -66,7 +66,7 @@ void __init mapcache_override_current(struct vcpu *v)
 #define MAPCACHE_L1ENT(idx) \
     __linear_l1_table[l1_linear_offset(MAPCACHE_VIRT_START + pfn_to_paddr(idx))]
 
-void *map_domain_page(unsigned long mfn)
+void *map_domain_page(mfn_t mfn)
 {
     unsigned long flags;
     unsigned int idx, i;
@@ -76,31 +76,31 @@ void *map_domain_page(unsigned long mfn)
     struct vcpu_maphash_entry *hashent;
 
 #ifdef NDEBUG
-    if ( mfn <= PFN_DOWN(__pa(HYPERVISOR_VIRT_END - 1)) )
-        return mfn_to_virt(mfn);
+    if ( mfn_x(mfn) <= PFN_DOWN(__pa(HYPERVISOR_VIRT_END - 1)) )
+        return mfn_to_virt(mfn_x(mfn));
 #endif
 
     v = mapcache_current_vcpu();
     if ( !v || !is_pv_vcpu(v) )
-        return mfn_to_virt(mfn);
+        return mfn_to_virt(mfn_x(mfn));
 
     dcache = &v->domain->arch.pv_domain.mapcache;
     vcache = &v->arch.pv_vcpu.mapcache;
     if ( !dcache->inuse )
-        return mfn_to_virt(mfn);
+        return mfn_to_virt(mfn_x(mfn));
 
     perfc_incr(map_domain_page_count);
 
     local_irq_save(flags);
 
-    hashent = &vcache->hash[MAPHASH_HASHFN(mfn)];
-    if ( hashent->mfn == mfn )
+    hashent = &vcache->hash[MAPHASH_HASHFN(mfn_x(mfn))];
+    if ( hashent->mfn == mfn_x(mfn) )
     {
         idx = hashent->idx;
         ASSERT(idx < dcache->entries);
         hashent->refcnt++;
         ASSERT(hashent->refcnt);
-        ASSERT(l1e_get_pfn(MAPCACHE_L1ENT(idx)) == mfn);
+        ASSERT(l1e_get_pfn(MAPCACHE_L1ENT(idx)) == mfn_x(mfn));
         goto out;
     }
 
@@ -135,7 +135,7 @@ void *map_domain_page(unsigned long mfn)
         else
         {
             /* Replace a hash entry instead. */
-            i = MAPHASH_HASHFN(mfn);
+            i = MAPHASH_HASHFN(mfn_x(mfn));
             do {
                 hashent = &vcache->hash[i];
                 if ( hashent->idx != MAPHASHENT_NOTINUSE && !hashent->refcnt )
@@ -149,7 +149,7 @@ void *map_domain_page(unsigned long mfn)
                 }
                 if ( ++i == MAPHASH_ENTRIES )
                     i = 0;
-            } while ( i != MAPHASH_HASHFN(mfn) );
+            } while ( i != MAPHASH_HASHFN(mfn_x(mfn)) );
         }
         BUG_ON(idx >= dcache->entries);
 
@@ -165,7 +165,7 @@ void *map_domain_page(unsigned long mfn)
 
     spin_unlock(&dcache->lock);
 
-    l1e_write(&MAPCACHE_L1ENT(idx), l1e_from_pfn(mfn, __PAGE_HYPERVISOR_RW));
+    l1e_write(&MAPCACHE_L1ENT(idx), l1e_from_pfn(mfn_x(mfn), __PAGE_HYPERVISOR_RW));
 
  out:
     local_irq_restore(flags);
@@ -228,24 +228,6 @@ void unmap_domain_page(const void *ptr)
     }
 
     local_irq_restore(flags);
-}
-
-void clear_domain_page(unsigned long mfn)
-{
-    void *ptr = map_domain_page(mfn);
-
-    clear_page(ptr);
-    unmap_domain_page(ptr);
-}
-
-void copy_domain_page(unsigned long dmfn, unsigned long smfn)
-{
-    const void *src = map_domain_page(smfn);
-    void *dst = map_domain_page(dmfn);
-
-    copy_page(dst, src);
-    unmap_domain_page(dst);
-    unmap_domain_page(src);
 }
 
 int mapcache_domain_init(struct domain *d)
@@ -320,17 +302,16 @@ int mapcache_vcpu_init(struct vcpu *v)
     return 0;
 }
 
-void *map_domain_page_global(unsigned long mfn)
+void *map_domain_page_global(mfn_t mfn)
 {
-    mfn_t m = _mfn(mfn);
     ASSERT(!in_irq() && local_irq_is_enabled());
 
 #ifdef NDEBUG
-    if ( mfn <= PFN_DOWN(__pa(HYPERVISOR_VIRT_END - 1)) )
-        return mfn_to_virt(mfn);
+    if ( mfn_x(mfn) <= PFN_DOWN(__pa(HYPERVISOR_VIRT_END - 1)) )
+        return mfn_to_virt(mfn_x(mfn));
 #endif
 
-    return vmap(&m, 1);
+    return vmap(&mfn, 1);
 }
 
 void unmap_domain_page_global(const void *ptr)

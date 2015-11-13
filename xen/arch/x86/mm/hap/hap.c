@@ -16,8 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/config.h>
@@ -395,7 +394,7 @@ static void hap_install_xen_entries_in_l4(struct vcpu *v, mfn_t l4mfn)
     struct domain *d = v->domain;
     l4_pgentry_t *l4e;
 
-    l4e = hap_map_domain_page(l4mfn);
+    l4e = map_domain_page(l4mfn);
 
     /* Copy the common Xen mappings from the idle domain */
     memcpy(&l4e[ROOT_PAGETABLE_FIRST_XEN_SLOT],
@@ -411,7 +410,7 @@ static void hap_install_xen_entries_in_l4(struct vcpu *v, mfn_t l4mfn)
     l4e[l4_table_offset(LINEAR_PT_VIRT_START)] =
         l4e_from_pfn(mfn_x(l4mfn), __PAGE_HYPERVISOR);
 
-    hap_unmap_domain_page(l4e);
+    unmap_domain_page(l4e);
 }
 
 static mfn_t hap_make_monitor_table(struct vcpu *v)
@@ -459,7 +458,7 @@ void hap_domain_init(struct domain *d)
 int hap_enable(struct domain *d, u32 mode)
 {
     unsigned int old_pages;
-    uint8_t i;
+    unsigned int i;
     int rv = 0;
 
     domain_pause(d);
@@ -498,6 +497,28 @@ int hap_enable(struct domain *d, u32 mode)
            goto out;
     }
 
+    if ( hvm_altp2m_supported() )
+    {
+        /* Init alternate p2m data */
+        if ( (d->arch.altp2m_eptp = alloc_xenheap_page()) == NULL )
+        {
+            rv = -ENOMEM;
+            goto out;
+        }
+
+        for ( i = 0; i < MAX_EPTP; i++ )
+            d->arch.altp2m_eptp[i] = INVALID_MFN;
+
+        for ( i = 0; i < MAX_ALTP2M; i++ )
+        {
+            rv = p2m_alloc_table(d->arch.altp2m_p2m[i]);
+            if ( rv != 0 )
+               goto out;
+        }
+
+        d->arch.altp2m_active = 0;
+    }
+
     /* Now let other users see the new mode */
     d->arch.paging.mode = mode | PG_HAP_enable;
 
@@ -508,7 +529,21 @@ int hap_enable(struct domain *d, u32 mode)
 
 void hap_final_teardown(struct domain *d)
 {
-    uint8_t i;
+    unsigned int i;
+
+    if ( hvm_altp2m_supported() )
+    {
+        d->arch.altp2m_active = 0;
+
+        if ( d->arch.altp2m_eptp )
+        {
+            free_xenheap_page(d->arch.altp2m_eptp);
+            d->arch.altp2m_eptp = NULL;
+        }
+
+        for ( i = 0; i < MAX_ALTP2M; i++ )
+            p2m_teardown(d->arch.altp2m_p2m[i]);
+    }
 
     /* Destroy nestedp2m's first */
     for (i = 0; i < MAX_NESTEDP2M; i++) {
@@ -516,7 +551,7 @@ void hap_final_teardown(struct domain *d)
     }
 
     if ( d->arch.paging.hap.total_pages != 0 )
-        hap_teardown(d);
+        hap_teardown(d, NULL);
 
     p2m_teardown(p2m_get_hostp2m(d));
     /* Free any memory that the p2m teardown released */
@@ -526,7 +561,7 @@ void hap_final_teardown(struct domain *d)
     paging_unlock(d);
 }
 
-void hap_teardown(struct domain *d)
+void hap_teardown(struct domain *d, int *preempted)
 {
     struct vcpu *v;
     mfn_t mfn;
@@ -554,18 +589,11 @@ void hap_teardown(struct domain *d)
 
     if ( d->arch.paging.hap.total_pages != 0 )
     {
-        HAP_PRINTK("teardown of domain %u starts."
-                      "  pages total = %u, free = %u, p2m=%u\n",
-                      d->domain_id,
-                      d->arch.paging.hap.total_pages,
-                      d->arch.paging.hap.free_pages,
-                      d->arch.paging.hap.p2m_pages);
-        hap_set_allocation(d, 0, NULL);
-        HAP_PRINTK("teardown done."
-                      "  pages total = %u, free = %u, p2m=%u\n",
-                      d->arch.paging.hap.total_pages,
-                      d->arch.paging.hap.free_pages,
-                      d->arch.paging.hap.p2m_pages);
+        hap_set_allocation(d, 0, preempted);
+
+        if ( preempted && *preempted )
+            goto out;
+
         ASSERT(d->arch.paging.hap.total_pages == 0);
     }
 
@@ -574,6 +602,7 @@ void hap_teardown(struct domain *d)
     xfree(d->arch.hvm_domain.dirty_vram);
     d->arch.hvm_domain.dirty_vram = NULL;
 
+out:
     paging_unlock(d);
 }
 

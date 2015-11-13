@@ -21,6 +21,12 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
                                       libxl_domain_config *d_config,
                                       xc_domain_configuration_t *xc_config);
 
+/* save the arch specific configuration for the domain */
+_hidden
+int libxl__arch_domain_save_config(libxl__gc *gc,
+                                   libxl_domain_config *d_config,
+                                   const xc_domain_configuration_t *xc_config);
+
 /* arch specific internal domain creation function */
 _hidden
 int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
@@ -48,5 +54,12 @@ int libxl__arch_vnuma_build_vmemrange(libxl__gc *gc,
 /* arch specific irq map function */
 _hidden
 int libxl__arch_domain_map_irq(libxl__gc *gc, uint32_t domid, int irq);
+
+/* arch specific to construct memory mapping function */
+_hidden
+int libxl__arch_domain_construct_memmap(libxl__gc *gc,
+                                        libxl_domain_config *d_config,
+                                        uint32_t domid,
+                                        struct xc_hvm_build_args *args);
 
 #endif

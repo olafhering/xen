@@ -667,7 +667,7 @@ static PyObject *pyxc_assign_device(XcObject *self,
         sbdf |= (dev & 0x1f) << 3;
         sbdf |= (func & 0x7);
 
-        if ( xc_assign_device(self->xc_handle, dom, sbdf) != 0 )
+        if ( xc_assign_device(self->xc_handle, dom, sbdf, 0) != 0 )
         {
             if (errno == ENOSYS)
                 sbdf = -1;
@@ -1210,6 +1210,7 @@ static PyObject *pyxc_getcpuinfo(XcObject *self, PyObject *args, PyObject *kwds)
     for (i = 0; i < nr_cpus; i++) {
         cpuinfo_obj = Py_BuildValue("{s:k}", "idletime", cpuinfo_ptr->idletime);
         PyList_Append(cpuinfo_list_obj, cpuinfo_obj);
+        Py_DECREF(cpuinfo_obj);
         cpuinfo_ptr++;
     }
 
@@ -1431,51 +1432,6 @@ static PyObject *pyxc_xeninfo(XcObject *self)
                          "cc_compile_by", xen_cc.compile_by,
                          "cc_compile_domain", xen_cc.compile_domain,
                          "cc_compile_date", xen_cc.compile_date);
-}
-
-
-static PyObject *pyxc_sedf_domain_set(XcObject *self,
-                                      PyObject *args,
-                                      PyObject *kwds)
-{
-    uint32_t domid;
-    uint64_t period, slice, latency;
-    uint16_t extratime, weight;
-    static char *kwd_list[] = { "domid", "period", "slice",
-                                "latency", "extratime", "weight",NULL };
-    
-    if( !PyArg_ParseTupleAndKeywords(args, kwds, "iLLLhh", kwd_list, 
-                                     &domid, &period, &slice,
-                                     &latency, &extratime, &weight) )
-        return NULL;
-   if ( xc_sedf_domain_set(self->xc_handle, domid, period,
-                           slice, latency, extratime,weight) != 0 )
-        return pyxc_error_to_exception(self->xc_handle);
-
-    Py_INCREF(zero);
-    return zero;
-}
-
-static PyObject *pyxc_sedf_domain_get(XcObject *self, PyObject *args)
-{
-    uint32_t domid;
-    uint64_t period, slice,latency;
-    uint16_t weight, extratime;
-    
-    if(!PyArg_ParseTuple(args, "i", &domid))
-        return NULL;
-    
-    if (xc_sedf_domain_get(self->xc_handle, domid, &period,
-                           &slice,&latency,&extratime,&weight))
-        return pyxc_error_to_exception(self->xc_handle);
-
-    return Py_BuildValue("{s:i,s:L,s:L,s:L,s:i,s:i}",
-                         "domid",    domid,
-                         "period",    period,
-                         "slice",     slice,
-                         "latency",   latency,
-                         "extratime", extratime,
-                         "weight",    weight);
 }
 
 static PyObject *pyxc_shadow_control(PyObject *self,
@@ -1843,36 +1799,35 @@ static PyObject *pyxc_tmem_control(XcObject *self,
     uint32_t cli_id;
     uint32_t arg1;
     uint32_t arg2;
-    uint64_t arg3;
     char *buf;
     char _buffer[32768], *buffer = _buffer;
     int rc;
 
-    static char *kwd_list[] = { "pool_id", "subop", "cli_id", "arg1", "arg2", "arg3", "buf", NULL };
+    static char *kwd_list[] = { "pool_id", "subop", "cli_id", "arg1", "arg2", "buf", NULL };
 
     if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iiiiiis", kwd_list,
-                        &pool_id, &subop, &cli_id, &arg1, &arg2, &arg3, &buf) )
+                        &pool_id, &subop, &cli_id, &arg1, &arg2, &buf) )
         return NULL;
 
-    if ( (subop == TMEMC_LIST) && (arg1 > 32768) )
+    if ( (subop == XEN_SYSCTL_TMEM_OP_LIST) && (arg1 > 32768) )
         arg1 = 32768;
 
-    if ( (rc = xc_tmem_control(self->xc_handle, pool_id, subop, cli_id, arg1, arg2, arg3, buffer)) < 0 )
+    if ( (rc = xc_tmem_control(self->xc_handle, pool_id, subop, cli_id, arg1, arg2, buffer)) < 0 )
         return Py_BuildValue("i", rc);
 
     switch (subop) {
-        case TMEMC_LIST:
+        case XEN_SYSCTL_TMEM_OP_LIST:
             return Py_BuildValue("s", buffer);
-        case TMEMC_FLUSH:
+        case XEN_SYSCTL_TMEM_OP_FLUSH:
             return Py_BuildValue("i", rc);
-        case TMEMC_QUERY_FREEABLE_MB:
+        case XEN_SYSCTL_TMEM_OP_QUERY_FREEABLE_MB:
             return Py_BuildValue("i", rc);
-        case TMEMC_THAW:
-        case TMEMC_FREEZE:
-        case TMEMC_DESTROY:
-        case TMEMC_SET_WEIGHT:
-        case TMEMC_SET_CAP:
-        case TMEMC_SET_COMPRESS:
+        case XEN_SYSCTL_TMEM_OP_THAW:
+        case XEN_SYSCTL_TMEM_OP_FREEZE:
+        case XEN_SYSCTL_TMEM_OP_DESTROY:
+        case XEN_SYSCTL_TMEM_OP_SET_WEIGHT:
+        case XEN_SYSCTL_TMEM_OP_SET_CAP:
+        case XEN_SYSCTL_TMEM_OP_SET_COMPRESS:
         default:
             break;
     }
@@ -2490,30 +2445,6 @@ static PyMethodDef pyxc_methods[] = {
       "Get the current scheduler type in use.\n"
       "Returns: [int] sched_id.\n" },    
 
-    { "sedf_domain_set",
-      (PyCFunction)pyxc_sedf_domain_set,
-      METH_KEYWORDS, "\n"
-      "Set the scheduling parameters for a domain when running with Atropos.\n"
-      " dom       [int]:  domain to set\n"
-      " period    [long]: domain's scheduling period\n"
-      " slice     [long]: domain's slice per period\n"
-      " latency   [long]: domain's wakeup latency hint\n"
-      " extratime [int]:  domain aware of extratime?\n"
-      "Returns: [int] 0 on success; -1 on error.\n" },
-
-    { "sedf_domain_get",
-      (PyCFunction)pyxc_sedf_domain_get,
-      METH_VARARGS, "\n"
-      "Get the current scheduling parameters for a domain when running with\n"
-      "the Atropos scheduler."
-      " dom       [int]: domain to query\n"
-      "Returns:   [dict]\n"
-      " domain    [int]: domain ID\n"
-      " period    [long]: scheduler period\n"
-      " slice     [long]: CPU reservation per period\n"
-      " latency   [long]: domain's wakeup latency hint\n"
-      " extratime [int]:  domain aware of extratime?\n"},
-    
     { "sched_credit_domain_set",
       (PyCFunction)pyxc_sched_credit_domain_set,
       METH_KEYWORDS, "\n"
@@ -3033,7 +2964,6 @@ PyMODINIT_FUNC initxc(void)
     PyModule_AddObject(m, "Error", xc_error_obj);
 
     /* Expose some libxc constants to Python */
-    PyModule_AddIntConstant(m, "XEN_SCHEDULER_SEDF", XEN_SCHEDULER_SEDF);
     PyModule_AddIntConstant(m, "XEN_SCHEDULER_CREDIT", XEN_SCHEDULER_CREDIT);
     PyModule_AddIntConstant(m, "XEN_SCHEDULER_CREDIT2", XEN_SCHEDULER_CREDIT2);
 

@@ -4,14 +4,13 @@ include $(XEN_ROOT)/tools/Rules.mk
 CFLAGS += -Werror
 
 CFLAGS += $(CFLAGS_libxenctrl)
-LDLIBS += $(LDLIBS_libxenctrl)
+LDLIBS += $(LDLIBS_libxenctrl) $(ARGP_LDFLAGS)
 
-BIN      =
+BIN-$(CONFIG_X86) = xenalyze
+BIN      = $(BIN-y)
 SBIN     = xentrace xentrace_setsize
 LIBBIN   = xenctx
 SCRIPTS  = xentrace_format
-MAN1     = $(wildcard *.1)
-MAN8     = $(wildcard *.8)
 
 .PHONY: all
 all: build
@@ -24,13 +23,12 @@ install: build
 	$(INSTALL_DIR) $(DESTDIR)$(bindir)
 	$(INSTALL_DIR) $(DESTDIR)$(sbindir)
 	[ -z "$(LIBBIN)" ] || $(INSTALL_DIR) $(DESTDIR)$(LIBEXEC_BIN)
-	$(INSTALL_DIR) $(DESTDIR)$(MAN1DIR)
-	$(INSTALL_DIR) $(DESTDIR)$(MAN8DIR)
+ifneq ($(BIN),)
+	$(INSTALL_PROG) $(BIN) $(DESTDIR)$(bindir)
+endif
 	$(INSTALL_PROG) $(SBIN) $(DESTDIR)$(sbindir)
 	$(INSTALL_PYTHON_PROG) $(SCRIPTS) $(DESTDIR)$(bindir)
 	[ -z "$(LIBBIN)" ] || $(INSTALL_PROG) $(LIBBIN) $(DESTDIR)$(LIBEXEC_BIN)
-	$(INSTALL_DATA) $(MAN1) $(DESTDIR)$(MAN1DIR)
-	$(INSTALL_DATA) $(MAN8) $(DESTDIR)$(MAN8DIR)
 
 .PHONY: clean
 clean:
@@ -47,6 +45,9 @@ xenctx: xenctx.o
 
 xentrace_setsize: setsize.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS) $(APPEND_LDFLAGS)
+
+xenalyze: xenalyze.o mread.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS) $(APPEND_LDFLAGS)
 
 -include $(DEPS)
 

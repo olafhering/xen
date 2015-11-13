@@ -84,7 +84,7 @@ static int write_batch(struct xc_sr_context *ctx)
     void **guest_data = NULL;
     void **local_pages = NULL;
     int *errors = NULL, rc = -1;
-    unsigned i, p, nr_pages = 0;
+    unsigned i, p, nr_pages = 0, nr_pages_mapped = 0;
     unsigned nr_pfns = ctx->save.nr_batch_pfns;
     void *page, *orig_page;
     uint64_t *rec_pfns = NULL;
@@ -160,6 +160,7 @@ static int write_batch(struct xc_sr_context *ctx)
             PERROR("Failed to map guest pages");
             goto err;
         }
+        nr_pages_mapped = nr_pages;
 
         for ( i = 0, p = 0; i < nr_pfns; ++i )
         {
@@ -262,7 +263,7 @@ static int write_batch(struct xc_sr_context *ctx)
  err:
     free(rec_pfns);
     if ( guest_mapping )
-        munmap(guest_mapping, nr_pages * PAGE_SIZE);
+        munmap(guest_mapping, nr_pages_mapped * PAGE_SIZE);
     for ( i = 0; local_pages && i < nr_pfns; ++i )
         free(local_pages[i]);
     free(iov);
@@ -450,7 +451,7 @@ static int update_progress_string(struct xc_sr_context *ctx,
     xc_interface *xch = ctx->xch;
     char *new_str = NULL;
 
-    if ( asprintf(&new_str, "Memory iteration %u of %u",
+    if ( asprintf(&new_str, "Frames iteration %u of %u",
                   iter, ctx->save.max_iterations) == -1 )
     {
         PERROR("Unable to allocate new progress string");
@@ -473,7 +474,7 @@ static int send_memory_live(struct xc_sr_context *ctx)
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
     char *progress_str = NULL;
     unsigned x;
-    int rc = -1;
+    int rc;
 
     rc = update_progress_string(ctx, &progress_str, 0);
     if ( rc )
@@ -525,7 +526,7 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
     char *progress_str = NULL;
-    int rc = -1;
+    int rc;
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
@@ -568,11 +569,11 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
     return rc;
 }
 
-static int send_memory_verify(struct xc_sr_context *ctx)
+static int verify_frames(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
-    int rc = -1;
+    int rc;
     struct xc_sr_record rec =
     {
         .type = REC_TYPE_VERIFY,
@@ -585,7 +586,7 @@ static int send_memory_verify(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    xc_set_progress_prefix(xch, "Memory verify");
+    xc_set_progress_prefix(xch, "Frames verify");
     rc = send_all_pages(ctx);
     if ( rc )
         goto out;
@@ -612,7 +613,7 @@ static int send_memory_verify(struct xc_sr_context *ctx)
  */
 static int send_domain_memory_live(struct xc_sr_context *ctx)
 {
-    int rc = -1;
+    int rc;
 
     rc = enable_logdirty(ctx);
     if ( rc )
@@ -628,7 +629,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
 
     if ( ctx->save.debug && !ctx->save.checkpointed )
     {
-        rc = send_memory_verify(ctx);
+        rc = verify_frames(ctx);
         if ( rc )
             goto out;
     }
@@ -652,13 +653,13 @@ static int send_domain_memory_checkpointed(struct xc_sr_context *ctx)
 static int send_domain_memory_nonlive(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    int rc = -1;
+    int rc;
 
     rc = suspend_domain(ctx);
     if ( rc )
         goto err;
 
-    xc_set_progress_prefix(xch, "Memory");
+    xc_set_progress_prefix(xch, "Frames");
 
     rc = send_all_pages(ctx);
     if ( rc )
@@ -818,9 +819,9 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     return rc;
 };
 
-int xc_domain_save2(xc_interface *xch, int io_fd, uint32_t dom,
-                    uint32_t max_iters, uint32_t max_factor, uint32_t flags,
-                    struct save_callbacks* callbacks, int hvm)
+int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
+                   uint32_t max_iters, uint32_t max_factor, uint32_t flags,
+                   struct save_callbacks* callbacks, int hvm)
 {
     xen_pfn_t nr_pfns;
     struct xc_sr_context ctx =
@@ -850,7 +851,6 @@ int xc_domain_save2(xc_interface *xch, int io_fd, uint32_t dom,
     if ( ctx.save.checkpointed )
         assert(callbacks->checkpoint && callbacks->postcopy);
 
-    IPRINTF("In experimental %s", __func__);
     DPRINTF("fd %d, dom %u, max_iters %u, max_factor %u, flags %u, hvm %d",
             io_fd, dom, max_iters, max_factor, flags, hvm);
 

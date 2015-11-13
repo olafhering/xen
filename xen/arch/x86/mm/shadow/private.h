@@ -17,8 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef _XEN_SHADOW_PRIVATE_H
@@ -502,31 +501,6 @@ sh_mfn_is_a_page_table(mfn_t gmfn)
 
     type_info = page->u.inuse.type_info & PGT_type_mask;
     return type_info && (type_info <= PGT_l4_page_table);
-}
-
-// Provide mfn_t-aware versions of common xen functions
-static inline void *
-sh_map_domain_page(mfn_t mfn)
-{
-    return map_domain_page(mfn_x(mfn));
-}
-
-static inline void
-sh_unmap_domain_page(void *p)
-{
-    unmap_domain_page(p);
-}
-
-static inline void *
-sh_map_domain_page_global(mfn_t mfn)
-{
-    return map_domain_page_global(mfn_x(mfn));
-}
-
-static inline void
-sh_unmap_domain_page_global(void *p)
-{
-    unmap_domain_page_global(p);
 }
 
 /**************************************************************************/

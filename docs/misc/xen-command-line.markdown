@@ -140,6 +140,13 @@ mode during S3 resume.
 
 Permit Xen to use superpages when performing memory management.
 
+### altp2m (Intel)
+> `= <boolean>`
+
+> Default: `false`
+
+Permit multiple copies of host p2m.
+
 ### apic
 > `= bigsmp | default`
 
@@ -242,7 +249,7 @@ the NMI watchdog is also enabled.
 
 > Default: `0` (1/32 of RAM)
 
-Amount of RAM to set aside for the Xenheap.
+Amount of RAM to set aside for the Xenheap. Must be an integer multiple of 32.
 
 By default will use 1/32 of the RAM up to a maximum of 1GB and with a
 minimum of 32M, subject to a suitably aligned and sized contiguous
@@ -848,7 +855,7 @@ debug hypervisor only).
 > Default: `new` unless directed-EOI is supported
 
 ### iommu
-> `= List of [ <boolean> | force | required | intremap | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | verbose | debug ]`
+> `= List of [ <boolean> | force | required | intremap | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | verbose | debug ]`
 
 > Sub-options:
 
@@ -921,6 +928,15 @@ debug hypervisor only).
 >> Causes DRHD entries without any PCI discoverable devices under them to be
 >> ignored (normally IOMMU setup fails if any of the devices listed by a DRHD
 >> entry aren't PCI discoverable).
+
+> `igfx` (VT-d)
+
+> Default: `true`
+
+>> Enable IOMMU for Intel graphics devices. The intended usage of this option
+>> is `no-igfx`, which is similar to Linux `intel_iommu=igfx_off` option used
+>> to workaround graphics issues. If adding `no-igfx` fixes anything, you
+>> should file a bug reporting the problem.
 
 > `verbose`
 
@@ -1149,9 +1165,9 @@ This option can be specified more than once (up to 8 times at present).
 > `= <integer>`
 
 ### psr (Intel)
-> `= List of ( cmt:<boolean> | rmid_max:<integer> )`
+> `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> )`
 
-> Default: `psr=cmt:0,rmid_max:255`
+> Default: `psr=cmt:0,rmid_max:255,cat:0,cos_max:255`
 
 Platform Shared Resource(PSR) Services.  Intel Haswell and later server
 platforms offer information about the sharing of resources.
@@ -1160,6 +1176,12 @@ To use the PSR monitoring service for a certain domain, a Resource
 Monitoring ID(RMID) is used to bind the domain to corresponding shared
 resource.  RMID is a hardware-provided layer of abstraction between software
 and logical processors.
+
+To use the PSR cache allocation service for a certain domain, a capacity
+bitmasks(CBM) is used to bind the domain to corresponding shared resource.
+CBM represents cache capacity and indicates the degree of overlap and isolation
+between domains. In hypervisor a Class of Service(COS) ID is allocated for each
+unique CBM.
 
 The following resources are available:
 
@@ -1170,6 +1192,11 @@ The following resources are available:
 * Memory Bandwidth Monitoring (Broadwell and later). Information regarding the
   total/local memory bandwidth. Follow the same options with Cache Monitoring
   Technology.
+
+* Cache Allocation Technology (Broadwell and later).  Information regarding
+  the cache allocation.
+  * `cat` instructs Xen to enable/disable Cache Allocation Technology.
+  * `cos_max` indicates the max value for COS ID.
 
 ### reboot
 > `= t[riple] | k[bd] | a[cpi] | p[ci] | P[ower] | e[fi] | n[o] [, [w]arm | [c]old]`
@@ -1206,7 +1233,7 @@ Map the HPET page as read only in Dom0. If disabled the page will be mapped
 with read and write permissions.
 
 ### sched
-> `= credit | credit2 | sedf | arinc653`
+> `= credit | credit2 | arinc653`
 
 > Default: `sched=credit`
 

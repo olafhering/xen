@@ -16,8 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 
@@ -27,6 +26,7 @@
 #include <xen/vm_event.h>
 #include <xen/mem_access.h>
 #include <asm/p2m.h>
+#include <asm/vm_event.h>
 #include <xsm/xsm.h>
 
 /* for public/io/ring.h macros */
@@ -62,6 +62,11 @@ static int vm_event_enable(
 
     vm_event_ring_lock_init(ved);
     vm_event_ring_lock(ved);
+
+    rc = vm_event_init_domain(d);
+
+    if ( rc < 0 )
+        goto err;
 
     rc = prepare_ring_for_helper(d, ring_gfn, &ved->ring_pg_struct,
                                     &ved->ring_page);
@@ -225,6 +230,9 @@ static int vm_event_disable(struct domain *d, struct vm_event_domain *ved)
 
         destroy_ring_for_helper(&ved->ring_page,
                                 ved->ring_pg_struct);
+
+        vm_event_cleanup_domain(d);
+
         vm_event_ring_unlock(ved);
     }
 
@@ -384,6 +392,10 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
          */
         switch ( rsp.reason )
         {
+        case VM_EVENT_REASON_MOV_TO_MSR:
+        case VM_EVENT_REASON_WRITE_CTRLREG:
+            vm_event_register_write_resume(v, &rsp);
+            break;
 
 #ifdef HAS_MEM_ACCESS
         case VM_EVENT_REASON_MEM_ACCESS:
@@ -399,9 +411,17 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
 
         };
 
-        /* Unpause domain. */
+        /* Check for altp2m switch */
+        if ( rsp.flags & VM_EVENT_FLAG_ALTERNATE_P2M )
+            p2m_altp2m_check(v, rsp.altp2m_idx);
+
         if ( rsp.flags & VM_EVENT_FLAG_VCPU_PAUSED )
+        {
+            if ( rsp.flags & VM_EVENT_FLAG_TOGGLE_SINGLESTEP )
+                vm_event_toggle_singlestep(d, v);
+
             vm_event_vcpu_unpause(v);
+        }
     }
 }
 

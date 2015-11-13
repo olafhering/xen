@@ -250,7 +250,7 @@ void __init discard_initial_modules(void)
     struct bootmodules *mi = &bootinfo.modules;
     int i;
 
-    for ( i = 0; i <= mi->nr_mods; i++ )
+    for ( i = 0; i < mi->nr_mods; i++ )
     {
         paddr_t s = mi->module[i].start;
         paddr_t e = s + PAGE_ALIGN(mi->module[i].size);
@@ -350,7 +350,7 @@ static paddr_t __init next_module(paddr_t s, paddr_t *end)
     paddr_t lowest = ~(paddr_t)0;
     int i;
 
-    for ( i = 0; i <= mi->nr_mods; i++ )
+    for ( i = 0; i < mi->nr_mods; i++ )
     {
         paddr_t mod_s = mi->module[i].start;
         paddr_t mod_e = mod_s + mi->module[i].size;
@@ -665,7 +665,6 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
     xenheap_virt_end = XENHEAP_VIRT_START + ram_end - ram_start;
     xenheap_mfn_start = ram_start >> PAGE_SHIFT;
     xenheap_mfn_end = ram_end >> PAGE_SHIFT;
-    xenheap_max_mfn(xenheap_mfn_end);
 
     /*
      * Need enough mapped pages for copying the DTB.
@@ -829,7 +828,7 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     /* Create initial domain 0. */
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */
-    config.gic_version = XEN_DOMCTL_CONFIG_GIC_DEFAULT;
+    config.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
     config.nr_spis = gic_number_lines() - 32;
 
     dom0 = domain_create(0, 0, 0, &config);

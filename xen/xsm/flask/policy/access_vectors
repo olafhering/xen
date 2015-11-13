@@ -69,7 +69,7 @@ class xen
     cpupool_op
 # tmem hypercall (any access)
     tmem_op
-# TMEM_CONTROL command of tmem hypercall
+# XEN_SYSCTL_tmem_op command of tmem (part of sysctl)
     tmem_control
 # XEN_SYSCTL_scheduler_op with XEN_DOMCTL_SCHEDOP_getinfo, XEN_SYSCTL_sched_id
     getscheduler
@@ -85,6 +85,14 @@ class xen2
     resource_op
 # XEN_SYSCTL_psr_cmt_op
     psr_cmt_op
+# XEN_SYSCTL_psr_cat_op
+    psr_cat_op
+# XENPF_get_symbol
+    get_symbol
+# PMU control
+    pmu_ctrl
+# PMU use (domains, including unprivileged ones, will be using this operation)
+    pmu_use
 }
 
 # Classes domain and domain2 consist of operations that a domain performs on
@@ -230,6 +238,8 @@ class domain2
     mem_paging
 # XENMEM_sharing_op
     mem_sharing
+# XEN_DOMCTL_psr_cat_op
+    psr_cat_op
 }
 
 # Similar to class domain, but primarily contains domctls related to HVM domains
@@ -272,6 +282,13 @@ class hvm
     share_mem
 # HVMOP_set_param setting HVM_PARAM_NESTEDHVM
     nested
+# HVMOP_set_param setting HVM_PARAM_ALTP2MHVM
+    altp2mhvm
+# HVMOP_altp2m_set_domain_state HVMOP_altp2m_get_domain_state
+# HVMOP_altp2m_vcpu_enable_notify HVMOP_altp2m_create_p2m
+# HVMOP_altp2m_destroy_p2m HVMOP_altp2m_switch_p2m
+# HVMOP_altp2m_set_mem_access HVMOP_altp2m_change_gfn
+    altp2mhvm_op
 }
 
 # Class event describes event channels.  Interdomain event channels have their

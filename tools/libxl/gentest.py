@@ -30,9 +30,10 @@ def gen_rand_init(ty, v, indent = "    ", parent = None):
     elif isinstance(ty, idl.Array):
         if parent is None:
             raise Exception("Array type must have a parent")
-        s += "%s = rand()%%8;\n" % (parent + ty.lenvar.name)
+        s += "%s = test_rand(8);\n" % (parent + ty.lenvar.name)
         s += "%s = calloc(%s, sizeof(*%s));\n" % \
             (v, parent + ty.lenvar.name, v)
+        s += "assert(%s);\n" % (v, )
         s += "{\n"
         s += "    int i;\n"
         s += "    for (i=0; i<%s; i++)\n" % (parent + ty.lenvar.name)
@@ -63,13 +64,13 @@ def gen_rand_init(ty, v, indent = "    ", parent = None):
     elif ty.typename in ["libxl_uuid", "libxl_mac", "libxl_hwcap", "libxl_ms_vm_genid"]:
         s += "rand_bytes((uint8_t *)%s, sizeof(*%s));\n" % (v,v)
     elif ty.typename in ["libxl_domid", "libxl_devid"] or isinstance(ty, idl.Number):
-        s += "%s = rand() %% (sizeof(%s)*8);\n" % \
+        s += "%s = test_rand(sizeof(%s) * 8);\n" % \
              (ty.pass_arg(v, parent is None),
               ty.pass_arg(v, parent is None))
     elif ty.typename in ["bool"]:
-        s += "%s = rand() %% 2;\n" % v
+        s += "%s = test_rand(2);\n" % v
     elif ty.typename in ["libxl_defbool"]:
-        s += "libxl_defbool_set(%s, !!rand() %% 1);\n" % v
+        s += "libxl_defbool_set(%s, test_rand(2));\n" % v
     elif ty.typename in ["char *"]:
         s += "%s = rand_str();\n" % v
     elif ty.private:
@@ -98,16 +99,24 @@ if __name__ == '__main__':
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #include "libxl.h"
 #include "libxl_utils.h"
 
+static int test_rand(unsigned max)
+{
+    /* We are not using rand() for its cryptographic properies. */
+    return rand() % max;
+}
+
 static char *rand_str(void)
 {
-    int i, sz = rand() % 32;
+    int i, sz = test_rand(32);
     char *s = malloc(sz+1);
+    assert(s);
     for (i=0; i<sz; i++)
-        s[i] = 'a' + (rand() % 26);
+        s[i] = 'a' + test_rand(26);
     s[i] = '\\0';
     return s;
 }
@@ -116,16 +125,17 @@ static void rand_bytes(uint8_t *p, size_t sz)
 {
     int i;
     for (i=0; i<sz; i++)
-        p[i] = rand() % 256;
+        p[i] = test_rand(256);
 }
 
 static void libxl_bitmap_rand_init(libxl_bitmap *bitmap)
 {
     int i;
-    bitmap->size = rand() % 16;
+    bitmap->size = test_rand(16);
     bitmap->map = calloc(bitmap->size, sizeof(*bitmap->map));
+    assert(bitmap->map);
     libxl_for_each_bit(i, *bitmap) {
-        if (rand() % 2)
+        if (test_rand(2))
             libxl_bitmap_set(bitmap, i);
         else
             libxl_bitmap_reset(bitmap, i);
@@ -134,12 +144,13 @@ static void libxl_bitmap_rand_init(libxl_bitmap *bitmap)
 
 static void libxl_key_value_list_rand_init(libxl_key_value_list *pkvl)
 {
-    int i, nr_kvp = rand() % 16;
+    int i, nr_kvp = test_rand(16);
     libxl_key_value_list kvl = calloc(nr_kvp+1, 2*sizeof(char *));
+    assert(kvl);
 
     for (i = 0; i<2*nr_kvp; i += 2) {
         kvl[i] = rand_str();
-        if (rand() % 8)
+        if (test_rand(8))
             kvl[i+1] = rand_str();
         else
             kvl[i+1] = NULL;
@@ -151,7 +162,7 @@ static void libxl_key_value_list_rand_init(libxl_key_value_list *pkvl)
 
 static void libxl_cpuid_policy_list_rand_init(libxl_cpuid_policy_list *pp)
 {
-    int i, nr_policies = rand() % 16;
+    int i, nr_policies = test_rand(16);
     struct {
         const char *n;
         int w;
@@ -184,8 +195,8 @@ static void libxl_cpuid_policy_list_rand_init(libxl_cpuid_policy_list *pp)
     libxl_cpuid_policy_list p = NULL;
 
     for (i = 0; i < nr_policies; i++) {
-        int opt = rand() % nr_options;
-        int val = rand() % (1<<options[opt].w);
+        int opt = test_rand(nr_options);
+        int val = test_rand(1<<options[opt].w);
         snprintf(buf, 64, \"%s=%#x\", options[opt].n, val);
         libxl_cpuid_parse_config(&p, buf);
     }
@@ -194,8 +205,9 @@ static void libxl_cpuid_policy_list_rand_init(libxl_cpuid_policy_list *pp)
 
 static void libxl_string_list_rand_init(libxl_string_list *p)
 {
-    int i, nr = rand() % 16;
+    int i, nr = test_rand(16);
     libxl_string_list l = calloc(nr+1, sizeof(char *));
+    assert(l);
 
     for (i = 0; i<nr; i++) {
         l[i] = rand_str();

@@ -200,6 +200,11 @@
 #define LIBXL_HAVE_DEVICETREE_PASSTHROUGH 1
 
 /*
+ * libxl_domain_build_info has the arm.gic_version field.
+ */
+#define LIBXL_HAVE_BUILDINFO_ARM_GIC_VERSION 1
+
+/*
  * libxl ABI compatibility
  *
  * The only guarantee which libxl makes regarding ABI compatibility
@@ -596,6 +601,14 @@ typedef struct libxl__ctx libxl_ctx;
 #define LIBXL_HAVE_SPICE_STREAMINGVIDEO 1
 
 /*
+ * LIBXL_HAVE_HVM_HDTYPE
+ *
+ * If defined, then the u.hvm structure will contain a enum type
+ * hdtype.
+ */
+#define LIBXL_HAVE_HVM_HDTYPE 1
+
+/*
  * LIBXL_HAVE_DOMAIN_CREATE_RESTORE_PARAMS 1
  *
  * If this is defined, libxl_domain_create_restore()'s API has changed to
@@ -688,6 +701,11 @@ typedef struct libxl__ctx libxl_ctx;
  */
 #define LIBXL_HAVE_DEVICE_CHANNEL 1
 
+/*
+ * LIBXL_HAVE_AO_ABORT indicates the availability of libxl_ao_abort
+ */
+#define LIBXL_HAVE_AO_ABORT 1
+
 /* Functions annotated with LIBXL_EXTERNAL_CALLERS_ONLY may not be
  * called from within libxl itself. Callers outside libxl, who
  * do not #include libxl_internal.h, are fine. */
@@ -740,6 +758,12 @@ typedef struct libxl__ctx libxl_ctx;
 #define LIBXL_HAVE_BUILDINFO_SERIAL_LIST 1
 
 /*
+ * LIBXL_HAVE_ALTP2M
+ * If this is defined, then libxl supports alternate p2m functionality.
+ */
+#define LIBXL_HAVE_ALTP2M 1
+
+/*
  * LIBXL_HAVE_REMUS
  * If this is defined, then libxl supports remus.
  */
@@ -765,6 +789,13 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  * If this is defined, the Memory Bandwidth Monitoring feature is supported.
  */
 #define LIBXL_HAVE_PSR_MBM 1
+
+/*
+ * LIBXL_HAVE_PSR_CAT
+ *
+ * If this is defined, the Cache Allocation Technology feature is supported.
+ */
+#define LIBXL_HAVE_PSR_CAT 1
 #endif
 
 /*
@@ -781,6 +812,32 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  * If this is defined, the PV SCSI feature is supported.
  */
 #define LIBXL_HAVE_VSCSI 1
+
+/*
+ * LIBXL_HAVE_SOCKET_BITMAP_ALLOC
+ *
+ * If this is defined, then libxl_socket_bitmap_alloc exists.
+ */
+#define LIBXL_HAVE_SOCKET_BITMAP_ALLOC 1
+
+/*
+ * LIBXL_HAVE_SRM_V2
+ *
+ * If this is defined, then the libxl_domain_create_restore() interface takes
+ * a "stream_version" parameter and supports a value of 2.
+ *
+ * libxl_domain_suspend() will produce a v2 stream.
+ */
+#define LIBXL_HAVE_SRM_V2 1
+
+/*
+ * LIBXL_HAVE_SRM_V1
+ *
+ * In the case that LIBXL_HAVE_SRM_V2 is set, LIBXL_HAVE_SRM_V1
+ * indicates that libxl_domain_create_restore() can handle a "stream_version"
+ * parameter of 1, and convert the stream format automatically.
+ */
+#define LIBXL_HAVE_SRM_V1 1
 
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
@@ -864,6 +921,12 @@ const char *libxl_defbool_to_string(libxl_defbool b);
 
 #define LIBXL_TIMER_MODE_DEFAULT -1
 #define LIBXL_MEMKB_DEFAULT ~0ULL
+
+/*
+ * We'd like to set a memory boundary to determine if we need to check
+ * any overlap with reserved device memory.
+ */
+#define LIBXL_RDM_MEM_BOUNDARY_MEMKB_DEFAULT (2048 * 1024)
 
 #define LIBXL_MS_VM_GENID_LEN 16
 typedef struct {
@@ -972,6 +1035,59 @@ typedef struct {
     void *for_callback; /* passed to callback */
 } libxl_asyncprogress_how;
 
+/*
+ * It is sometimes possible to abort an asynchronous operation.
+ *
+ * libxl_ao_abort searches for an ongoing asynchronous operation whose
+ * ao_how is identical to *how, and tries to abort it.  The return
+ * values from libxl_ao_abort are as follows:
+ *
+ *  0
+ *
+ *     The operation was found, and attempts are being made to cut it
+ *     short.  However, it may still take some time to stop.  It is
+ *     also possible that the operation will nevertheless complete
+ *     successfully.
+ *
+ *  ERROR_NOTFOUND
+ *
+ *      No matching ongoing operation was found.  This might happen
+ *      for an actual operation if the operation has already completed
+ *      (perhaps on another thread).  The call to libxl_ao_abort has
+ *      had no effect.
+ *
+ *  ERROR_ABORTED
+ *
+ *     The operation has already been the subject of at least one
+ *     call to libxl_ao_abort.
+ *
+ * If the operation was indeed cut short due to the abort request, it
+ * will complete, at some point in the future, with ERROR_ABORTED.  In
+ * that case, depending on the operation it have performed some of the
+ * work in question and left the operation half-done.  Consult the
+ * documentation for individual operations.
+ *
+ * Note that an aborted operation might still fail for other reasons
+ * even after the abort was requested.
+ *
+ * If your application is multithreaded you must not reuse an
+ * ao_how->for_event or ao_how->for_callback value (with a particular
+ * ao_how->callback) unless you are sure that none of your other
+ * threads are going to abort the previous operation using that
+ * value; otherwise you risk aborting the wrong operation if the
+ * intended target of the abort request completes in the meantime.
+ *
+ * It is possible to abort even an operation which is being performed
+ * synchronously, but since in that case how==NULL you had better only
+ * have one such operation, because it is not possible to tell them
+ * apart (and libxl_ao_abort will abort only the first one it finds).
+ * (And, if you want to do this, obviously the abort would have to be
+ * requested on a different thread.)
+ */
+int libxl_ao_abort(libxl_ctx *ctx, const libxl_asyncop_how *how)
+                   LIBXL_EXTERNAL_CALLERS_ONLY;
+
+
 #define LIBXL_VERSION 0
 
 /* context functions */
@@ -981,6 +1097,10 @@ int libxl_ctx_alloc(libxl_ctx **pctx, int version,
 int libxl_ctx_free(libxl_ctx *ctx /* 0 is OK */);
 
 /* domain related functions */
+
+/* If the result is ERROR_ABORTED, the domain may or may not exist
+ * (in a half-created state).  *domid will be valid and will be the
+ * domain id, or -1, as appropriate */
 
 int libxl_domain_create_new(libxl_ctx *ctx, libxl_domain_config *d_config,
                             uint32_t *domid,
@@ -1391,6 +1511,9 @@ libxl_device_pci *libxl_device_pci_list(libxl_ctx *ctx, uint32_t domid,
  * From a libxl API point of view, this starts a long-running
  * operation.  That operation consists of "being a driver domain"
  * and never completes.
+ *
+ * Attempting to abort this operation is not advisable; proper
+ * shutdown of the driver domain task is not supported.
  */
 int libxl_device_events_handler(libxl_ctx *ctx,
                                 const libxl_asyncop_how *ao_how)
@@ -1603,6 +1726,34 @@ int libxl_psr_cmt_get_sample(libxl_ctx *ctx,
                              uint64_t scope,
                              uint64_t *sample_r,
                              uint64_t *tsc_r);
+#endif
+
+#ifdef LIBXL_HAVE_PSR_CAT
+/*
+ * Function to set a domain's cbm. It operates on a single or multiple
+ * target(s) defined in 'target_map'. The definition of 'target_map' is
+ * related to 'type':
+ * 'L3_CBM': 'target_map' specifies all the sockets to be operated on.
+ */
+int libxl_psr_cat_set_cbm(libxl_ctx *ctx, uint32_t domid,
+                          libxl_psr_cbm_type type, libxl_bitmap *target_map,
+                          uint64_t cbm);
+/*
+ * Function to get a domain's cbm. It operates on a single 'target'.
+ * The definition of 'target' is related to 'type':
+ * 'L3_CBM': 'target' specifies which socket to be operated on.
+ */
+int libxl_psr_cat_get_cbm(libxl_ctx *ctx, uint32_t domid,
+                          libxl_psr_cbm_type type, uint32_t target,
+                          uint64_t *cbm_r);
+
+/*
+ * On success, the function returns an array of elements in 'info',
+ * and the length in 'nr'.
+ */
+int libxl_psr_cat_get_l3_info(libxl_ctx *ctx, libxl_psr_cat_info **info,
+                              int *nr);
+void libxl_psr_cat_info_list_free(libxl_psr_cat_info *list, int nr);
 #endif
 
 /* misc */

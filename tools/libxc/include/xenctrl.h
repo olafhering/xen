@@ -19,8 +19,7 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ * License along with this library; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef XENCTRL_H
@@ -376,7 +375,7 @@ void xc__hypercall_buffer_free_pages(xc_interface *xch, xc_hypercall_buffer_t *b
  * buffer and call xc_hypercall_buffer_array_get().
  *
  * Destroy the array with xc_hypercall_buffer_array_destroy() to free
- * the array and all its alocated hypercall buffers.
+ * the array and all its allocated hypercall buffers.
  */
 struct xc_hypercall_buffer_array;
 typedef struct xc_hypercall_buffer_array xc_hypercall_buffer_array_t;
@@ -875,18 +874,6 @@ int xc_shadow_control(xc_interface *xch,
                       uint32_t mode,
                       xc_shadow_op_stats_t *stats);
 
-int xc_sedf_domain_set(xc_interface *xch,
-                       uint32_t domid,
-                       uint64_t period, uint64_t slice,
-                       uint64_t latency, uint16_t extratime,
-                       uint16_t weight);
-
-int xc_sedf_domain_get(xc_interface *xch,
-                       uint32_t domid,
-                       uint64_t* period, uint64_t *slice,
-                       uint64_t *latency, uint16_t *extratime,
-                       uint16_t *weight);
-
 int xc_sched_credit_domain_set(xc_interface *xch,
                                uint32_t domid,
                                struct xen_domctl_sched_credit *sdom);
@@ -1327,6 +1314,14 @@ int xc_get_machine_memory_map(xc_interface *xch,
                               struct e820entry entries[],
                               uint32_t max_entries);
 #endif
+
+int xc_reserved_device_memory_map(xc_interface *xch,
+                                  uint32_t flags,
+                                  uint16_t seg,
+                                  uint8_t bus,
+                                  uint8_t devfn,
+                                  struct xen_reserved_device_memory entries[],
+                                  uint32_t *max_entries);
 int xc_domain_set_time_offset(xc_interface *xch,
                               uint32_t domid,
                               int32_t time_offset_seconds);
@@ -1933,7 +1928,8 @@ int xc_get_hvm_param(xc_interface *handle, domid_t dom, int param, unsigned long
  *
  * @parm xch a handle to an open hypervisor interface.
  * @parm domid the domain id to be serviced
- * @parm handle_bufioreq should the IOREQ Server handle buffered requests?
+ * @parm handle_bufioreq how should the IOREQ Server handle buffered requests
+ *                       (HVM_IOREQSRV_BUFIOREQ_*)?
  * @parm id pointer to an ioservid_t to receive the IOREQ Server id.
  * @return 0 on success, -1 on failure.
  */
@@ -2070,7 +2066,8 @@ int xc_hvm_destroy_ioreq_server(xc_interface *xch,
 /* HVM guest pass-through */
 int xc_assign_device(xc_interface *xch,
                      uint32_t domid,
-                     uint32_t machine_sbdf);
+                     uint32_t machine_sbdf,
+                     uint32_t flag);
 
 int xc_get_device_group(xc_interface *xch,
                      uint32_t domid,
@@ -2298,22 +2295,40 @@ int xc_disable_turbo(xc_interface *xch, int cpuid);
  * tmem operations
  */
 
-struct tmem_oid {
-    uint64_t oid[3];
-};
-
 int xc_tmem_control_oid(xc_interface *xch, int32_t pool_id, uint32_t subop,
                         uint32_t cli_id, uint32_t arg1, uint32_t arg2,
-                        struct tmem_oid oid, void *buf);
+                        struct xen_tmem_oid oid, void *buf);
 int xc_tmem_control(xc_interface *xch,
                     int32_t pool_id, uint32_t subop, uint32_t cli_id,
-                    uint32_t arg1, uint32_t arg2, uint64_t arg3, void *buf);
+                    uint32_t arg1, uint32_t arg2, void *buf);
 int xc_tmem_auth(xc_interface *xch, int cli_id, char *uuid_str, int arg1);
 int xc_tmem_save(xc_interface *xch, int dom, int live, int fd, int field_marker);
 int xc_tmem_save_extra(xc_interface *xch, int dom, int fd, int field_marker);
 void xc_tmem_save_done(xc_interface *xch, int dom);
 int xc_tmem_restore(xc_interface *xch, int dom, int fd);
 int xc_tmem_restore_extra(xc_interface *xch, int dom, int fd);
+
+/**
+ * altp2m operations
+ */
+
+int xc_altp2m_get_domain_state(xc_interface *handle, domid_t dom, bool *state);
+int xc_altp2m_set_domain_state(xc_interface *handle, domid_t dom, bool state);
+int xc_altp2m_set_vcpu_enable_notify(xc_interface *handle, domid_t domid,
+                                     uint32_t vcpuid, xen_pfn_t gfn);
+int xc_altp2m_create_view(xc_interface *handle, domid_t domid,
+                          xenmem_access_t default_access, uint16_t *view_id);
+int xc_altp2m_destroy_view(xc_interface *handle, domid_t domid,
+                           uint16_t view_id);
+/* Switch all vCPUs of the domain to the specified altp2m view */
+int xc_altp2m_switch_to_view(xc_interface *handle, domid_t domid,
+                             uint16_t view_id);
+int xc_altp2m_set_mem_access(xc_interface *handle, domid_t domid,
+                             uint16_t view_id, xen_pfn_t gfn,
+                             xenmem_access_t access);
+int xc_altp2m_change_gfn(xc_interface *handle, domid_t domid,
+                         uint16_t view_id, xen_pfn_t old_gfn,
+                         xen_pfn_t new_gfn);
 
 /** 
  * Mem paging operations.
@@ -2375,6 +2390,12 @@ int xc_mem_access_disable_emulate(xc_interface *xch, domid_t domain_id);
 void *xc_monitor_enable(xc_interface *xch, domid_t domain_id, uint32_t *port);
 int xc_monitor_disable(xc_interface *xch, domid_t domain_id);
 int xc_monitor_resume(xc_interface *xch, domid_t domain_id);
+/*
+ * Get a bitmap of supported monitor events in the form
+ * (1 << XEN_DOMCTL_MONITOR_EVENT_*).
+ */
+int xc_monitor_get_capabilities(xc_interface *xch, domid_t domain_id,
+                                uint32_t *capabilities);
 int xc_monitor_write_ctrlreg(xc_interface *xch, domid_t domain_id,
                              uint16_t index, bool enable, bool sync,
                              bool onchangeonly);
@@ -2383,6 +2404,8 @@ int xc_monitor_mov_to_msr(xc_interface *xch, domid_t domain_id, bool enable,
 int xc_monitor_singlestep(xc_interface *xch, domid_t domain_id, bool enable);
 int xc_monitor_software_breakpoint(xc_interface *xch, domid_t domain_id,
                                    bool enable);
+int xc_monitor_guest_request(xc_interface *xch, domid_t domain_id,
+                             bool enable, bool sync);
 
 /***
  * Memory sharing operations.
@@ -2769,6 +2792,12 @@ enum xc_psr_cmt_type {
     XC_PSR_CMT_LOCAL_MEM_COUNT,
 };
 typedef enum xc_psr_cmt_type xc_psr_cmt_type;
+
+enum xc_psr_cat_type {
+    XC_PSR_CAT_L3_CBM = 1,
+};
+typedef enum xc_psr_cat_type xc_psr_cat_type;
+
 int xc_psr_cmt_attach(xc_interface *xch, uint32_t domid);
 int xc_psr_cmt_detach(xc_interface *xch, uint32_t domid);
 int xc_psr_cmt_get_domain_rmid(xc_interface *xch, uint32_t domid,
@@ -2783,6 +2812,15 @@ int xc_psr_cmt_get_data(xc_interface *xch, uint32_t rmid, uint32_t cpu,
                         uint32_t psr_cmt_type, uint64_t *monitor_data,
                         uint64_t *tsc);
 int xc_psr_cmt_enabled(xc_interface *xch);
+
+int xc_psr_cat_set_domain_data(xc_interface *xch, uint32_t domid,
+                               xc_psr_cat_type type, uint32_t target,
+                               uint64_t data);
+int xc_psr_cat_get_domain_data(xc_interface *xch, uint32_t domid,
+                               xc_psr_cat_type type, uint32_t target,
+                               uint64_t *data);
+int xc_psr_cat_get_l3_info(xc_interface *xch, uint32_t socket,
+                           uint32_t *cos_max, uint32_t *cbm_len);
 #endif
 
 #endif /* XENCTRL_H */

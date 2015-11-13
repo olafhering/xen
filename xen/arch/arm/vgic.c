@@ -71,6 +71,7 @@ static void vgic_init_pending_irq(struct pending_irq *p, unsigned int virq)
 int domain_vgic_init(struct domain *d, unsigned int nr_spis)
 {
     int i;
+    int ret;
 
     d->arch.vgic.ctlr = 0;
 
@@ -80,9 +81,9 @@ int domain_vgic_init(struct domain *d, unsigned int nr_spis)
 
     d->arch.vgic.nr_spis = nr_spis;
 
-    switch ( gic_hw_version() )
+    switch ( d->arch.vgic.version )
     {
-#ifdef CONFIG_ARM_64
+#ifdef HAS_GICV3
     case GIC_V3:
         if ( vgic_v3_init(d) )
            return -ENODEV;
@@ -93,6 +94,8 @@ int domain_vgic_init(struct domain *d, unsigned int nr_spis)
             return -ENODEV;
         break;
     default:
+        printk(XENLOG_G_ERR "d%d: Unknown vGIC version %u\n",
+               d->domain_id, d->arch.vgic.version);
         return -ENODEV;
     }
 
@@ -114,7 +117,9 @@ int domain_vgic_init(struct domain *d, unsigned int nr_spis)
     for (i=0; i<DOMAIN_NR_RANKS(d); i++)
         spin_lock_init(&d->arch.vgic.shared_irqs[i].lock);
 
-    d->arch.vgic.handler->domain_init(d);
+    ret = d->arch.vgic.handler->domain_init(d);
+    if ( ret )
+        return ret;
 
     d->arch.vgic.allocated_irqs =
         xzalloc_array(unsigned long, BITS_TO_LONGS(vgic_num_irqs(d)));
@@ -315,15 +320,14 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
     }
 }
 
-/* TODO: unsigned long is used to fit vcpu_mask.*/
 int vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode, int virq,
-                unsigned long vcpu_mask)
+                const struct sgi_target *target)
 {
     struct domain *d = v->domain;
     int vcpuid;
     int i;
-
-    ASSERT(d->max_vcpus < 8*sizeof(vcpu_mask));
+    unsigned int base;
+    unsigned long int bitmap;
 
     ASSERT( virq < 16 );
 
@@ -331,29 +335,33 @@ int vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode, int 
     {
     case SGI_TARGET_LIST:
         perfc_incr(vgic_sgi_list);
+        base = target->aff1 << 4;
+        bitmap = target->list;
+        for_each_set_bit( i, &bitmap, sizeof(target->list) * 8 )
+        {
+            vcpuid = base + i;
+            if ( d->vcpu[vcpuid] == NULL || !is_vcpu_online(d->vcpu[vcpuid]) )
+            {
+                gprintk(XENLOG_WARNING, "VGIC: write r=%"PRIregister" \
+                        target->list=%hx, wrong CPUTargetList \n",
+                        sgir, target->list);
+                continue;
+            }
+            vgic_vcpu_inject_irq(d->vcpu[vcpuid], virq);
+        }
         break;
     case SGI_TARGET_OTHERS:
-        /*
-         * We expect vcpu_mask to be 0 for SGI_TARGET_OTHERS and
-         * SGI_TARGET_SELF mode. So Force vcpu_mask to 0
-         */
         perfc_incr(vgic_sgi_others);
-        vcpu_mask = 0;
         for ( i = 0; i < d->max_vcpus; i++ )
         {
             if ( i != current->vcpu_id && d->vcpu[i] != NULL &&
                  is_vcpu_online(d->vcpu[i]) )
-                set_bit(i, &vcpu_mask);
+                vgic_vcpu_inject_irq(d->vcpu[i], virq);
         }
         break;
     case SGI_TARGET_SELF:
-        /*
-         * We expect vcpu_mask to be 0 for SGI_TARGET_OTHERS and
-         * SGI_TARGET_SELF mode. So Force vcpu_mask to 0
-         */
         perfc_incr(vgic_sgi_self);
-        vcpu_mask = 0;
-        set_bit(current->vcpu_id, &vcpu_mask);
+        vgic_vcpu_inject_irq(d->vcpu[current->vcpu_id], virq);
         break;
     default:
         gprintk(XENLOG_WARNING,
@@ -362,16 +370,6 @@ int vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode, int 
         return 0;
     }
 
-    for_each_set_bit( vcpuid, &vcpu_mask, d->max_vcpus )
-    {
-        if ( d->vcpu[vcpuid] != NULL && !is_vcpu_online(d->vcpu[vcpuid]) )
-        {
-            gprintk(XENLOG_WARNING, "VGIC: write r=%"PRIregister" \
-                    vcpu_mask=%lx, wrong CPUTargetList\n", sgir, vcpu_mask);
-            continue;
-        }
-        vgic_vcpu_inject_irq(d->vcpu[vcpuid], virq);
-    }
     return 1;
 }
 
