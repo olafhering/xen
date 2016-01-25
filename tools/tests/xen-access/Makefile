@@ -5,10 +5,10 @@ CFLAGS += -Werror
 
 CFLAGS += $(CFLAGS_libxenctrl)
 CFLAGS += $(CFLAGS_libxenguest)
+CFLAGS += $(CFLAGS_libxenevtchn)
 CFLAGS += $(CFLAGS_xeninclude)
 
-TARGETS-y :=
-TARGETS-$(HAS_MEM_ACCESS) := xen-access
+TARGETS-y := xen-access
 TARGETS := $(TARGETS-y)
 
 .PHONY: all
@@ -25,6 +25,6 @@ clean:
 distclean: clean
 
 xen-access: xen-access.o Makefile
-	$(CC) -o $@ $< $(LDFLAGS) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest)
+	$(CC) -o $@ $< $(LDFLAGS) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenevtchn)
 
 -include $(DEPS)

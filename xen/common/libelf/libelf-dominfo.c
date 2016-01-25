@@ -191,6 +191,9 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
     case XEN_ELFNOTE_INIT_P2M:
         parms->p2m_base = val;
         break;
+    case XEN_ELFNOTE_MOD_START_PFN:
+        parms->unmapped_initrd = !!val;
+        break;
     case XEN_ELFNOTE_PADDR_OFFSET:
         parms->elf_paddr_offset = val;
         break;
@@ -500,6 +503,7 @@ elf_errorstatus elf_xen_parse(struct elf_binary *elf,
     parms->virt_hv_start_low = UNSET_ADDR;
     parms->p2m_base = UNSET_ADDR;
     parms->elf_paddr_offset = UNSET_ADDR;
+    parms->phys_entry = UNSET_ADDR32;
 
     /* Find and parse elf notes. */
     count = elf_phdr_count(elf);

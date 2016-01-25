@@ -30,7 +30,7 @@
 extern bool_t iommu_enable, iommu_enabled;
 extern bool_t force_iommu, iommu_verbose;
 extern bool_t iommu_workaround_bios_bug, iommu_igfx, iommu_passthrough;
-extern bool_t iommu_snoop, iommu_qinval, iommu_intremap;
+extern bool_t iommu_snoop, iommu_qinval, iommu_intremap, iommu_intpost;
 extern bool_t iommu_hap_pt_share;
 extern bool_t iommu_debug;
 extern bool_t amd_iommu_perdev_intremap;
@@ -87,7 +87,7 @@ enum iommu_feature
 bool_t iommu_has_feature(struct domain *d, enum iommu_feature feature);
 
 
-#ifdef HAS_PCI
+#ifdef CONFIG_HAS_PCI
 void pt_pci_init(void);
 
 struct pirq;
@@ -109,7 +109,7 @@ void iommu_read_msi_from_ire(struct msi_desc *msi_desc, struct msi_msg *msg);
 #define PT_IRQ_TIME_OUT MILLISECS(8)
 #endif /* HAS_PCI */
 
-#ifdef HAS_DEVICE_TREE
+#ifdef CONFIG_HAS_DEVICE_TREE
 #include <xen/device_tree.h>
 
 int iommu_assign_dt_device(struct domain *d, struct dt_device_node *dev);
@@ -141,7 +141,7 @@ struct iommu_ops {
     int (*assign_device)(struct domain *, u8 devfn, device_t *dev, u32 flag);
     int (*reassign_device)(struct domain *s, struct domain *t,
                            u8 devfn, device_t *dev);
-#ifdef HAS_PCI
+#ifdef CONFIG_HAS_PCI
     int (*get_device_group_id)(u16 seg, u8 bus, u8 devfn);
     int (*update_ire_from_msi)(struct msi_desc *msi_desc, struct msi_msg *msg);
     void (*read_msi_from_ire)(struct msi_desc *msi_desc, struct msi_msg *msg);
@@ -174,7 +174,7 @@ int iommu_get_reserved_device_memory(iommu_grdm_t *, void *);
 
 void iommu_share_p2m_table(struct domain *d);
 
-#ifdef HAS_PCI
+#ifdef CONFIG_HAS_PCI
 int iommu_do_pci_domctl(struct xen_domctl *, struct domain *d,
                         XEN_GUEST_HANDLE_PARAM(xen_domctl_t));
 #endif

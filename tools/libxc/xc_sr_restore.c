@@ -316,9 +316,9 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
     if ( nr_pages == 0 )
         goto done;
 
-    mapping = guest_page = xc_map_foreign_bulk(
-        xch, ctx->domid, PROT_READ | PROT_WRITE,
-        mfns, map_errs, nr_pages);
+    mapping = guest_page = xenforeignmemory_map(xch->fmem,
+        ctx->domid, PROT_READ | PROT_WRITE,
+        nr_pages, mfns, map_errs);
     if ( !mapping )
     {
         rc = -1;
@@ -341,7 +341,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         if ( map_errs[j] )
         {
             rc = -1;
-            ERROR("Mapping pfn %lx (mfn %lx, type %#x)failed with %d",
+            ERROR("Mapping pfn %#"PRIpfn" (mfn %#"PRIpfn", type %#"PRIx32") failed with %d",
                   pfns[i], mfns[j], types[i], map_errs[j]);
             goto err;
         }
@@ -350,7 +350,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         rc = ctx->restore.ops.localise_page(ctx, types[i], page_data);
         if ( rc )
         {
-            ERROR("Failed to localise pfn %lx (type %#x)",
+            ERROR("Failed to localise pfn %#"PRIpfn" (type %#"PRIx32")",
                   pfns[i], types[i] >> XEN_DOMCTL_PFINFO_LTAB_SHIFT);
             goto err;
         }
@@ -359,7 +359,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         {
             /* Verify mode - compare incoming data to what we already have. */
             if ( memcmp(guest_page, page_data, PAGE_SIZE) )
-                ERROR("verify pfn %lx failed (type %#x)",
+                ERROR("verify pfn %#"PRIpfn" failed (type %#"PRIx32")",
                       pfns[i], types[i] >> XEN_DOMCTL_PFINFO_LTAB_SHIFT);
         }
         else
@@ -378,7 +378,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
 
  err:
     if ( mapping )
-        munmap(mapping, nr_pages * PAGE_SIZE);
+        xenforeignmemory_unmap(xch->fmem, mapping, nr_pages);
 
     free(map_errs);
     free(mfns);
@@ -432,7 +432,7 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         pfn = pages->pfn[i] & PAGE_DATA_PFN_MASK;
         if ( !ctx->restore.ops.pfn_is_valid(ctx, pfn) )
         {
-            ERROR("pfn %#lx (index %u) outside domain maximum", pfn, i);
+            ERROR("pfn %#"PRIpfn" (index %u) outside domain maximum", pfn, i);
             goto err;
         }
 
@@ -440,7 +440,8 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         if ( ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) >= 5) &&
              ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) <= 8) )
         {
-            ERROR("Invalid type %#x for pfn %#lx (index %u)", type, pfn, i);
+            ERROR("Invalid type %#"PRIx32" for pfn %#"PRIpfn" (index %u)",
+                  type, pfn, i);
             goto err;
         }
         else if ( type < XEN_DOMCTL_PFINFO_BROKEN )
@@ -492,7 +493,11 @@ static int handle_checkpoint(struct xc_sr_context *ctx)
         break;
 
     case XGR_CHECKPOINT_FAILOVER:
-        rc = BROKEN_CHANNEL;
+        if ( ctx->restore.buffer_all_records )
+            rc = BROKEN_CHANNEL;
+        else
+            /* We don't have a consistent state */
+            rc = -1;
         goto err;
 
     default: /* Other fatal error */
@@ -775,12 +780,12 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
             return -1;
     }
 
-    IPRINTF("XenStore: mfn %#lx, dom %d, evt %u",
+    IPRINTF("XenStore: mfn %#"PRIpfn", dom %d, evt %u",
             ctx.restore.xenstore_gfn,
             ctx.restore.xenstore_domid,
             ctx.restore.xenstore_evtchn);
 
-    IPRINTF("Console: mfn %#lx, dom %d, evt %u",
+    IPRINTF("Console: mfn %#"PRIpfn", dom %d, evt %u",
             ctx.restore.console_gfn,
             ctx.restore.console_domid,
             ctx.restore.console_evtchn);

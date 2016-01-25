@@ -203,6 +203,9 @@ void vtd_dump_iommu_info(unsigned char key)
             ecap_intr_remap(iommu->ecap) ? "" : "not ",
             (status & DMA_GSTS_IRES) ? " and enabled" : "" );
 
+        printk("  Interrupt Posting: %ssupported.\n",
+               cap_intr_post(iommu->cap) ? "" : "not ");
+
         if ( status & DMA_GSTS_IRES )
         {
             /* Dump interrupt remapping table. */
@@ -213,8 +216,9 @@ void vtd_dump_iommu_info(unsigned char key)
 
             printk("  Interrupt remapping table (nr_entry=%#x. "
                 "Only dump P=1 entries here):\n", nr_entry);
-            printk("       SVT  SQ   SID      DST  V  AVL DLM TM RH DM "
-                   "FPD P\n");
+            printk("R means remapped format, P means posted format.\n");
+            printk("R:       SVT  SQ   SID  V  AVL FPD      DST DLM TM RH DM P\n");
+            printk("P:       SVT  SQ   SID  V  AVL FPD              PDA  URG P\n");
             for ( i = 0; i < nr_entry; i++ )
             {
                 struct iremap_entry *p;
@@ -230,14 +234,23 @@ void vtd_dump_iommu_info(unsigned char key)
                 else
                     p = &iremap_entries[i % (1 << IREMAP_ENTRY_ORDER)];
 
-                if ( !p->lo.p )
+                if ( !p->remap.p )
                     continue;
-                printk("  %04x:  %x   %x  %04x %08x %02x    %x   %x  %x  %x  %x"
-                    "   %x %x\n", i,
-                    (u32)p->hi.svt, (u32)p->hi.sq, (u32)p->hi.sid,
-                    (u32)p->lo.dst, (u32)p->lo.vector, (u32)p->lo.avail,
-                    (u32)p->lo.dlm, (u32)p->lo.tm, (u32)p->lo.rh,
-                    (u32)p->lo.dm, (u32)p->lo.fpd, (u32)p->lo.p);
+                if ( !p->remap.im )
+                    printk("R:  %04x:  %x   %x  %04x %02x    %x   %x %08x   %x  %x  %x  %x %x\n",
+                           i,
+                           p->remap.svt, p->remap.sq, p->remap.sid,
+                           p->remap.vector, p->remap.avail, p->remap.fpd,
+                           p->remap.dst, p->remap.dlm, p->remap.tm, p->remap.rh,
+                           p->remap.dm, p->remap.p);
+                else
+                    printk("P:  %04x:  %x   %x  %04x %02x    %x   %x %16lx    %x %x\n",
+                           i,
+                           p->post.svt, p->post.sq, p->post.sid, p->post.vector,
+                           p->post.avail, p->post.fpd,
+                           ((u64)p->post.pda_h << 32) | (p->post.pda_l << 6),
+                           p->post.urg, p->post.p);
+
                 print_cnt++;
             }
             if ( iremap_entries )
@@ -281,11 +294,10 @@ void vtd_dump_iommu_info(unsigned char key)
 
                 printk("   %02x:  %04x   %x    %x   %x   %x   %x    %x"
                     "    %x     %02x\n", i,
-                    (u32)remap->index_0_14 | ((u32)remap->index_15 << 15),
-                    (u32)remap->format, (u32)remap->mask, (u32)remap->trigger,
-                    (u32)remap->irr, (u32)remap->polarity,
-                    (u32)remap->delivery_status, (u32)remap->delivery_mode,
-                    (u32)remap->vector);
+                    remap->index_0_14 | (remap->index_15 << 15),
+                    remap->format, remap->mask, remap->trigger, remap->irr,
+                    remap->polarity, remap->delivery_status, remap->delivery_mode,
+                    remap->vector);
             }
         }
     }

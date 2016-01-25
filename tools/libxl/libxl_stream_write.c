@@ -167,6 +167,8 @@ static void setup_emulator_write(libxl__egc *egc,
                                  void *body,
                                  sws_record_done_cb cb)
 {
+    assert(stream->emu_sub_hdr.id != EMULATOR_UNKNOWN);
+    assert(stream->device_model_version != LIBXL_DEVICE_MODEL_VERSION_NONE);
     setup_generic_write(egc, stream, what, hdr, emu_hdr, body, cb);
 }
 
@@ -207,6 +209,7 @@ void libxl__stream_write_init(libxl__stream_write_state *stream)
     FILLZERO(stream->emu_rec_hdr);
     FILLZERO(stream->emu_sub_hdr);
     stream->emu_body = NULL;
+    stream->device_model_version = LIBXL_DEVICE_MODEL_VERSION_UNKNOWN;
 }
 
 void libxl__stream_write_start(libxl__egc *egc,
@@ -223,13 +226,19 @@ void libxl__stream_write_start(libxl__egc *egc,
     stream->running = true;
 
     if (dss->type == LIBXL_DOMAIN_TYPE_HVM) {
-        switch (libxl__device_model_version_running(gc, dss->domid)) {
+        stream->device_model_version =
+            libxl__device_model_version_running(gc, dss->domid);
+        switch (stream->device_model_version) {
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
             stream->emu_sub_hdr.id = EMULATOR_QEMU_TRADITIONAL;
             break;
 
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
             stream->emu_sub_hdr.id = EMULATOR_QEMU_UPSTREAM;
+            break;
+
+        case LIBXL_DEVICE_MODEL_VERSION_NONE:
+            stream->emu_sub_hdr.id = EMULATOR_UNKNOWN;
             break;
 
         default:
@@ -345,8 +354,18 @@ void libxl__xc_domain_save_done(libxl__egc *egc, void *dss_void,
      * alive, and check_all_finished() may have torn it down around us.
      * If the stream is not still alive, we must not continue any work.
      */
-    if (libxl__stream_write_inuse(stream))
-        write_emulator_xenstore_record(egc, stream);
+    if (libxl__stream_write_inuse(stream)) {
+        if (dss->remus)
+            /*
+             * For remus, if libxl__xc_domain_save_done() completes,
+             * there was an error sending data to the secondary.
+             * Resume the primary ASAP. The caller doesn't care of the
+             * return value (Please refer to libxl__remus_teardown())
+             */
+            stream_complete(egc, stream, 0);
+        else
+            write_emulator_xenstore_record(egc, stream);
+    }
 }
 
 static void write_emulator_xenstore_record(libxl__egc *egc,
@@ -358,6 +377,11 @@ static void write_emulator_xenstore_record(libxl__egc *egc,
     int rc;
     char *buf = NULL;
     uint32_t len = 0;
+
+    if (stream->device_model_version == LIBXL_DEVICE_MODEL_VERSION_NONE) {
+        emulator_xenstore_record_done(egc, stream);
+        return;
+    }
 
     rc = libxl__save_emulator_xenstore_data(dss, &buf, &len);
     if (rc)
@@ -409,6 +433,11 @@ static void write_emulator_context_record(libxl__egc *egc,
     int rc;
 
     assert(dss->type == LIBXL_DOMAIN_TYPE_HVM);
+
+    if (stream->device_model_version == LIBXL_DEVICE_MODEL_VERSION_NONE) {
+        emulator_context_record_done(egc, stream);
+        return;
+    }
 
     /* Convenience aliases */
     const char *const filename = dss->dm_savefile;

@@ -39,13 +39,11 @@
 
 #define CONFIG_IRQ_HAS_MULTIPLE_ACTION 1
 
-#define OPT_CONSOLE_STR "dtuart"
+#define CONFIG_PAGEALLOC_MAX_ORDER 18
+#define CONFIG_DOMU_MAX_ORDER      9
+#define CONFIG_HWDOM_MAX_ORDER     10
 
-#ifdef MAX_PHYS_CPUS
-#define NR_CPUS MAX_PHYS_CPUS
-#else
-#define NR_CPUS 128
-#endif
+#define OPT_CONSOLE_STR "dtuart"
 
 #ifdef CONFIG_ARM_64
 #define MAX_VIRT_CPUS 128

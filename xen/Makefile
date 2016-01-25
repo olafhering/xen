@@ -11,17 +11,33 @@ export XEN_DOMAIN	?= $(shell ([ -x /bin/dnsdomainname ] && /bin/dnsdomainname) |
 export XEN_BUILD_DATE	?= $(shell LC_ALL=C date)
 export XEN_BUILD_TIME	?= $(shell LC_ALL=C date +%T)
 export XEN_BUILD_HOST	?= $(shell hostname)
+export XEN_CONFIG_EXPERT ?= n
 
 export BASEDIR := $(CURDIR)
 export XEN_ROOT := $(BASEDIR)/..
 
+# Do not use make's built-in rules and variables
+MAKEFLAGS += -rR
+
 EFI_MOUNTPOINT ?= $(BOOT_DIR)/efi
+
+ARCH=$(XEN_TARGET_ARCH)
+SRCARCH=$(shell echo $(ARCH) | sed -e 's/x86.*/x86/' -e s'/arm\(32\|64\)/arm/g')
+
+# Don't break if the build process wasn't called from the top level
+# we need XEN_TARGET_ARCH to generate the proper config
+include $(XEN_ROOT)/Config.mk
+
+# Allow someone to change their config file
+export KCONFIG_CONFIG ?= .config
 
 .PHONY: default
 default: build
 
 .PHONY: dist
 dist: install
+
+build install:: include/config/auto.conf
 
 .PHONY: build install uninstall clean distclean cscope TAGS tags MAP gtags
 build install uninstall debug clean distclean cscope TAGS tags MAP gtags::
@@ -46,6 +62,7 @@ _install: $(TARGET)$(CONFIG_XEN_INSTALL_SUFFIX)
 	ln -f -s $(T)-$(XEN_FULLVERSION)$(Z) $(D)$(BOOT_DIR)/$(T)$(Z)
 	[ -d "$(D)$(DEBUG_DIR)" ] || $(INSTALL_DIR) $(D)$(DEBUG_DIR)
 	$(INSTALL_DATA) $(TARGET)-syms $(D)$(DEBUG_DIR)/$(T)-syms-$(XEN_FULLVERSION)
+	$(INSTALL_DATA) $(KCONFIG_CONFIG) $(D)$(BOOT_DIR)/$(T)-$(XEN_FULLVERSION).config
 	if [ -r $(TARGET).efi -a -n '$(EFI_DIR)' ]; then \
 		[ -d $(D)$(EFI_DIR) ] || $(INSTALL_DIR) $(D)$(EFI_DIR); \
 		$(INSTALL_DATA) $(TARGET).efi $(D)$(EFI_DIR)/$(T)-$(XEN_FULLVERSION).efi; \
@@ -88,13 +105,15 @@ _clean: delete-unfresh-files
 	$(MAKE) -f $(BASEDIR)/Rules.mk -C xsm clean
 	$(MAKE) -f $(BASEDIR)/Rules.mk -C crypto clean
 	$(MAKE) -f $(BASEDIR)/Rules.mk -C arch/$(TARGET_ARCH) clean
-	rm -f include/asm *.o $(TARGET) $(TARGET).gz $(TARGET).efi $(TARGET)-syms *~ core
+	$(MAKE) -f $(BASEDIR)/tools/kconfig/Makefile.kconfig ARCH=$(ARCH) SRCARCH=$(SRCARCH) clean
+	find . \( -name "*.o" -o -name ".*.d" \) -exec rm -f {} \;
+	rm -f include/asm $(TARGET) $(TARGET).gz $(TARGET).efi $(TARGET)-syms *~ core
 	rm -f include/asm-*/asm-offsets.h
 	rm -f .banner
 
 .PHONY: _distclean
 _distclean: clean
-	rm -f tags TAGS cscope.files cscope.in.out cscope.out cscope.po.out GTAGS GPATH GRTAGS GSYMS
+	rm -f tags TAGS cscope.files cscope.in.out cscope.out cscope.po.out GTAGS GPATH GRTAGS GSYMS .config
 
 $(TARGET).gz: $(TARGET)
 	gzip -f -9 < $< > $@.new
@@ -216,3 +235,21 @@ FORCE:
 
 %/: FORCE
 	$(MAKE) -f $(BASEDIR)/Rules.mk -C $* built_in.o built_in_bin.o
+
+kconfig := silentoldconfig oldconfig config menuconfig defconfig \
+	nconfig xconfig gconfig savedefconfig listnewconfig olddefconfig
+.PHONY: $(kconfig)
+$(kconfig):
+	$(MAKE) -f $(BASEDIR)/tools/kconfig/Makefile.kconfig ARCH=$(ARCH) SRCARCH=$(SRCARCH) $@
+
+include/config/%.conf: include/config/auto.conf.cmd $(KCONFIG_CONFIG)
+	$(MAKE) -f $(BASEDIR)/tools/kconfig/Makefile.kconfig ARCH=$(ARCH) SRCARCH=$(SRCARCH) silentoldconfig
+
+# Allow people to just run `make` as before and not force them to configure
+$(KCONFIG_CONFIG):
+	$(MAKE) -f $(BASEDIR)/tools/kconfig/Makefile.kconfig ARCH=$(ARCH) SRCARCH=$(SRCARCH) defconfig
+
+# Break the dependency chain for the first run
+include/config/auto.conf.cmd: ;
+
+-include $(BASEDIR)/include/config/auto.conf.cmd

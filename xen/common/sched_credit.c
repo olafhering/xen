@@ -910,9 +910,16 @@ static void
 csched_vcpu_insert(const struct scheduler *ops, struct vcpu *vc)
 {
     struct csched_vcpu *svc = vc->sched_priv;
+    spinlock_t *lock;
+
+    BUG_ON( is_idle_vcpu(vc) );
+
+    lock = vcpu_schedule_lock_irq(vc);
 
     if ( !__vcpu_on_runq(svc) && vcpu_runnable(vc) && !vc->is_running )
         __runq_insert(svc);
+
+    vcpu_schedule_unlock_irq(lock, vc);
 
     SCHED_STAT_CRANK(vcpu_insert);
 }
@@ -1785,7 +1792,7 @@ csched_dump_pcpu(const struct scheduler *ops, int cpu)
     struct csched_private *prv = CSCHED_PRIV(ops);
     struct csched_pcpu *spc;
     struct csched_vcpu *svc;
-    spinlock_t *lock = lock;
+    spinlock_t *lock;
     unsigned long flags;
     int loop;
 #define cpustr keyhandler_scratch
@@ -1984,7 +1991,7 @@ static void csched_tick_resume(const struct scheduler *ops, unsigned int cpu)
 
 static struct csched_private _csched_priv;
 
-const struct scheduler sched_credit_def = {
+static const struct scheduler sched_credit_def = {
     .name           = "SMP Credit Scheduler",
     .opt_name       = "credit",
     .sched_id       = XEN_SCHEDULER_CREDIT,
@@ -2020,3 +2027,5 @@ const struct scheduler sched_credit_def = {
     .tick_suspend   = csched_tick_suspend,
     .tick_resume    = csched_tick_resume,
 };
+
+REGISTER_SCHEDULER(sched_credit_def);

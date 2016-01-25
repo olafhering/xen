@@ -251,6 +251,9 @@ static int hvm_set_viridian_features(libxl__gc *gc, uint32_t domid,
     if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_REFERENCE_TSC))
         mask |= HVMPV_reference_tsc;
 
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_HCALL_REMOTE_TLB_FLUSH))
+        mask |= HVMPV_hcall_remote_tlb_flush;
+
     if (mask != 0 &&
         xc_hvm_param_set(CTX->xch,
                          domid,
@@ -767,9 +770,6 @@ int libxl__build_pv(libxl__gc *gc, uint32_t domid,
         state->store_mfn = xc_dom_p2m(dom, dom->xenstore_pfn);
     }
 
-    libxl__file_reference_unmap(&state->pv_kernel);
-    libxl__file_reference_unmap(&state->pv_ramdisk);
-
     ret = 0;
 out:
     xc_dom_release(dom);
@@ -787,21 +787,23 @@ static int hvm_build_set_params(xc_interface *handle, uint32_t domid,
     uint64_t str_mfn, cons_mfn;
     int i;
 
-    va_map = xc_map_foreign_range(handle, domid,
-                                  XC_PAGE_SIZE, PROT_READ | PROT_WRITE,
-                                  HVM_INFO_PFN);
-    if (va_map == NULL)
-        return ERROR_FAIL;
+    if (info->device_model_version != LIBXL_DEVICE_MODEL_VERSION_NONE) {
+        va_map = xc_map_foreign_range(handle, domid,
+                                      XC_PAGE_SIZE, PROT_READ | PROT_WRITE,
+                                      HVM_INFO_PFN);
+        if (va_map == NULL)
+            return ERROR_FAIL;
 
-    va_hvm = (struct hvm_info_table *)(va_map + HVM_INFO_OFFSET);
-    va_hvm->apic_mode = libxl_defbool_val(info->u.hvm.apic);
-    va_hvm->nr_vcpus = info->max_vcpus;
-    memset(va_hvm->vcpu_online, 0, sizeof(va_hvm->vcpu_online));
-    memcpy(va_hvm->vcpu_online, info->avail_vcpus.map, info->avail_vcpus.size);
-    for (i = 0, sum = 0; i < va_hvm->length; i++)
-        sum += ((uint8_t *) va_hvm)[i];
-    va_hvm->checksum -= sum;
-    munmap(va_map, XC_PAGE_SIZE);
+        va_hvm = (struct hvm_info_table *)(va_map + HVM_INFO_OFFSET);
+        va_hvm->apic_mode = libxl_defbool_val(info->u.hvm.apic);
+        va_hvm->nr_vcpus = info->max_vcpus;
+        memset(va_hvm->vcpu_online, 0, sizeof(va_hvm->vcpu_online));
+        memcpy(va_hvm->vcpu_online, info->avail_vcpus.map, info->avail_vcpus.size);
+        for (i = 0, sum = 0; i < va_hvm->length; i++)
+            sum += ((uint8_t *) va_hvm)[i];
+        va_hvm->checksum -= sum;
+        munmap(va_map, XC_PAGE_SIZE);
+    }
 
     xc_hvm_param_get(handle, domid, HVM_PARAM_STORE_PFN, &str_mfn);
     xc_hvm_param_get(handle, domid, HVM_PARAM_CONSOLE_PFN, &cons_mfn);
@@ -825,15 +827,15 @@ static int hvm_build_set_xs_values(libxl__gc *gc,
     if (dom->smbios_module.guest_addr_out) {
         path = GCSPRINTF("/local/domain/%d/"HVM_XS_SMBIOS_PT_ADDRESS, domid);
 
-        ret = libxl__xs_write(gc, XBT_NULL, path, "0x%"PRIx64,
-                              dom->smbios_module.guest_addr_out);
+        ret = libxl__xs_printf(gc, XBT_NULL, path, "0x%"PRIx64,
+                               dom->smbios_module.guest_addr_out);
         if (ret)
             goto err;
 
         path = GCSPRINTF("/local/domain/%d/"HVM_XS_SMBIOS_PT_LENGTH, domid);
 
-        ret = libxl__xs_write(gc, XBT_NULL, path, "0x%x",
-                              dom->smbios_module.length);
+        ret = libxl__xs_printf(gc, XBT_NULL, path, "0x%x",
+                               dom->smbios_module.length);
         if (ret)
             goto err;
     }
@@ -841,15 +843,15 @@ static int hvm_build_set_xs_values(libxl__gc *gc,
     if (dom->acpi_module.guest_addr_out) {
         path = GCSPRINTF("/local/domain/%d/"HVM_XS_ACPI_PT_ADDRESS, domid);
 
-        ret = libxl__xs_write(gc, XBT_NULL, path, "0x%"PRIx64,
-                              dom->acpi_module.guest_addr_out);
+        ret = libxl__xs_printf(gc, XBT_NULL, path, "0x%"PRIx64,
+                               dom->acpi_module.guest_addr_out);
         if (ret)
             goto err;
 
         path = GCSPRINTF("/local/domain/%d/"HVM_XS_ACPI_PT_LENGTH, domid);
 
-        ret = libxl__xs_write(gc, XBT_NULL, path, "0x%x",
-                              dom->acpi_module.length);
+        ret = libxl__xs_printf(gc, XBT_NULL, path, "0x%x",
+                               dom->acpi_module.length);
         if (ret)
             goto err;
     }
@@ -867,7 +869,7 @@ static int libxl__domain_firmware(libxl__gc *gc,
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
     const char *firmware;
-    int e, rc = ERROR_FAIL;
+    int e, rc;
     int datalen = 0;
     void *data;
 
@@ -882,18 +884,34 @@ static int libxl__domain_firmware(libxl__gc *gc,
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
             firmware = "hvmloader";
             break;
+        case LIBXL_DEVICE_MODEL_VERSION_NONE:
+            if (info->kernel == NULL) {
+                LOG(ERROR, "no device model requested without a kernel");
+                rc = ERROR_FAIL;
+                goto out;
+            }
+            break;
         default:
             LOG(ERROR, "invalid device model version %d",
                 info->device_model_version);
-            return ERROR_FAIL;
-            break;
+            rc = ERROR_FAIL;
+            goto out;
         }
     }
 
-    rc = xc_dom_kernel_file(dom, libxl__abs_path(gc, firmware,
+    if (info->kernel != NULL &&
+        info->device_model_version == LIBXL_DEVICE_MODEL_VERSION_NONE) {
+        /* Try to load a kernel instead of the firmware. */
+        rc = xc_dom_kernel_file(dom, info->kernel);
+        if (rc == 0 && info->ramdisk != NULL)
+            rc = xc_dom_ramdisk_file(dom, info->ramdisk);
+    } else {
+        rc = xc_dom_kernel_file(dom, libxl__abs_path(gc, firmware,
                                                  libxl__xenfirmwaredir_path()));
+    }
+
     if (rc != 0) {
-        LOGE(ERROR, "xc_dom_kernel_file failed");
+        LOGE(ERROR, "xc_dom_{kernel_file/ramdisk_file} failed");
         goto out;
     }
 
@@ -904,6 +922,7 @@ static int libxl__domain_firmware(libxl__gc *gc,
         if (e) {
             LOGEV(ERROR, e, "failed to read SMBIOS firmware file %s",
                 info->u.hvm.smbios_firmware);
+            rc = ERROR_FAIL;
             goto out;
         }
         libxl__ptr_add(gc, data);
@@ -921,6 +940,7 @@ static int libxl__domain_firmware(libxl__gc *gc,
         if (e) {
             LOGEV(ERROR, e, "failed to read ACPI firmware file %s",
                 info->u.hvm.acpi_firmware);
+            rc = ERROR_FAIL;
             goto out;
         }
         libxl__ptr_add(gc, data);
@@ -933,6 +953,7 @@ static int libxl__domain_firmware(libxl__gc *gc,
 
     return 0;
 out:
+    assert(rc != 0);
     return rc;
 }
 
@@ -945,10 +966,13 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
     uint64_t mmio_start, lowmem_end, highmem_end, mem_size;
     libxl_domain_build_info *const info = &d_config->b_info;
     struct xc_dom_image *dom = NULL;
+    bool device_model =
+        info->device_model_version != LIBXL_DEVICE_MODEL_VERSION_NONE ?
+        true : false;
 
     xc_dom_loginit(ctx->xch);
 
-    dom = xc_dom_allocate(ctx->xch, NULL, NULL);
+    dom = xc_dom_allocate(ctx->xch, info->cmdline, NULL);
     if (!dom) {
         LOGE(ERROR, "xc_dom_allocate failed");
         rc = ERROR_NOMEM;
@@ -981,8 +1005,12 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
 
     if (dom->target_pages == 0)
         dom->target_pages = mem_size >> XC_PAGE_SHIFT;
-    if (dom->mmio_size == 0)
+    if (dom->mmio_size == 0 && device_model)
         dom->mmio_size = HVM_BELOW_4G_MMIO_LENGTH;
+    else if (dom->mmio_size == 0 && !device_model)
+        dom->mmio_size = GB(4) -
+                    ((X86_HVM_END_SPECIAL_REGION - X86_HVM_NR_SPECIAL_PAGES)
+                    << XC_PAGE_SHIFT);
     lowmem_end = mem_size;
     highmem_end = 0;
     mmio_start = (1ull << 32) - dom->mmio_size;
@@ -994,6 +1022,8 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
     dom->lowmem_end = lowmem_end;
     dom->highmem_end = highmem_end;
     dom->mmio_start = mmio_start;
+    dom->vga_hole_size = device_model ? LIBXL_VGA_HOLE_SIZE : 0;
+    dom->device_model = device_model;
 
     rc = libxl__domain_device_construct_rdm(gc, d_config,
                                             info->u.hvm.rdm_mem_boundary_memkb*1024,
@@ -1074,7 +1104,7 @@ int libxl__qemu_traditional_cmd(libxl__gc *gc, uint32_t domid,
     char *path = NULL;
     uint32_t dm_domid = libxl_get_stubdom_id(CTX, domid);
     path = libxl__device_model_xs_path(gc, dm_domid, domid, "/command");
-    return libxl__xs_write(gc, XBT_NULL, path, "%s", cmd);
+    return libxl__xs_printf(gc, XBT_NULL, path, "%s", cmd);
 }
 
 /*
@@ -1137,8 +1167,9 @@ int libxl__restore_emulator_xenstore_data(libxl__domain_create_state *dcs,
             goto out;
         }
 
-        libxl__xs_write(gc, XBT_NULL,
-                        GCSPRINTF("%s/%s", xs_root, key), "%s", val);
+        libxl__xs_printf(gc, XBT_NULL,
+                         GCSPRINTF("%s/%s", xs_root, key),
+                         "%s", val);
     }
 
     rc = 0;
@@ -1284,6 +1315,9 @@ void libxl__domain_suspend_common_switch_qemu_logdirty
         break;
     case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
         domain_suspend_switch_qemu_xen_logdirty(domid, enable, shs);
+        break;
+    case LIBXL_DEVICE_MODEL_VERSION_NONE:
+        libxl__xc_domain_saverestore_async_callback_done(egc, shs, 0);
         break;
     default:
         LOG(ERROR,"logdirty switch failed"
@@ -1749,97 +1783,6 @@ static void stream_done(libxl__egc *egc,
                         libxl__stream_write_state *sws, int rc)
 {
     domain_save_done(egc, sws->dss, rc);
-}
-
-static void save_device_model_datacopier_done(libxl__egc *egc,
-     libxl__datacopier_state *dc, int rc, int onwrite, int errnoval);
-
-void libxl__domain_save_device_model(libxl__egc *egc,
-                                     libxl__domain_suspend_state *dss,
-                                     libxl__save_device_model_cb *callback)
-{
-    STATE_AO_GC(dss->ao);
-    struct stat st;
-    uint32_t qemu_state_len;
-    int rc;
-
-    dss->save_dm_callback = callback;
-
-    /* Convenience aliases */
-    const char *const filename = dss->dm_savefile;
-    const int fd = dss->fd;
-
-    libxl__datacopier_state *dc = &dss->save_dm_datacopier;
-    memset(dc, 0, sizeof(*dc));
-    dc->readwhat = GCSPRINTF("qemu save file %s", filename);
-    dc->ao = ao;
-    dc->readfd = -1;
-    dc->writefd = fd;
-    dc->maxsz = INT_MAX;
-    dc->bytes_to_read = -1;
-    dc->copywhat = GCSPRINTF("qemu save file for domain %"PRIu32, dss->domid);
-    dc->writewhat = "save/migration stream";
-    dc->callback = save_device_model_datacopier_done;
-
-    dc->readfd = open(filename, O_RDONLY);
-    if (dc->readfd < 0) {
-        LOGE(ERROR, "unable to open %s", dc->readwhat);
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
-    if (fstat(dc->readfd, &st))
-    {
-        LOGE(ERROR, "unable to fstat %s", dc->readwhat);
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
-    if (!S_ISREG(st.st_mode)) {
-        LOG(ERROR, "%s is not a plain file!", dc->readwhat);
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
-    qemu_state_len = st.st_size;
-    LOG(DEBUG, "%s is %d bytes", dc->readwhat, qemu_state_len);
-
-    rc = libxl__datacopier_start(dc);
-    if (rc) goto out;
-
-    libxl__datacopier_prefixdata(egc, dc,
-                                 QEMU_SIGNATURE, strlen(QEMU_SIGNATURE));
-
-    libxl__datacopier_prefixdata(egc, dc,
-                                 &qemu_state_len, sizeof(qemu_state_len));
-    return;
-
- out:
-    save_device_model_datacopier_done(egc, dc, rc, -1, EIO);
-}
-
-static void save_device_model_datacopier_done(libxl__egc *egc,
-     libxl__datacopier_state *dc, int our_rc, int onwrite, int errnoval)
-{
-    libxl__domain_suspend_state *dss =
-        CONTAINER_OF(dc, *dss, save_dm_datacopier);
-    STATE_AO_GC(dss->ao);
-
-    /* Convenience aliases */
-    const char *const filename = dss->dm_savefile;
-    int rc;
-
-    libxl__datacopier_kill(dc);
-
-    if (dc->readfd >= 0) {
-        close(dc->readfd);
-        dc->readfd = -1;
-    }
-
-    rc = libxl__remove_file(gc, filename);
-    if (!our_rc) our_rc = rc;
-
-    dss->save_dm_callback(egc, dss, our_rc);
 }
 
 static void libxl__remus_teardown(libxl__egc *egc,

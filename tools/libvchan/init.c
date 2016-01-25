@@ -78,7 +78,7 @@ static int init_gnt_srv(struct libxenvchan *ctrl, int domain)
 	uint32_t ring_ref = -1;
 	void *ring;
 
-	ring = xc_gntshr_share_page_notify(ctrl->gntshr, domain,
+	ring = xengntshr_share_page_notify(ctrl->gntshr, domain,
 			&ring_ref, 1, offsetof(struct vchan_interface, srv_live),
 			ctrl->event_port);
 
@@ -104,7 +104,7 @@ static int init_gnt_srv(struct libxenvchan *ctrl, int domain)
 		ctrl->read.buffer = ((void*)ctrl->ring) + LARGE_RING_OFFSET;
 		break;
 	default:
-		ctrl->read.buffer = xc_gntshr_share_pages(ctrl->gntshr, domain,
+		ctrl->read.buffer = xengntshr_share_pages(ctrl->gntshr, domain,
 			pages_left, ctrl->ring->grants, 1);
 		if (!ctrl->read.buffer)
 			goto out_ring;
@@ -118,7 +118,7 @@ static int init_gnt_srv(struct libxenvchan *ctrl, int domain)
 		ctrl->write.buffer = ((void*)ctrl->ring) + LARGE_RING_OFFSET;
 		break;
 	default:
-		ctrl->write.buffer = xc_gntshr_share_pages(ctrl->gntshr, domain,
+		ctrl->write.buffer = xengntshr_share_pages(ctrl->gntshr, domain,
 			pages_right, ctrl->ring->grants + pages_left, 1);
 		if (!ctrl->write.buffer)
 			goto out_unmap_left;
@@ -128,9 +128,9 @@ out:
 	return ring_ref;
 out_unmap_left:
 	if (pages_left)
-		xc_gntshr_munmap(ctrl->gntshr, ctrl->read.buffer, pages_left);
+		xengntshr_unshare(ctrl->gntshr, ctrl->read.buffer, pages_left);
 out_ring:
-	xc_gntshr_munmap(ctrl->gntshr, ring, 1);
+	xengntshr_unshare(ctrl->gntshr, ring, 1);
 	ring_ref = -1;
 	ctrl->ring = NULL;
 	ctrl->write.order = ctrl->read.order = 0;
@@ -142,7 +142,7 @@ static int init_gnt_cli(struct libxenvchan *ctrl, int domain, uint32_t ring_ref)
 	int rv = -1;
 	uint32_t *grants;
 
-	ctrl->ring = xc_gnttab_map_grant_ref_notify(ctrl->gnttab,
+	ctrl->ring = xengnttab_map_grant_ref_notify(ctrl->gnttab,
 		domain, ring_ref, PROT_READ|PROT_WRITE,
 		offsetof(struct vchan_interface, cli_live), ctrl->event_port);
 
@@ -172,7 +172,7 @@ static int init_gnt_cli(struct libxenvchan *ctrl, int domain, uint32_t ring_ref)
 	default:
 		{
 			int pages_left = 1 << (ctrl->write.order - PAGE_SHIFT);
-			ctrl->write.buffer = xc_gnttab_map_domain_grant_refs(ctrl->gnttab,
+			ctrl->write.buffer = xengnttab_map_domain_grant_refs(ctrl->gnttab,
 				pages_left, domain, grants, PROT_READ|PROT_WRITE);
 			if (!ctrl->write.buffer)
 				goto out_unmap_ring;
@@ -190,7 +190,7 @@ static int init_gnt_cli(struct libxenvchan *ctrl, int domain, uint32_t ring_ref)
 	default:
 		{
 			int pages_right = 1 << (ctrl->read.order - PAGE_SHIFT);
-			ctrl->read.buffer = xc_gnttab_map_domain_grant_refs(ctrl->gnttab,
+			ctrl->read.buffer = xengnttab_map_domain_grant_refs(ctrl->gnttab,
 				pages_right, domain, grants, PROT_READ);
 			if (!ctrl->read.buffer)
 				goto out_unmap_left;
@@ -202,10 +202,10 @@ static int init_gnt_cli(struct libxenvchan *ctrl, int domain, uint32_t ring_ref)
 	return rv;
  out_unmap_left:
 	if (ctrl->write.order >= PAGE_SHIFT)
-		xc_gnttab_munmap(ctrl->gnttab, ctrl->write.buffer,
-		                 1 << (ctrl->write.order - PAGE_SHIFT));
+		xengnttab_unmap(ctrl->gnttab, ctrl->write.buffer,
+		                1 << (ctrl->write.order - PAGE_SHIFT));
  out_unmap_ring:
-	xc_gnttab_munmap(ctrl->gnttab, ctrl->ring, 1);
+	xengnttab_unmap(ctrl->gnttab, ctrl->ring, 1);
 	ctrl->ring = 0;
 	ctrl->write.order = ctrl->read.order = 0;
 	rv = -1;
@@ -216,25 +216,25 @@ static int init_evt_srv(struct libxenvchan *ctrl, int domain, xentoollog_logger 
 {
 	evtchn_port_or_error_t port;
 
-	ctrl->event = xc_evtchn_open(logger, 0);
+	ctrl->event = xenevtchn_open(logger, 0);
 	if (!ctrl->event)
 		return -1;
 
-	port = xc_evtchn_bind_unbound_port(ctrl->event, domain);
+	port = xenevtchn_bind_unbound_port(ctrl->event, domain);
 	if (port < 0)
 		goto fail;
 	ctrl->event_port = port;
 
-	if (xc_evtchn_unmask(ctrl->event, ctrl->event_port))
+	if (xenevtchn_unmask(ctrl->event, ctrl->event_port))
 		goto fail;
 
 	return 0;
 
 fail:
 	if (port >= 0)
-		xc_evtchn_unbind(ctrl->event, port);
+		xenevtchn_unbind(ctrl->event, port);
 
-	xc_evtchn_close(ctrl->event);
+	xenevtchn_close(ctrl->event);
 	ctrl->event = NULL;
 
 	return -1;
@@ -325,7 +325,7 @@ struct libxenvchan *libxenvchan_server_init(xentoollog_logger *logger, int domai
 		ctrl->write.order = LARGE_RING_SHIFT;
 	}
 
-	ctrl->gntshr = xc_gntshr_open(logger, 0);
+	ctrl->gntshr = xengntshr_open(logger, 0);
 	if (!ctrl->gntshr)
 		goto out;
 
@@ -346,26 +346,26 @@ static int init_evt_cli(struct libxenvchan *ctrl, int domain, xentoollog_logger 
 {
 	evtchn_port_or_error_t port;
 
-	ctrl->event = xc_evtchn_open(logger, 0);
+	ctrl->event = xenevtchn_open(logger, 0);
 	if (!ctrl->event)
 		return -1;
 
-	port = xc_evtchn_bind_interdomain(ctrl->event,
+	port = xenevtchn_bind_interdomain(ctrl->event,
 		domain, ctrl->event_port);
 	if (port < 0)
 		goto fail;
 	ctrl->event_port = port;
 
-	if (xc_evtchn_unmask(ctrl->event, ctrl->event_port))
+	if (xenevtchn_unmask(ctrl->event, ctrl->event_port))
 		goto fail;
 
 	return 0;
 
 fail:
 	if (port >= 0)
-		xc_evtchn_unbind(ctrl->event, port);
+		xenevtchn_unbind(ctrl->event, port);
 
-	xc_evtchn_close(ctrl->event);
+	xenevtchn_close(ctrl->event);
 	ctrl->event = NULL;
 
 	return -1;
@@ -413,7 +413,7 @@ struct libxenvchan *libxenvchan_client_init(xentoollog_logger *logger, int domai
 	if (!ctrl->event_port)
 		goto fail;
 
-	ctrl->gnttab = xc_gnttab_open(logger, 0);
+	ctrl->gnttab = xengnttab_open(logger, 0);
 	if (!ctrl->gnttab)
 		goto fail;
 

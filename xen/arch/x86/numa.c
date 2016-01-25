@@ -42,16 +42,15 @@ nodeid_t cpu_to_node[NR_CPUS] __read_mostly = {
 /*
  * Keep BIOS's CPU2node information, should not be used for memory allocaion
  */
-nodeid_t apicid_to_node[MAX_LOCAL_APIC] __cpuinitdata = {
+nodeid_t apicid_to_node[MAX_LOCAL_APIC] = {
     [0 ... MAX_LOCAL_APIC-1] = NUMA_NO_NODE
 };
 cpumask_t node_to_cpumask[MAX_NUMNODES] __read_mostly;
 
 nodemask_t __read_mostly node_online_map = { { [0] = 1UL } };
 
-int numa_off __devinitdata = 0;
-
-int acpi_numa __devinitdata;
+bool_t numa_off = 0;
+s8 acpi_numa = 0;
 
 int srat_disabled(void)
 {
@@ -290,12 +289,12 @@ void __init numa_initmem_init(unsigned long start_pfn, unsigned long end_pfn)
                     (u64)end_pfn << PAGE_SHIFT);
 }
 
-__cpuinit void numa_add_cpu(int cpu)
+void numa_add_cpu(int cpu)
 {
     cpumask_set_cpu(cpu, &node_to_cpumask[cpu_to_node(cpu)]);
 } 
 
-void __cpuinit numa_set_node(int cpu, nodeid_t node)
+void numa_set_node(int cpu, nodeid_t node)
 {
     cpu_to_node[cpu] = node;
 }

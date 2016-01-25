@@ -44,7 +44,8 @@
 
 #include <xen/io/libxenvchan.h>
 #include <xen/sys/evtchn.h>
-#include <xenctrl.h>
+#include <xenevtchn.h>
+#include <xengnttab.h>
 
 struct libxenvchan_ring {
 	/* Pointer into the shared page. Offsets into buffer. */
@@ -65,13 +66,13 @@ struct libxenvchan_ring {
 struct libxenvchan {
 	/* Mapping handle for shared ring page */
 	union {
-		xc_gntshr *gntshr; /* for server */
-		xc_gnttab *gnttab; /* for client */
+		xengntshr_handle *gntshr; /* for server */
+		xengnttab_handle *gnttab; /* for client */
 	};
 	/* Pointer to shared ring page */
 	struct vchan_interface *ring;
 	/* event channel interface */
-	xc_evtchn *event;
+	xenevtchn_handle *event;
 	uint32_t event_port;
 	/* informative flags: are we acting as server? */
 	int is_server:1;

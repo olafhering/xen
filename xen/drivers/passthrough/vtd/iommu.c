@@ -583,7 +583,7 @@ static void __intel_iommu_iotlb_flush(struct domain *d, unsigned long gfn,
         if ( iommu_domid == -1 )
             continue;
 
-        if ( page_count > 1 || gfn == -1 )
+        if ( page_count != 1 || gfn == INVALID_GFN )
         {
             if ( iommu_flush_iotlb_dsi(iommu, iommu_domid,
                         0, flush_dev_iotlb) )
@@ -592,7 +592,7 @@ static void __intel_iommu_iotlb_flush(struct domain *d, unsigned long gfn,
         else
         {
             if ( iommu_flush_iotlb_psi(iommu, iommu_domid,
-                        (paddr_t)gfn << PAGE_SHIFT_4K, 0,
+                        (paddr_t)gfn << PAGE_SHIFT_4K, PAGE_ORDER_4K,
                         !dma_old_pte_present, flush_dev_iotlb) )
                 iommu_flush_write_buffer(iommu);
         }
@@ -606,7 +606,7 @@ static void intel_iommu_iotlb_flush(struct domain *d, unsigned long gfn, unsigne
 
 static void intel_iommu_iotlb_flush_all(struct domain *d)
 {
-    __intel_iommu_iotlb_flush(d, 0, 0, 0);
+    __intel_iommu_iotlb_flush(d, INVALID_GFN, 0, 0);
 }
 
 /* clear one page's page table */
@@ -713,20 +713,18 @@ static void iommu_enable_translation(struct acpi_drhd_unit *drhd)
     {
         if ( force_iommu )
             panic("BIOS did not enable IGD for VT properly, crash Xen for security purpose");
-        else
-        {
-            dprintk(XENLOG_WARNING VTDPREFIX,
-                    "BIOS did not enable IGD for VT properly.  Disabling IGD VT-d engine.\n");
-            return;
-        }
+
+        printk(XENLOG_WARNING VTDPREFIX
+               "BIOS did not enable IGD for VT properly.  Disabling IGD VT-d engine.\n");
+        return;
     }
 
     /* apply platform specific errata workarounds */
     vtd_ops_preamble_quirk(iommu);
 
     if ( iommu_verbose )
-        dprintk(VTDPREFIX,
-                "iommu_enable_translation: iommu->reg = %p\n", iommu->reg);
+        printk(VTDPREFIX "iommu_enable_translation: iommu->reg = %p\n",
+               iommu->reg);
     spin_lock_irqsave(&iommu->register_lock, flags);
     sts = dmar_readl(iommu->reg, DMAR_GSTS_REG);
     dmar_writel(iommu->reg, DMAR_GCMD_REG, sts | DMA_GCMD_TE);
@@ -1150,11 +1148,10 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
 
     if ( iommu_verbose )
     {
-        dprintk(VTDPREFIX,
-                "drhd->address = %"PRIx64" iommu->reg = %p\n",
-                drhd->address, iommu->reg);
-        dprintk(VTDPREFIX,
-                "cap = %"PRIx64" ecap = %"PRIx64"\n", iommu->cap, iommu->ecap);
+        printk(VTDPREFIX "drhd->address = %"PRIx64" iommu->reg = %p\n",
+               drhd->address, iommu->reg);
+        printk(VTDPREFIX "cap = %"PRIx64" ecap = %"PRIx64"\n",
+               iommu->cap, iommu->ecap);
     }
     if ( !(iommu->cap + 1) || !(iommu->ecap + 1) )
         return -ENODEV;
@@ -1163,7 +1160,7 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
          cap_num_fault_regs(iommu->cap) * PRIMARY_FAULT_REG_LEN >= PAGE_SIZE ||
          ecap_iotlb_offset(iommu->ecap) >= PAGE_SIZE )
     {
-        dprintk(XENLOG_ERR VTDPREFIX, "IOMMU: unsupported\n");
+        printk(XENLOG_ERR VTDPREFIX "IOMMU: unsupported\n");
         print_iommu_regs(drhd);
         return -ENODEV;
     }
@@ -1175,8 +1172,7 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
             break;
     if ( agaw < 0 )
     {
-        dprintk(XENLOG_ERR VTDPREFIX,
-                 "IOMMU: unsupported sagaw %lx\n", sagaw);
+        printk(XENLOG_ERR VTDPREFIX "IOMMU: unsupported sagaw %lx\n", sagaw);
         print_iommu_regs(drhd);
         return -ENODEV;
     }
@@ -1433,10 +1429,10 @@ static int domain_context_mapping(
     switch ( pdev->type )
     {
     case DEV_TYPE_PCI_HOST_BRIDGE:
-        if ( iommu_verbose )
-            dprintk(VTDPREFIX, "d%d:Hostbridge: skip %04x:%02x:%02x.%u map\n",
-                    domain->domain_id, seg, bus,
-                    PCI_SLOT(devfn), PCI_FUNC(devfn));
+        if ( iommu_debug )
+            printk(VTDPREFIX "d%d:Hostbridge: skip %04x:%02x:%02x.%u map\n",
+                   domain->domain_id, seg, bus,
+                   PCI_SLOT(devfn), PCI_FUNC(devfn));
         if ( !is_hardware_domain(domain) )
             return -EPERM;
         break;
@@ -1447,10 +1443,10 @@ static int domain_context_mapping(
         break;
 
     case DEV_TYPE_PCIe_ENDPOINT:
-        if ( iommu_verbose )
-            dprintk(VTDPREFIX, "d%d:PCIe: map %04x:%02x:%02x.%u\n",
-                    domain->domain_id, seg, bus,
-                    PCI_SLOT(devfn), PCI_FUNC(devfn));
+        if ( iommu_debug )
+            printk(VTDPREFIX "d%d:PCIe: map %04x:%02x:%02x.%u\n",
+                   domain->domain_id, seg, bus,
+                   PCI_SLOT(devfn), PCI_FUNC(devfn));
         ret = domain_context_mapping_one(domain, drhd->iommu, bus, devfn,
                                          pdev);
         if ( !ret && devfn == pdev->devfn && ats_device(pdev, drhd) > 0 )
@@ -1459,10 +1455,10 @@ static int domain_context_mapping(
         break;
 
     case DEV_TYPE_PCI:
-        if ( iommu_verbose )
-            dprintk(VTDPREFIX, "d%d:PCI: map %04x:%02x:%02x.%u\n",
-                    domain->domain_id, seg, bus,
-                    PCI_SLOT(devfn), PCI_FUNC(devfn));
+        if ( iommu_debug )
+            printk(VTDPREFIX "d%d:PCI: map %04x:%02x:%02x.%u\n",
+                   domain->domain_id, seg, bus,
+                   PCI_SLOT(devfn), PCI_FUNC(devfn));
 
         ret = domain_context_mapping_one(domain, drhd->iommu, bus, devfn,
                                          pdev);
@@ -1572,10 +1568,10 @@ static int domain_context_unmap(
     switch ( pdev->type )
     {
     case DEV_TYPE_PCI_HOST_BRIDGE:
-        if ( iommu_verbose )
-            dprintk(VTDPREFIX, "d%d:Hostbridge: skip %04x:%02x:%02x.%u unmap\n",
-                    domain->domain_id, seg, bus,
-                    PCI_SLOT(devfn), PCI_FUNC(devfn));
+        if ( iommu_debug )
+            printk(VTDPREFIX "d%d:Hostbridge: skip %04x:%02x:%02x.%u unmap\n",
+                   domain->domain_id, seg, bus,
+                   PCI_SLOT(devfn), PCI_FUNC(devfn));
         if ( !is_hardware_domain(domain) )
             return -EPERM;
         goto out;
@@ -1586,10 +1582,10 @@ static int domain_context_unmap(
         goto out;
 
     case DEV_TYPE_PCIe_ENDPOINT:
-        if ( iommu_verbose )
-            dprintk(VTDPREFIX, "d%d:PCIe: unmap %04x:%02x:%02x.%u\n",
-                    domain->domain_id, seg, bus,
-                    PCI_SLOT(devfn), PCI_FUNC(devfn));
+        if ( iommu_debug )
+            printk(VTDPREFIX "d%d:PCIe: unmap %04x:%02x:%02x.%u\n",
+                   domain->domain_id, seg, bus,
+                   PCI_SLOT(devfn), PCI_FUNC(devfn));
         ret = domain_context_unmap_one(domain, iommu, bus, devfn);
         if ( !ret && devfn == pdev->devfn && ats_device(pdev, drhd) > 0 )
             disable_ats_device(seg, bus, devfn);
@@ -1597,9 +1593,9 @@ static int domain_context_unmap(
         break;
 
     case DEV_TYPE_PCI:
-        if ( iommu_verbose )
-            dprintk(VTDPREFIX, "d%d:PCI: unmap %04x:%02x:%02x.%u\n",
-                    domain->domain_id, seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
+        if ( iommu_debug )
+            printk(VTDPREFIX "d%d:PCI: unmap %04x:%02x:%02x.%u\n",
+                   domain->domain_id, seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
         ret = domain_context_unmap_one(domain, iommu, bus, devfn);
         if ( ret )
             break;
@@ -2156,8 +2152,8 @@ int __init intel_vtd_setup(void)
     }
 
     /* We enable the following features only if they are supported by all VT-d
-     * engines: Snoop Control, DMA passthrough, Queued Invalidation and
-     * Interrupt Remapping.
+     * engines: Snoop Control, DMA passthrough, Queued Invalidation, Interrupt
+     * Remapping, and Posted Interrupt
      */
     for_each_drhd_unit ( drhd )
     {
@@ -2185,6 +2181,14 @@ int __init intel_vtd_setup(void)
         if ( iommu_intremap && !ecap_intr_remap(iommu->ecap) )
             iommu_intremap = 0;
 
+        /*
+         * We cannot use posted interrupt if X86_FEATURE_CX16 is
+         * not supported, since we count on this feature to
+         * atomically update 16-byte IRTE in posted format.
+         */
+        if ( !cap_intr_post(iommu->cap) || !cpu_has_cx16 )
+            iommu_intpost = 0;
+
         if ( !vtd_ept_page_compatible(iommu) )
             iommu_hap_pt_share = 0;
 
@@ -2210,6 +2214,7 @@ int __init intel_vtd_setup(void)
     P(iommu_passthrough, "Dom0 DMA Passthrough");
     P(iommu_qinval, "Queued Invalidation");
     P(iommu_intremap, "Interrupt Remapping");
+    P(iommu_intpost, "Posted Interrupt");
     P(iommu_hap_pt_share, "Shared EPT tables");
 #undef P
 
@@ -2229,6 +2234,7 @@ int __init intel_vtd_setup(void)
     iommu_passthrough = 0;
     iommu_qinval = 0;
     iommu_intremap = 0;
+    iommu_intpost = 0;
     return ret;
 }
 

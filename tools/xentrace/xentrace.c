@@ -30,6 +30,8 @@
 #include <xen/xen.h>
 #include <xen/trace.h>
 
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
+#include <xenevtchn.h>
 #include <xenctrl.h>
 
 #define PERROR(_m, _a...)                                       \
@@ -74,7 +76,7 @@ settings_t opts;
 int interrupted = 0; /* gets set if we get a SIGHUP */
 
 static xc_interface *xc_handle;
-static xc_evtchn *xce_handle = NULL;
+static xenevtchn_handle *xce_handle = NULL;
 static int virq_port = -1;
 static int outfd = 1;
 
@@ -507,7 +509,7 @@ static struct t_struct *map_tbufs(unsigned long tbufs_mfn, unsigned int num,
         for ( j=0; j<tbufs.t_info->tbuf_size; j++)
             pfn_list[j] = (xen_pfn_t)mfn_list[j];
 
-        tbufs.meta[i] = xc_map_foreign_batch(xc_handle, DOMID_XEN,
+        tbufs.meta[i] = xc_map_foreign_pages(xc_handle, DOMID_XEN,
                                              PROT_READ | PROT_WRITE,
                                              pfn_list,
                                              tbufs.t_info->tbuf_size);
@@ -602,13 +604,13 @@ static void event_init(void)
 {
     int rc;
 
-    xce_handle = xc_evtchn_open(NULL, 0);
+    xce_handle = xenevtchn_open(NULL, 0);
     if (xce_handle == NULL) {
         perror("event channel open");
         exit(EXIT_FAILURE);
     }
 
-    rc = xc_evtchn_bind_virq(xce_handle, VIRQ_TBUF);
+    rc = xenevtchn_bind_virq(xce_handle, VIRQ_TBUF);
     if (rc == -1) {
         PERROR("failed to bind to VIRQ port");
         exit(EXIT_FAILURE);
@@ -623,7 +625,7 @@ static void event_init(void)
 static void wait_for_event_or_timeout(unsigned long milliseconds)
 {
     int rc;
-    struct pollfd fd = { .fd = xc_evtchn_fd(xce_handle),
+    struct pollfd fd = { .fd = xenevtchn_fd(xce_handle),
                          .events = POLLIN | POLLERR };
     int port;
 
@@ -636,7 +638,7 @@ static void wait_for_event_or_timeout(unsigned long milliseconds)
     }
 
     if (rc == 1) {
-        port = xc_evtchn_pending(xce_handle);
+        port = xenevtchn_pending(xce_handle);
         if (port == -1) {
             PERROR("failed to read port from evtchn");
             exit(EXIT_FAILURE);
@@ -647,7 +649,7 @@ static void wait_for_event_or_timeout(unsigned long milliseconds)
                     port, virq_port);
             exit(EXIT_FAILURE);
         }
-        rc = xc_evtchn_unmask(xce_handle, port);
+        rc = xenevtchn_unmask(xce_handle, port);
         if (rc == -1) {
             PERROR("failed to write port to evtchn");
             exit(EXIT_FAILURE);
@@ -1220,6 +1222,7 @@ int main(int argc, char **argv)
 
     return ret;
 }
+
 /*
  * Local variables:
  * mode: C

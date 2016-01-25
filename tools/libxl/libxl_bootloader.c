@@ -60,15 +60,15 @@ static void make_bootloader_args(libxl__gc *gc, libxl__bootloader_state *bl,
     ARG(bootloader_path);
 
     if (info->kernel)
-        ARG(libxl__sprintf(gc, "--kernel=%s", info->kernel));
+        ARG(GCSPRINTF("--kernel=%s", info->kernel));
     if (info->ramdisk)
-        ARG(libxl__sprintf(gc, "--ramdisk=%s", info->ramdisk));
+        ARG(GCSPRINTF("--ramdisk=%s", info->ramdisk));
     if (info->cmdline && *info->cmdline != '\0')
-        ARG(libxl__sprintf(gc, "--args=%s", info->cmdline));
+        ARG(GCSPRINTF("--args=%s", info->cmdline));
 
-    ARG(libxl__sprintf(gc, "--output=%s", bl->outputpath));
+    ARG(GCSPRINTF("--output=%s", bl->outputpath));
     ARG("--output-format=simple0");
-    ARG(libxl__sprintf(gc, "--output-directory=%s", bl->outputdir));
+    ARG(GCSPRINTF("--output-directory=%s", bl->outputdir));
 
     if (info->u.pv.bootloader_args) {
         char **p = info->u.pv.bootloader_args;
@@ -485,8 +485,8 @@ static void bootloader_gotptys(libxl__egc *egc, libxl__openpty_state *op)
 
     dom_console_xs_path = GCSPRINTF("%s/console/tty", dompath);
 
-    rc = libxl__xs_write(gc, XBT_NULL, dom_console_xs_path, "%s",
-                         dom_console_slave_tty_path);
+    rc = libxl__xs_printf(gc, XBT_NULL, dom_console_xs_path, "%s",
+                          dom_console_slave_tty_path);
     if (rc) {
         LOGE(ERROR,"xs write console path %s := %s failed",
              dom_console_xs_path, dom_console_slave_tty_path);
@@ -556,7 +556,6 @@ static void bootloader_gotptys(libxl__egc *egc, libxl__openpty_state *op)
         r = login_tty(libxl__carefd_fd(bl->ptys[0].slave));
         if (r) { LOGE(ERROR, "login_tty failed"); exit(-1); }
         libxl__exec(gc, -1, -1, -1, bl->args[0], (char **) bl->args, env);
-        exit(-1);
     }
 
     /* parent */

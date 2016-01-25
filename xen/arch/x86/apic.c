@@ -521,7 +521,7 @@ out:
         free_ioapic_entries(ioapic_entries);
 }
 
-void __devinit setup_local_APIC(void)
+void setup_local_APIC(void)
 {
     unsigned long oldvalue, value, ver, maxlvt;
     int i, j;
@@ -814,25 +814,14 @@ custom_param("apic_verbosity", apic_set_verbosity);
 static int __init detect_init_APIC (void)
 {
     uint64_t msr_content;
-    u32 features;
 
     /* Disabled by kernel option? */
     if (enable_local_apic < 0)
         return -1;
 
-    switch (boot_cpu_data.x86_vendor) {
-    case X86_VENDOR_AMD:
-        if ((boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model > 1) ||
-            (boot_cpu_data.x86 >= 0xf && boot_cpu_data.x86 <= 0x17))
-            break;
-        goto no_apic;
-    case X86_VENDOR_INTEL:
-        if (boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15 ||
-            (boot_cpu_data.x86 == 5 && cpu_has_apic))
-            break;
-        goto no_apic;
-    default:
-        goto no_apic;
+    if (rdmsr_safe(MSR_IA32_APICBASE, msr_content)) {
+        printk("No local APIC present\n");
+        return -1;
     }
 
     if (!cpu_has_apic) {
@@ -851,14 +840,11 @@ static int __init detect_init_APIC (void)
          * software for Intel P6 or later and AMD K7
          * (Model > 1) or later.
          */
-        rdmsrl(MSR_IA32_APICBASE, msr_content);
         if (!(msr_content & MSR_IA32_APICBASE_ENABLE)) {
             printk("Local APIC disabled by BIOS -- reenabling.\n");
             msr_content &= ~MSR_IA32_APICBASE_BASE;
             msr_content |= MSR_IA32_APICBASE_ENABLE | APIC_DEFAULT_PHYS_BASE;
-            wrmsrl(MSR_IA32_APICBASE,
-                msr_content | MSR_IA32_APICBASE_ENABLE
-                | APIC_DEFAULT_PHYS_BASE);
+            wrmsrl(MSR_IA32_APICBASE, msr_content);
             enabled_via_apicbase = 1;
         }
     }
@@ -866,8 +852,7 @@ static int __init detect_init_APIC (void)
      * The APIC feature bit should now be enabled
      * in `cpuid'
      */
-    features = cpuid_edx(1);
-    if (!(features & (1 << X86_FEATURE_APIC))) {
+    if (!(cpuid_edx(1) & cpufeat_mask(X86_FEATURE_APIC))) {
         printk("Could not enable APIC!\n");
         return -1;
     }
@@ -876,7 +861,6 @@ static int __init detect_init_APIC (void)
     mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
 
     /* The BIOS may have set up the APIC at some other address */
-    rdmsrl(MSR_IA32_APICBASE, msr_content);
     if (msr_content & MSR_IA32_APICBASE_ENABLE)
         mp_lapic_addr = msr_content & MSR_IA32_APICBASE_BASE;
 
@@ -888,10 +872,6 @@ static int __init detect_init_APIC (void)
     apic_pm_activate();
 
     return 0;
-
-no_apic:
-    printk("No local APIC present or hardware disabled\n");
-    return -1;
 }
 
 void x2apic_ap_setup(void)
@@ -1107,7 +1087,7 @@ static void __setup_APIC_LVTT(unsigned int clocks)
     apic_write_around(APIC_TMICT, clocks/APIC_DIVISOR);
 }
 
-static void __devinit setup_APIC_timer(void)
+static void setup_APIC_timer(void)
 {
     unsigned long flags;
     local_irq_save(flags);
@@ -1219,7 +1199,7 @@ void __init setup_boot_APIC_clock(void)
     local_irq_restore(flags);
 }
 
-void __devinit setup_secondary_APIC_clock(void)
+void setup_secondary_APIC_clock(void)
 {
     setup_APIC_timer();
 }

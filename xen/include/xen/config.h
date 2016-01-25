@@ -7,6 +7,8 @@
 #ifndef __XEN_CONFIG_H__
 #define __XEN_CONFIG_H__
 
+#include <generated/autoconf.h>
+
 #ifndef __ASSEMBLY__
 #include <xen/compiler.h>
 #endif
@@ -84,14 +86,13 @@
 #define mk_unsigned_long(x) x
 #endif /* !__ASSEMBLY__ */
 
-#define fastcall
-#define __cpuinitdata
-#define __cpuinit
-
-#ifdef FLASK_ENABLE
+#ifdef CONFIG_FLASK
 #define XSM_MAGIC 0xf97cff8c
 /* Maintain statistics on the access vector cache */
 #define FLASK_AVC_STATS 1
 #endif
+
+/* allow existing code to work with Kconfig variable */
+#define NR_CPUS CONFIG_NR_CPUS
 
 #endif /* __XEN_CONFIG_H__ */

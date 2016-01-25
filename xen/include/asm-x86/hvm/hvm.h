@@ -72,10 +72,10 @@ enum hvm_intblk {
 #define HVM_HAP_SUPERPAGE_1GB   0x00000002
 
 struct hvm_trap {
-    int           vector;
-    unsigned int  type;         /* X86_EVENTTYPE_* */
-    int           error_code;   /* HVM_DELIVER_NO_ERROR_CODE if n/a */
-    int           insn_len;     /* Instruction length */ 
+    int16_t       vector;
+    uint8_t       type;         /* X86_EVENTTYPE_* */
+    uint8_t       insn_len;     /* Instruction length */
+    uint32_t      error_code;   /* HVM_DELIVER_NO_ERROR_CODE if n/a */
     unsigned long cr2;          /* Only for TRAP_page_fault h/w exception */
 };
 
@@ -88,17 +88,16 @@ struct hvm_function_table {
     char *name;
 
     /* Support Hardware-Assisted Paging? */
-    int hap_supported;
+    bool_t hap_supported;
 
     /* Necessary hardware support for PVH mode? */
-    int pvh_supported;
+    bool_t pvh_supported;
 
     /* Necessary hardware support for alternate p2m's? */
     bool_t altp2m_supported;
 
     /* Indicate HAP capabilities. */
-    int hap_capabilities;
-
+    unsigned int hap_capabilities;
 
     /*
      * Initialise/destroy HVM domain/vcpu resources
@@ -142,7 +141,7 @@ struct hvm_function_table {
 
     void (*set_tsc_offset)(struct vcpu *v, u64 offset, u64 at_tsc);
 
-    void (*inject_trap)(struct hvm_trap *trap);
+    void (*inject_trap)(const struct hvm_trap *trap);
 
     void (*init_hypercall_page)(struct domain *d, void *hypercall_page);
 
@@ -175,7 +174,7 @@ struct hvm_function_table {
     int (*nhvm_vcpu_initialise)(struct vcpu *v);
     void (*nhvm_vcpu_destroy)(struct vcpu *v);
     int (*nhvm_vcpu_reset)(struct vcpu *v);
-    int (*nhvm_vcpu_vmexit_trap)(struct vcpu *v, struct hvm_trap *trap);
+    int (*nhvm_vcpu_vmexit_trap)(struct vcpu *v, const struct hvm_trap *trap);
     uint64_t (*nhvm_vcpu_p2m_base)(struct vcpu *v);
     bool_t (*nhvm_vmcx_guest_intercepts_trap)(struct vcpu *v,
                                               unsigned int trapnr,
@@ -213,6 +212,8 @@ struct hvm_function_table {
     void (*altp2m_vcpu_update_vmfunc_ve)(struct vcpu *v);
     bool_t (*altp2m_vcpu_emulate_ve)(struct vcpu *v);
     int (*altp2m_vcpu_emulate_vmfunc)(struct cpu_user_regs *regs);
+
+    uint64_t (*scale_tsc)(const struct vcpu *v, uint64_t tsc);
 };
 
 extern struct hvm_function_table hvm_funcs;
@@ -371,7 +372,7 @@ bool_t hvm_io_pending(struct vcpu *v);
 void hvm_do_resume(struct vcpu *v);
 void hvm_migrate_pirqs(struct vcpu *v);
 
-void hvm_inject_trap(struct hvm_trap *trap);
+void hvm_inject_trap(const struct hvm_trap *trap);
 void hvm_inject_hw_exception(unsigned int trapnr, int errcode);
 void hvm_inject_page_fault(int errcode, unsigned long cr2);
 
@@ -495,7 +496,8 @@ int hvm_x2apic_msr_write(struct vcpu *v, unsigned int msr, uint64_t msr_content)
 /* inject vmexit into l1 guest. l1 guest will see a VMEXIT due to
  * 'trapnr' exception.
  */ 
-static inline int nhvm_vcpu_vmexit_trap(struct vcpu *v, struct hvm_trap *trap)
+static inline int nhvm_vcpu_vmexit_trap(struct vcpu *v,
+                                        const struct hvm_trap *trap)
 {
     return hvm_funcs.nhvm_vcpu_vmexit_trap(v, trap);
 }
@@ -559,6 +561,11 @@ void altp2m_vcpu_update_vmfunc_ve(struct vcpu *v);
 
 /* emulates #VE */
 bool_t altp2m_vcpu_emulate_ve(struct vcpu *v);
+
+/* Check CR4/EFER values */
+const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
+                           signed int cr0_pg);
+unsigned long hvm_cr4_guest_reserved_bits(const struct vcpu *v, bool_t restore);
 
 #endif /* __ASM_X86_HVM_HVM_H__ */
 

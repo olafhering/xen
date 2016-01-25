@@ -773,18 +773,48 @@ static int svm_get_guest_pat(struct vcpu *v, u64 *gpat)
     return 1;
 }
 
+static uint64_t scale_tsc(uint64_t host_tsc, uint64_t ratio)
+{
+    uint64_t mult, frac, scaled_host_tsc;
+
+    if ( ratio == DEFAULT_TSC_RATIO )
+        return host_tsc;
+
+    /*
+     * Suppose the most significant 32 bits of host_tsc and ratio are
+     * tsc_h and mult, and the least 32 bits of them are tsc_l and frac,
+     * then
+     *     host_tsc * ratio * 2^-32
+     *     = host_tsc * (mult * 2^32 + frac) * 2^-32
+     *     = host_tsc * mult + (tsc_h * 2^32 + tsc_l) * frac * 2^-32
+     *     = host_tsc * mult + tsc_h * frac + ((tsc_l * frac) >> 32)
+     *
+     * Multiplications in the last two terms are between 32-bit integers,
+     * so both of them can fit in 64-bit integers.
+     *
+     * Because mult is usually less than 10 in practice, it's very rare
+     * that host_tsc * mult can overflow a 64-bit integer.
+     */
+    mult = ratio >> 32;
+    frac = ratio & ((1ULL << 32) - 1);
+    scaled_host_tsc  = host_tsc * mult;
+    scaled_host_tsc += (host_tsc >> 32) * frac;
+    scaled_host_tsc += ((host_tsc & ((1ULL << 32) - 1)) * frac) >> 32;
+
+    return scaled_host_tsc;
+}
+
+static uint64_t svm_scale_tsc(const struct vcpu *v, uint64_t tsc)
+{
+    ASSERT(cpu_has_tsc_ratio && !v->domain->arch.vtsc);
+
+    return scale_tsc(tsc, vcpu_tsc_ratio(v));
+}
+
 static uint64_t svm_get_tsc_offset(uint64_t host_tsc, uint64_t guest_tsc,
     uint64_t ratio)
 {
-    uint64_t offset;
-
-    if (ratio == DEFAULT_TSC_RATIO)
-        return guest_tsc - host_tsc;
-
-    /* calculate hi,lo parts in 64bits to prevent overflow */
-    offset = (((host_tsc >> 32U) * (ratio >> 32U)) << 32U) +
-          (host_tsc & 0xffffffffULL) * (ratio & 0xffffffffULL);
-    return guest_tsc - offset;
+    return guest_tsc - scale_tsc(host_tsc, ratio);
 }
 
 static void svm_set_tsc_offset(struct vcpu *v, u64 offset, u64 at_tsc)
@@ -793,19 +823,6 @@ static void svm_set_tsc_offset(struct vcpu *v, u64 offset, u64 at_tsc)
     struct vmcb_struct *n1vmcb, *n2vmcb;
     uint64_t n2_tsc_offset = 0;
     struct domain *d = v->domain;
-    uint64_t host_tsc, guest_tsc;
-
-    guest_tsc = hvm_get_guest_tsc_fixed(v, at_tsc);
-
-    /* Re-adjust the offset value when TSC_RATIO is available */
-    if ( cpu_has_tsc_ratio && !d->arch.vtsc )
-    {
-        if ( at_tsc )
-            host_tsc = at_tsc;
-        else
-            host_tsc = rdtsc();
-        offset = svm_get_tsc_offset(host_tsc, guest_tsc, vcpu_tsc_ratio(v));
-    }
 
     if ( !nestedhvm_enabled(d) ) {
         vmcb_set_tsc_offset(vmcb, offset);
@@ -819,10 +836,13 @@ static void svm_set_tsc_offset(struct vcpu *v, u64 offset, u64 at_tsc)
         struct nestedsvm *svm = &vcpu_nestedsvm(v);
 
         n2_tsc_offset = vmcb_get_tsc_offset(n2vmcb) -
-            vmcb_get_tsc_offset(n1vmcb);
+                        vmcb_get_tsc_offset(n1vmcb);
         if ( svm->ns_tscratio != DEFAULT_TSC_RATIO ) {
+            uint64_t guest_tsc = hvm_get_guest_tsc_fixed(v, at_tsc);
+
             n2_tsc_offset = svm_get_tsc_offset(guest_tsc,
-                guest_tsc + n2_tsc_offset, svm->ns_tscratio);
+                                               guest_tsc + n2_tsc_offset,
+                                               svm->ns_tscratio);
         }
         vmcb_set_tsc_offset(n1vmcb, offset);
     }
@@ -1035,6 +1055,7 @@ static void noreturn svm_do_resume(struct vcpu *v)
     struct vmcb_struct *vmcb = v->arch.hvm_svm.vmcb;
     bool_t debug_state = v->domain->debugger_attached;
     bool_t vcpu_guestmode = 0;
+    struct vlapic *vlapic = vcpu_vlapic(v);
 
     if ( nestedhvm_enabled(v->domain) && nestedhvm_vcpu_in_guestmode(v) )
         vcpu_guestmode = 1;
@@ -1059,14 +1080,14 @@ static void noreturn svm_do_resume(struct vcpu *v)
         hvm_asid_flush_vcpu(v);
     }
 
-    if ( !vcpu_guestmode )
+    if ( !vcpu_guestmode && !vlapic_hw_disabled(vlapic) )
     {
         vintr_t intr;
 
         /* Reflect the vlapic's TPR in the hardware vtpr */
         intr = vmcb_get_vintr(vmcb);
         intr.fields.tpr =
-            (vlapic_get_reg(vcpu_vlapic(v), APIC_TASKPRI) & 0xFF) >> 4;
+            (vlapic_get_reg(vlapic, APIC_TASKPRI) & 0xFF) >> 4;
         vmcb_set_vintr(vmcb, intr);
     }
 
@@ -1166,7 +1187,7 @@ static int svm_vcpu_initialise(struct vcpu *v)
     }
 
     /* PVH's VPMU is initialized via hypercall */
-    if ( is_hvm_vcpu(v) )
+    if ( has_vlapic(v->domain) )
         vpmu_initialise(v);
 
     svm_guest_osvw_init(v);
@@ -1181,7 +1202,7 @@ static void svm_vcpu_destroy(struct vcpu *v)
     passive_domain_destroy(v);
 }
 
-static void svm_inject_trap(struct hvm_trap *trap)
+static void svm_inject_trap(const struct hvm_trap *trap)
 {
     struct vcpu *curr = current;
     struct vmcb_struct *vmcb = curr->arch.hvm_svm.vmcb;
@@ -1442,7 +1463,7 @@ const struct hvm_function_table * __init start_svm(void)
     if ( !printed )
         printk(" - none\n");
 
-    svm_function_table.hap_supported = cpu_has_svm_npt;
+    svm_function_table.hap_supported = !!cpu_has_svm_npt;
     svm_function_table.hap_capabilities = HVM_HAP_SUPERPAGE_2MB |
         ((cpuid_edx(0x80000001) & 0x04000000) ? HVM_HAP_SUPERPAGE_1GB : 0);
 
@@ -1467,7 +1488,8 @@ static void svm_do_nested_pgfault(struct vcpu *v,
     struct npfec npfec = {
         .read_access = !(pfec & PFEC_insn_fetch),
         .write_access = !!(pfec & PFEC_write_access),
-        .insn_fetch = !!(pfec & PFEC_insn_fetch)
+        .insn_fetch = !!(pfec & PFEC_insn_fetch),
+        .present = !!(pfec & PFEC_page_present),
     };
 
     /* These bits are mutually exclusive */
@@ -2247,6 +2269,8 @@ static struct hvm_function_table __initdata svm_function_table = {
     .nhvm_vmcx_hap_enabled = nsvm_vmcb_hap_enabled,
     .nhvm_intr_blocked = nsvm_intr_blocked,
     .nhvm_hap_walk_L1_p2m = nsvm_hap_walk_L1_p2m,
+
+    .scale_tsc            = svm_scale_tsc,
 };
 
 void svm_vmexit_handler(struct cpu_user_regs *regs)
@@ -2258,6 +2282,7 @@ void svm_vmexit_handler(struct cpu_user_regs *regs)
     int inst_len, rc;
     vintr_t intr;
     bool_t vcpu_guestmode = 0;
+    struct vlapic *vlapic = vcpu_vlapic(v);
 
     hvm_invalidate_regs_fields(regs);
 
@@ -2275,11 +2300,12 @@ void svm_vmexit_handler(struct cpu_user_regs *regs)
      * NB. We need to preserve the low bits of the TPR to make checked builds
      * of Windows work, even though they don't actually do anything.
      */
-    if ( !vcpu_guestmode ) {
+    if ( !vcpu_guestmode && !vlapic_hw_disabled(vlapic) )
+    {
         intr = vmcb_get_vintr(vmcb);
-        vlapic_set_reg(vcpu_vlapic(v), APIC_TASKPRI,
+        vlapic_set_reg(vlapic, APIC_TASKPRI,
                    ((intr.fields.tpr & 0x0F) << 4) |
-                   (vlapic_get_reg(vcpu_vlapic(v), APIC_TASKPRI) & 0x0F));
+                   (vlapic_get_reg(vlapic, APIC_TASKPRI) & 0x0F));
     }
 
     exit_reason = vmcb->exitcode;
@@ -2609,10 +2635,11 @@ void svm_vmexit_handler(struct cpu_user_regs *regs)
         break;
 
     case VMEXIT_XSETBV:
-        if ( (inst_len = __get_instruction_length(current, INSTR_XSETBV))==0 )
-            break;
-        if ( hvm_handle_xsetbv(regs->ecx,
-                               (regs->rdx << 32) | regs->_eax) == 0 )
+        if ( vmcb_get_cpl(vmcb) )
+            hvm_inject_hw_exception(TRAP_gp_fault, 0);
+        else if ( (inst_len = __get_instruction_length(v, INSTR_XSETBV)) &&
+                  hvm_handle_xsetbv(regs->ecx,
+                                    (regs->rdx << 32) | regs->_eax) == 0 )
             __update_guest_eip(regs, inst_len);
         break;
 
@@ -2667,14 +2694,13 @@ void svm_vmexit_handler(struct cpu_user_regs *regs)
     }
 
   out:
-    if ( vcpu_guestmode )
-        /* Don't clobber TPR of the nested guest. */
+    if ( vcpu_guestmode || vlapic_hw_disabled(vlapic) )
         return;
 
     /* The exit may have updated the TPR: reflect this in the hardware vtpr */
     intr = vmcb_get_vintr(vmcb);
     intr.fields.tpr =
-        (vlapic_get_reg(vcpu_vlapic(v), APIC_TASKPRI) & 0xFF) >> 4;
+        (vlapic_get_reg(vlapic, APIC_TASKPRI) & 0xFF) >> 4;
     vmcb_set_vintr(vmcb, intr);
 }
 

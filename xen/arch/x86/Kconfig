@@ -1,0 +1,45 @@
+config X86_64
+	def_bool y
+
+config X86
+	def_bool y
+	select COMPAT
+	select HAS_ACPI
+	select HAS_CPUFREQ
+	select HAS_EHCI
+	select HAS_GDBSX
+	select HAS_IOPORTS
+	select HAS_KEXEC
+	select HAS_MEM_ACCESS
+	select HAS_MEM_PAGING
+	select HAS_MEM_SHARING
+	select HAS_NS16550
+	select HAS_PASSTHROUGH
+	select HAS_PCI
+	select HAS_PDX
+	select HAS_VGA
+
+config ARCH_DEFCONFIG
+	string
+	default "arch/x86/configs/x86_64_defconfig"
+
+menu "Architecture Features"
+
+source "arch/Kconfig"
+
+config BIGMEM
+	bool "big memory support"
+	default n
+	---help---
+	  Allows Xen to support up to 123Tb of memory.
+
+	  This requires enlarging struct page_info as well as shrinking
+	  the always accessible direct mapped memory range.
+
+	  If unsure, say N.
+
+endmenu
+
+source "common/Kconfig"
+
+source "drivers/Kconfig"

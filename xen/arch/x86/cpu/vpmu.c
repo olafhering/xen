@@ -43,34 +43,59 @@ CHECK_pmu_data;
 CHECK_pmu_params;
 
 /*
- * "vpmu" :     vpmu generally enabled
- * "vpmu=off" : vpmu generally disabled
- * "vpmu=bts" : vpmu enabled and Intel BTS feature switched on.
+ * "vpmu" :     vpmu generally enabled (all counters)
+ * "vpmu=off"  : vpmu generally disabled
+ * "vpmu=bts"  : vpmu enabled and Intel BTS feature switched on.
+ * "vpmu=ipc"  : vpmu enabled for IPC counters only (most restrictive)
+ * "vpmu=arch" : vpmu enabled for predef arch counters only (restrictive)
+ * flag combinations are allowed, eg, "vpmu=ipc,bts".
  */
 static unsigned int __read_mostly opt_vpmu_enabled;
 unsigned int __read_mostly vpmu_mode = XENPMU_MODE_OFF;
 unsigned int __read_mostly vpmu_features = 0;
-static void parse_vpmu_param(char *s);
-custom_param("vpmu", parse_vpmu_param);
+static void parse_vpmu_params(char *s);
+custom_param("vpmu", parse_vpmu_params);
 
 static DEFINE_SPINLOCK(vpmu_lock);
 static unsigned vpmu_count;
 
 static DEFINE_PER_CPU(struct vcpu *, last_vcpu);
 
-static void __init parse_vpmu_param(char *s)
+static int parse_vpmu_param(char *s, unsigned int len)
 {
+    if ( !*s || !len )
+        return 0;
+    if ( !strncmp(s, "bts", len) )
+        vpmu_features |= XENPMU_FEATURE_INTEL_BTS;
+    else if ( !strncmp(s, "ipc", len) )
+        vpmu_features |= XENPMU_FEATURE_IPC_ONLY;
+    else if ( !strncmp(s, "arch", len) )
+        vpmu_features |= XENPMU_FEATURE_ARCH_ONLY;
+    else
+        return 1;
+    return 0;
+}
+
+static void __init parse_vpmu_params(char *s)
+{
+    char *sep, *p = s;
+
     switch ( parse_bool(s) )
     {
     case 0:
         break;
     default:
-        if ( !strcmp(s, "bts") )
-            vpmu_features |= XENPMU_FEATURE_INTEL_BTS;
-        else if ( *s )
+        for ( ; ; )
         {
-            printk("VPMU: unknown flag: %s - vpmu disabled!\n", s);
-            break;
+            sep = strchr(p, ',');
+            if ( sep == NULL )
+                sep = strchr(p, 0);
+            if ( parse_vpmu_param(p, sep - p) )
+                goto error;
+            if ( !*sep )
+                /* reached end of flags */
+                break;
+            p = sep + 1;
         }
         /* fall through */
     case 1:
@@ -79,6 +104,10 @@ static void __init parse_vpmu_param(char *s)
         opt_vpmu_enabled = 1;
         break;
     }
+    return;
+
+ error:
+    printk("VPMU: unknown flags: %s - vpmu disabled!\n", s);
 }
 
 void vpmu_lvtpc_update(uint32_t val)
@@ -94,7 +123,7 @@ void vpmu_lvtpc_update(uint32_t val)
     vpmu->hw_lapic_lvtpc = PMU_APIC_VECTOR | (val & APIC_LVT_MASKED);
 
     /* Postpone APIC updates for PV(H) guests if PMU interrupt is pending */
-    if ( is_hvm_vcpu(curr) || !vpmu->xenpmu_data ||
+    if ( has_vlapic(curr->domain) || !vpmu->xenpmu_data ||
          !vpmu_is_set(vpmu, VPMU_CACHED) )
         apic_write(APIC_LVTPC, vpmu->hw_lapic_lvtpc);
 }
@@ -129,7 +158,7 @@ int vpmu_do_msr(unsigned int msr, uint64_t *msr_content,
      * and since do_wr/rdmsr may load VPMU context we should save
      * (and unload) it again.
      */
-    if ( !is_hvm_vcpu(curr) && vpmu->xenpmu_data &&
+    if ( !has_vlapic(curr->domain) && vpmu->xenpmu_data &&
         vpmu_is_set(vpmu, VPMU_CACHED) )
     {
         vpmu_set(vpmu, VPMU_CONTEXT_SAVE);
@@ -184,7 +213,7 @@ void vpmu_do_interrupt(struct cpu_user_regs *regs)
         return;
 
     /* PV(H) guest */
-    if ( !is_hvm_vcpu(sampling) || (vpmu_mode & XENPMU_MODE_ALL) )
+    if ( !has_vlapic(sampling->domain) || (vpmu_mode & XENPMU_MODE_ALL) )
     {
         const struct cpu_user_regs *cur_regs;
         uint64_t *flags = &vpmu->xenpmu_data->pmu.pmu_flags;
@@ -411,7 +440,8 @@ int vpmu_load(struct vcpu *v, bool_t from_guest)
 
     /* Only when PMU is counting, we load PMU context immediately. */
     if ( !vpmu_is_set(vpmu, VPMU_RUNNING) ||
-         (!is_hvm_vcpu(vpmu_vcpu(vpmu)) && vpmu_is_set(vpmu, VPMU_CACHED)) )
+         (!has_vlapic(vpmu_vcpu(vpmu)->domain) &&
+         vpmu_is_set(vpmu, VPMU_CACHED)) )
         return 0;
 
     if ( vpmu->arch_vpmu_ops && vpmu->arch_vpmu_ops->arch_vpmu_load )
@@ -479,6 +509,8 @@ void vpmu_initialise(struct vcpu *v)
         }
         return; /* Don't bother restoring vpmu_count, VPMU is off forever */
     }
+
+    vpmu->hw_lapic_lvtpc = PMU_APIC_VECTOR | APIC_LVT_MASKED;
 
     if ( ret )
         printk(XENLOG_G_WARNING "VPMU: Initialization failed for %pv\n", v);
@@ -635,7 +667,7 @@ long do_xenpmu_op(unsigned int op, XEN_GUEST_HANDLE_PARAM(xen_pmu_params_t) arg)
     struct xen_pmu_data *xenpmu_data;
     struct vpmu_struct *vpmu;
 
-    if ( !opt_vpmu_enabled )
+    if ( !opt_vpmu_enabled || has_vlapic(current->domain) )
         return -EOPNOTSUPP;
 
     ret = xsm_pmu_op(XSM_OTHER, current->domain, op);
@@ -705,7 +737,9 @@ long do_xenpmu_op(unsigned int op, XEN_GUEST_HANDLE_PARAM(xen_pmu_params_t) arg)
         break;
 
     case XENPMU_feature_set:
-        if ( pmu_params.val & ~XENPMU_FEATURE_INTEL_BTS )
+        if ( pmu_params.val & ~(XENPMU_FEATURE_INTEL_BTS |
+                                XENPMU_FEATURE_IPC_ONLY |
+                                XENPMU_FEATURE_ARCH_ONLY))
             return -EINVAL;
 
         spin_lock(&vpmu_lock);

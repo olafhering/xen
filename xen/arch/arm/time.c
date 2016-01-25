@@ -230,7 +230,7 @@ static void check_timer_irq_cfg(unsigned int irq, const char *which)
 }
 
 /* Set up the timer interrupt on this CPU */
-void __cpuinit init_timer_interrupt(void)
+void init_timer_interrupt(void)
 {
     /* Sensible defaults */
     WRITE_SYSREG64(0, CNTVOFF_EL2);     /* No VM-specific offset */
@@ -278,11 +278,6 @@ void domain_set_time_offset(struct domain *d, int64_t time_offset_seconds)
 {
     d->time_offset_seconds = time_offset_seconds;
     /* XXX update guest visible wallclock time */
-}
-
-struct tm wallclock_time(uint64_t *ns)
-{
-    return (struct tm) { 0 };
 }
 
 /*

@@ -5,9 +5,8 @@
  */
 
 #include <Python.h>
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
-#include <xenguest.h>
-#include <zlib.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -17,7 +16,6 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
-#include "xenctrl.h"
 #include <xen/elfnote.h>
 #include <xen/tmem.h>
 #include "xc_dom.h"
@@ -136,7 +134,7 @@ static PyObject *pyxc_domain_create(XcObject *self,
     }
 
     if ( (ret = xc_domain_create(self->xc_handle, ssidref,
-                                 handle, flags, &dom)) < 0 )
+                                 handle, flags, &dom, NULL)) < 0 )
         return pyxc_error_to_exception(self->xc_handle);
 
     if ( target )
@@ -432,110 +430,6 @@ static PyObject *pyxc_vcpu_getinfo(XcObject *self,
     Py_DECREF(cpulist);
     free(cpumap);
     return info_dict;
-}
-
-static PyObject *pyxc_getBitSize(XcObject *self,
-                                    PyObject *args,
-                                    PyObject *kwds)
-{
-    PyObject *info_type;
-    char *image = NULL, *cmdline = "", *features = NULL;
-    int type = 0;
-    static char *kwd_list[] = { "image", "cmdline", "features", NULL };
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "sss", kwd_list,
-                                      &image, &cmdline, &features) )
-        return NULL;
-
-    xc_get_bit_size(self->xc_handle, image, cmdline, features, &type);
-    if (type < 0)
-        return pyxc_error_to_exception(self->xc_handle);
-    info_type = Py_BuildValue("{s:i}",
-                              "type", type);
-    return info_type;
-}
-
-static PyObject *pyxc_linux_build(XcObject *self,
-                                  PyObject *args,
-                                  PyObject *kwds)
-{
-    uint32_t domid;
-    struct xc_dom_image *dom;
-    char *image, *ramdisk = NULL, *cmdline = "", *features = NULL;
-    int flags = 0;
-    int store_evtchn, console_evtchn;
-    unsigned int mem_mb;
-    unsigned long store_mfn = 0;
-    unsigned long console_mfn = 0;
-    PyObject* elfnote_dict;
-    PyObject* elfnote = NULL;
-    PyObject* ret;
-    int i;
-
-    static char *kwd_list[] = { "domid", "store_evtchn", "memsize",
-                                "console_evtchn", "image",
-                                /* optional */
-                                "ramdisk", "cmdline", "flags",
-                                "features", NULL };
-
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iiiis|ssis", kwd_list,
-                                      &domid, &store_evtchn, &mem_mb,
-                                      &console_evtchn, &image,
-                                      /* optional */
-                                      &ramdisk, &cmdline, &flags, &features) )
-        return NULL;
-
-    xc_dom_loginit(self->xc_handle);
-    if (!(dom = xc_dom_allocate(self->xc_handle, cmdline, features)))
-        return pyxc_error_to_exception(self->xc_handle);
-
-    if ( xc_dom_linux_build(self->xc_handle, dom, domid, mem_mb, image,
-                            ramdisk, flags, store_evtchn, &store_mfn,
-                            console_evtchn, &console_mfn) != 0 ) {
-        goto out;
-    }
-
-    if ( !(elfnote_dict = PyDict_New()) )
-        goto out;
-    
-    for ( i = 0; i < ARRAY_SIZE(dom->parms.elf_notes); i++ )
-    {
-        switch ( dom->parms.elf_notes[i].type )
-        {
-        case XEN_ENT_NONE:
-            continue;
-        case XEN_ENT_LONG:
-            elfnote = Py_BuildValue("k", dom->parms.elf_notes[i].data.num);
-            break;
-        case XEN_ENT_STR:
-            elfnote = Py_BuildValue("s", dom->parms.elf_notes[i].data.str);
-            break;
-        }
-        PyDict_SetItemString(elfnote_dict,
-                             dom->parms.elf_notes[i].name,
-                             elfnote);
-        Py_DECREF(elfnote);
-    }
-
-    ret = Py_BuildValue("{s:i,s:i,s:N}",
-                        "store_mfn", store_mfn,
-                        "console_mfn", console_mfn,
-                        "notes", elfnote_dict);
-
-    if ( dom->arch_hooks->native_protocol )
-    {
-        PyObject *native_protocol =
-            Py_BuildValue("s", dom->arch_hooks->native_protocol);
-        PyDict_SetItemString(ret, "native_protocol", native_protocol);
-        Py_DECREF(native_protocol);
-    }
-
-    xc_dom_release(dom);
-
-    return ret;
-
-  out:
-    xc_dom_release(dom);
-    return pyxc_error_to_exception(self->xc_handle);
 }
 
 static PyObject *pyxc_hvm_param_get(XcObject *self,
@@ -2268,24 +2162,6 @@ static PyMethodDef pyxc_methods[] = {
       " cpu_time [long]: CPU time consumed, in nanoseconds\n"
       " cpumap   [int]:  Bitmap of CPUs this VCPU can run on\n"
       " cpu      [int]:  CPU that this VCPU is currently bound to\n" },
-
-    { "linux_build", 
-      (PyCFunction)pyxc_linux_build, 
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "Build a new Linux guest OS.\n"
-      " dom     [int]:      Identifier of domain to build into.\n"
-      " image   [str]:      Name of kernel image file. May be gzipped.\n"
-      " ramdisk [str, n/a]: Name of ramdisk file, if any.\n"
-      " cmdline [str, n/a]: Kernel parameters, if any.\n\n"
-      " vcpus   [int, 1]:   Number of Virtual CPUS in domain.\n\n"
-      "Returns: [int] 0 on success; -1 on error.\n" },
-
-    {"getBitSize",
-      (PyCFunction)pyxc_getBitSize,
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "Get the bitsize of a guest OS.\n"
-      " image   [str]:      Name of kernel image file. May be gzipped.\n"
-      " cmdline [str, n/a]: Kernel parameters, if any.\n\n"},
 
     { "gnttab_hvm_seed",
       (PyCFunction)pyxc_gnttab_hvm_seed,

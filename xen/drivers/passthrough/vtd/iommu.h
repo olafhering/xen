@@ -61,6 +61,7 @@
 /*
  * Decoding Capability Register
  */
+#define cap_intr_post(c)       (((c) >> 59) & 1)
 #define cap_read_drain(c)      (((c) >> 55) & 1)
 #define cap_write_drain(c)     (((c) >> 54) & 1)
 #define cap_max_amask_val(c)   (((c) >> 48) & 0x3f)
@@ -280,31 +281,53 @@ struct dma_pte {
 /* interrupt remap entry */
 struct iremap_entry {
   union {
-    u64 lo_val;
+    __uint128_t val;
+    struct { u64 lo, hi; };
     struct {
-        u64 p       : 1,
+        u16 p       : 1,
             fpd     : 1,
             dm      : 1,
             rh      : 1,
             tm      : 1,
             dlm     : 3,
             avail   : 4,
-            res_1   : 4,
-            vector  : 8,
-            res_2   : 8,
-            dst     : 32;
-    }lo;
-  };
-  union {
-    u64 hi_val;
-    struct {
-        u64 sid     : 16,
-            sq      : 2,
+            res_1   : 3,
+            im      : 1;
+        u8  vector;
+        u8  res_2;
+        u32 dst;
+        u16 sid;
+        u16 sq      : 2,
             svt     : 2,
-            res_1   : 44;
-    }hi;
+            res_3   : 12;
+        u32 res_4;
+    } remap;
+    struct {
+        u16 p       : 1,
+            fpd     : 1,
+            res_1   : 6,
+            avail   : 4,
+            res_2   : 2,
+            urg     : 1,
+            im      : 1;
+        u8  vector;
+        u8  res_3;
+        u32 res_4   : 6,
+            pda_l   : 26;
+        u16 sid;
+        u16 sq      : 2,
+            svt     : 2,
+            res_5   : 12;
+        u32 pda_h;
+    } post;
   };
 };
+
+/*
+ * Posted-interrupt descriptor address is 64 bits with 64-byte aligned, only
+ * the upper 26 bits of lest significiant 32 bits is available.
+ */
+#define PDA_LOW_BIT    26
 
 /* Max intr remapping table page order is 8, as max number of IRTEs is 64K */
 #define IREMAP_PAGE_ORDER  8

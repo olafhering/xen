@@ -1521,6 +1521,12 @@ This set incorporates the Partition Reference TSC MSR. This
 enlightenment can improve performance of Windows 7 and Windows
 Server 2008 R2 onwards.
 
+=item B<hcall_remote_tlb_flush>
+
+This set incorporates use of hypercalls for remote TLB flushing.
+This enlightenment may improve performance of Windows guests running
+on hosts with higher levels of (physical) CPU contention.
+
 =item B<defaults>
 
 This is a special value that enables the default set of groups, which
@@ -1838,6 +1844,11 @@ This device-model is the default for Linux dom0.
 Use the device-model based upon the historical Xen fork of Qemu.
 This device-model is still the default for NetBSD dom0.
 
+=item B<none>
+
+Don't use any device model. This requires a kernel capable of booting
+without emulated devices.
+
 =back
 
 It is recommended to accept the default value for new guests.  If
@@ -1879,6 +1890,11 @@ option to the device-model.
 Pass additional arbitrary options on the device-model command line for
 an HVM device model only. Each element in the list is passed as an
 option to the device-model.
+
+=item B<device_model_user="username">
+
+Run the device model as user "username", instead of
+xen-qemudepriv-domid$domid or xen-qemudepriv-shared or root.
 
 =back
 

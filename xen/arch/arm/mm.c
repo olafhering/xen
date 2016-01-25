@@ -620,7 +620,7 @@ int init_secondary_pagetables(int cpu)
 #endif
 
 /* MMU setup for secondary CPUS (which already have paging enabled) */
-void __cpuinit mmu_init_secondary_cpu(void)
+void mmu_init_secondary_cpu(void)
 {
     /* From now on, no mapping may be both writable and executable. */
     WRITE_SYSREG32(READ_SYSREG32(SCTLR_EL2) | SCTLR_WXN, SCTLR_EL2);
@@ -1055,7 +1055,7 @@ int xenmem_add_to_physmap_one(
     switch ( space )
     {
     case XENMAPSPACE_grant_table:
-        write_lock(&d->grant_table->lock);
+        grant_write_lock(d->grant_table);
 
         if ( d->grant_table->gt_version == 0 )
             d->grant_table->gt_version = 1;
@@ -1085,7 +1085,7 @@ int xenmem_add_to_physmap_one(
 
         t = p2m_ram_rw;
 
-        write_unlock(&d->grant_table->lock);
+        grant_write_unlock(d->grant_table);
         break;
     case XENMAPSPACE_shared_info:
         if ( idx != 0 )

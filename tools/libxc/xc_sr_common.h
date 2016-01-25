@@ -54,9 +54,11 @@ struct xc_sr_save_ops
                           void **page);
 
     /**
-     * Set up local environment to restore a domain.  This is called before
-     * any records are written to the stream.  (Typically querying running
-     * domain state, setting up mappings etc.)
+     * Set up local environment to save a domain. (Typically querying
+     * running domain state, setting up mappings etc.)
+     *
+     * This is called once before any common setup has occurred, allowing for
+     * guest-specific adjustments to be made to common state.
      */
     int (*setup)(struct xc_sr_context *ctx);
 
@@ -79,6 +81,15 @@ struct xc_sr_save_ops
      * after the memory data.
      */
     int (*end_of_checkpoint)(struct xc_sr_context *ctx);
+
+    /**
+     * Check state of guest to decide whether it makes sense to continue
+     * migration.  This is called in each iteration or checkpoint to check
+     * whether all criteria for the migration are still met.  If that's not
+     * the case either migration is cancelled via a bad rc or the situation
+     * is handled, e.g. by sending appropriate records.
+     */
+    int (*check_vm_state)(struct xc_sr_context *ctx);
 
     /**
      * Clean up the local environment.  Will be called exactly once, either
@@ -121,8 +132,10 @@ struct xc_sr_restore_ops
     int (*localise_page)(struct xc_sr_context *ctx, uint32_t type, void *page);
 
     /**
-     * Set up local environment to restore a domain.  This is called before
-     * any records are read from the stream.
+     * Set up local environment to restore a domain.
+     *
+     * This is called once before any common setup has occurred, allowing for
+     * guest-specific adjustments to be made to common state.
      */
     int (*setup)(struct xc_sr_context *ctx);
 
@@ -275,6 +288,9 @@ struct xc_sr_context
 
             /* Read-only mapping of guests shared info page */
             shared_info_any_t *shinfo;
+
+            /* p2m generation count for verifying validity of local p2m. */
+            uint64_t p2m_generation;
 
             union
             {

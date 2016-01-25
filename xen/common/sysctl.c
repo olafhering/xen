@@ -171,7 +171,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         op->u.availheap.avail_bytes <<= PAGE_SHIFT;
         break;
 
-#ifdef HAS_ACPI
+#if defined (CONFIG_HAS_ACPI) && defined (CONFIG_HAS_CPUFREQ)
     case XEN_SYSCTL_get_pmstat:
         ret = do_get_pm_info(&op->u.get_pmstat);
         break;
@@ -401,7 +401,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         break;
 #endif
 
-#ifdef HAS_PCI
+#ifdef CONFIG_HAS_PCI
     case XEN_SYSCTL_pcitopoinfo:
     {
         xen_sysctl_pcitopoinfo_t *ti = &op->u.pcitopoinfo;

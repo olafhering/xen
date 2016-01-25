@@ -644,7 +644,6 @@ bool_t ept_handle_misconfig(uint64_t gpa)
     spurious = curr->arch.hvm_vmx.ept_spurious_misconfig;
     rc = resolve_misconfig(p2m, PFN_DOWN(gpa));
     curr->arch.hvm_vmx.ept_spurious_misconfig = 0;
-    ept_sync_domain(p2m);
 
     p2m_unlock(p2m);
 
@@ -671,7 +670,7 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
     bool_t need_modify_vtd_table = 1;
     bool_t vtd_pte_present = 0;
     unsigned int iommu_flags = p2m_get_iommu_flags(p2mt);
-    enum { sync_off, sync_on, sync_check } needs_sync = sync_check;
+    bool_t needs_sync = 1;
     ept_entry_t old_entry = { .epte = 0 };
     ept_entry_t new_entry = { .epte = 0 };
     struct ept_data *ept = &p2m->ept;
@@ -692,12 +691,7 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
     /* Carry out any eventually pending earlier changes first. */
     ret = resolve_misconfig(p2m, gfn);
     if ( ret < 0 )
-    {
-        ept_sync_domain(p2m);
         return ret;
-    }
-    if ( ret > 0 )
-        needs_sync = sync_on;
 
     ASSERT((target == 2 && hap_has_1gb) ||
            (target == 1 && hap_has_2mb) ||
@@ -740,8 +734,8 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
         /* We reached the target level. */
 
         /* No need to flush if the old entry wasn't valid */
-        if ( needs_sync == sync_check && !is_epte_present(ept_entry) )
-            needs_sync = sync_off;
+        if ( !is_epte_present(ept_entry) )
+            needs_sync = 0;
 
         /* If we're replacing a non-leaf entry with a leaf entry (1GiB or 2MiB),
          * the intermediate tables will be freed below after the ept flush
@@ -780,8 +774,7 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
         ept_entry = table + (gfn_remainder >> (i * EPT_TABLE_ORDER));
     }
 
-    if ( mfn_valid(mfn_x(mfn)) || direct_mmio || p2m_is_paged(p2mt) ||
-         (p2mt == p2m_ram_paging_in) )
+    if ( mfn_valid(mfn_x(mfn)) || p2m_allows_invalid_mfn(p2mt) )
     {
         int emt = epte_get_entry_emt(p2m->domain, gfn, mfn,
                                      i * EPT_TABLE_ORDER, &ipat, direct_mmio);
@@ -823,7 +816,7 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
         p2m->max_mapped_pfn = gfn + (1UL << order) - 1;
 
 out:
-    if ( needs_sync != sync_off )
+    if ( needs_sync )
         ept_sync_domain(p2m);
 
     /* For host p2m, may need to change VT-d page table.*/
@@ -1096,9 +1089,10 @@ static void ept_memory_type_changed(struct p2m_domain *p2m)
 
 static void __ept_sync_domain(void *info)
 {
-    struct ept_data *ept = &((struct p2m_domain *)info)->ept;
-
-    __invept(INVEPT_SINGLE_CONTEXT, ept_get_eptp(ept), 0);
+    /*
+     * The invalidation will be done before VMENTER (see
+     * vmx_vmenter_helper()).
+     */
 }
 
 void ept_sync_domain(struct p2m_domain *p2m)
@@ -1115,15 +1109,15 @@ void ept_sync_domain(struct p2m_domain *p2m)
         p2m_flush_nestedp2m(d);
 
     /*
-     * Flush active cpus synchronously. Flush others the next time this domain
-     * is scheduled onto them. We accept the race of other CPUs adding to
-     * the ept_synced mask before on_selected_cpus() reads it, resulting in
-     * unnecessary extra flushes, to avoid allocating a cpumask_t on the stack.
+     * Need to invalidate on all PCPUs because either:
+     *
+     * a) A VCPU has run and some translations may be cached.
+     * b) A VCPU has not run and and the initial invalidation in case
+     *    of an EP4TA reuse is still needed.
      */
-    cpumask_and(ept_get_synced_mask(ept),
-                d->domain_dirty_cpumask, &cpu_online_map);
+    cpumask_setall(ept->invalidate);
 
-    on_selected_cpus(ept_get_synced_mask(ept),
+    on_selected_cpus(d->domain_dirty_cpumask,
                      __ept_sync_domain, p2m, 1);
 }
 
@@ -1189,10 +1183,14 @@ int ept_p2m_init(struct p2m_domain *p2m)
         p2m->flush_hardware_cached_dirty = ept_flush_pml_buffers;
     }
 
-    if ( !zalloc_cpumask_var(&ept->synced_mask) )
+    if ( !zalloc_cpumask_var(&ept->invalidate) )
         return -ENOMEM;
 
-    on_each_cpu(__ept_sync_domain, p2m, 1);
+    /*
+     * Assume an initial invalidation is required, in case an EP4TA is
+     * reused.
+     */
+    cpumask_setall(ept->invalidate);
 
     return 0;
 }
@@ -1200,7 +1198,7 @@ int ept_p2m_init(struct p2m_domain *p2m)
 void ept_p2m_uninit(struct p2m_domain *p2m)
 {
     struct ept_data *ept = &p2m->ept;
-    free_cpumask_var(ept->synced_mask);
+    free_cpumask_var(ept->invalidate);
 }
 
 static void ept_dump_p2m_table(unsigned char key)

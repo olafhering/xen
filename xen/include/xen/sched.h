@@ -110,7 +110,7 @@ struct evtchn
     u8 priority;
     u8 last_priority;
     u16 last_vcpu_id;
-#ifdef XSM_ENABLE
+#ifdef CONFIG_XSM
     union {
 #ifdef XSM_NEED_GENERIC_EVTCHN_SSID
         /*
@@ -119,7 +119,7 @@ struct evtchn
          */
         void *generic;
 #endif
-#ifdef FLASK_ENABLE
+#ifdef CONFIG_FLASK
         /*
          * Inlining the contents of the structure for FLASK avoids unneeded
          * allocations, and on 64-bit platforms with only FLASK enabled,
@@ -366,7 +366,7 @@ struct domain
 
     int64_t          time_offset_seconds;
 
-#ifdef HAS_PASSTHROUGH
+#ifdef CONFIG_HAS_PASSTHROUGH
     /* Does this guest need iommu mappings (-1 meaning "being set up")? */
     s8               need_iommu;
 #endif
@@ -374,6 +374,8 @@ struct domain
     bool_t           auto_node_affinity;
     /* Is this guest fully privileged (aka dom0)? */
     bool_t           is_privileged;
+    /* Is this a xenstore domain (not dom0)? */
+    bool_t           is_xenstore;
     /* Domain's VCPUs are pinned 1:1 to physical CPUs? */
     bool_t           is_pinned;
     /* Non-migratable and non-restoreable? */
@@ -533,6 +535,9 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
  /* DOMCRF_pvh: Create PV domain in HVM container. */
 #define _DOMCRF_pvh             5
 #define DOMCRF_pvh              (1U<<_DOMCRF_pvh)
+ /* DOMCRF_xs_domain: xenstore domain */
+#define _DOMCRF_xs_domain       6
+#define DOMCRF_xs_domain        (1U<<_DOMCRF_xs_domain)
 
 /*
  * rcu_lock_domain_by_id() is more efficient than get_domain_by_id().
@@ -839,7 +844,7 @@ void watchdog_domain_destroy(struct domain *d);
 #define has_hvm_container_vcpu(v)   (has_hvm_container_domain((v)->domain))
 #define is_pinned_vcpu(v) ((v)->domain->is_pinned || \
                            cpumask_weight((v)->cpu_hard_affinity) == 1)
-#ifdef HAS_PASSTHROUGH
+#ifdef CONFIG_HAS_PASSTHROUGH
 #define need_iommu(d)    ((d)->need_iommu)
 #else
 #define need_iommu(d)    (0)

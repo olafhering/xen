@@ -23,11 +23,6 @@
 #include <asm/hvm/support.h>
 #include <mach_apic.h>
 
-int hard_smp_processor_id(void)
-{
-    return get_apic_id();
-}
-
 /*
  * send_IPI_mask(cpumask, vector): sends @vector IPI to CPUs in @cpumask,
  * excluding the local CPU. @cpumask may be empty.
@@ -303,6 +298,10 @@ static void stop_this_cpu(void *dummy)
 void smp_send_stop(void)
 {
     int timeout = 10;
+
+    local_irq_disable();
+    fixup_irqs(cpumask_of(smp_processor_id()), 0);
+    local_irq_enable();
 
     smp_call_function(stop_this_cpu, NULL, 0);
 

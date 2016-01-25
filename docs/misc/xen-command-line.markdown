@@ -715,7 +715,7 @@ Controls EPT related features.
 
 > `pml`
 
-> Default: `false`
+> Default: `true`
 
 >> PML is a new hardware feature in Intel's Broadwell Server and further
 >> platforms which reduces hypervisor overhead of log-dirty mechanism by
@@ -740,13 +740,18 @@ Specify which console gdbstub should use. See **console**.
 ### gnttab\_max\_frames
 > `= <integer>`
 
-Specify the maximum number of frames per grant table operation.
+> Default: `32`
+
+Specify the maximum number of frames which any domain may use as part
+of its grant table.
 
 ### gnttab\_max\_maptrack\_frames
 > `= <integer>`
 
-Specify the maximum number of maptrack frames domain.
-The default value is 8 times **gnttab\_max\_frames**.
+> Default: `8 * gnttab_max_frames`
+
+Specify the maximum number of frames to use as part of a domains
+maptrack array.
 
 ### gnttab\_max\_nr\_frames
 > `= <integer>`
@@ -1032,6 +1037,17 @@ with **crashinfo_maxaddr**.
 Specify the threshold below which Xen will inform dom0 that the quantity of
 free memory is getting low.  Specifying `0` will disable this notification.
 
+### memop-max-order
+> `= [<domU>][,[<ctldom>][,[<hwdom>][,<ptdom>]]]`
+
+> x86 default: `9,18,12,12`
+> ARM default: `9,18,10,10`
+
+Change the maximum order permitted for allocation (or allocation-like)
+requests issued by the various kinds of domains (in this order:
+ordinary DomU, control domain, hardware domain, and - when supported
+by the platform - DomU with pass-through device assigned).
+
 ### max\_cstate
 > `= <integer>`
 
@@ -1176,6 +1192,16 @@ This option can be specified more than once (up to 8 times at present).
 
 ### ple\_window
 > `= <integer>`
+
+### pku
+> `= <boolean>`
+
+> Default: `true`
+
+Flag to enable Memory Protection Keys.
+
+The protection-key feature provides an additional mechanism by which IA-32e
+paging controls access to usermode addresses.
 
 ### psr (Intel)
 > `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> | cdp:<boolean> )`
@@ -1455,7 +1481,7 @@ Use Virtual Processor ID support if available.  This prevents the need for TLB
 flushes on VM entry and exit, increasing performance.
 
 ### vpmu
-> `= ( bts )`
+> `= ( <boolean> | { bts | ipc | arch [, ...] } )`
 
 > Default: `off`
 
@@ -1471,11 +1497,24 @@ wrong behaviour (see handle\_pmc\_quirk()).
 If 'vpmu=bts' is specified the virtualisation of the Branch Trace Store (BTS)
 feature is switched on on Intel processors supporting this feature.
 
+vpmu=ipc enables performance monitoring, but restricts the counters to the
+most minimum set possible: instructions, cycles, and reference cycles. These
+can be used to calculate instructions per cycle (IPC).
+
+vpmu=arch enables performance monitoring, but restricts the counters to the
+pre-defined architectural events only. These are exposed by cpuid, and listed
+in the Pre-Defined Architectural Performance Events table from the Intel 64
+and IA-32 Architectures Software Developer's Manual, Volume 3B, System
+Programming Guide, Part 2.
+
+If a boolean is not used, combinations of flags are allowed, comma separated.
+For example, vpmu=arch,bts.
+
 Note that if **watchdog** option is also specified vpmu will be turned off.
 
 *Warning:*
-As the BTS virtualisation is not 100% safe and because of the nehalem quirk
-don't use the vpmu flag on production systems with Intel cpus!
+As the virtualisation is not 100% safe, don't use the vpmu flag on
+production systems (see http://xenbits.xen.org/xsa/advisory-163.html)!
 
 ### watchdog
 > `= force | <boolean>`

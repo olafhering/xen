@@ -34,6 +34,12 @@
 #define X86_64_B_SIZE   64 
 #define X86_32_B_SIZE   32
 
+/*
+ * User not using xc_suspend_* / xc_await_suspent may not want to
+ * include the full libxenevtchn API here.
+ */
+typedef struct xenevtchn_handle xenevtchn_handle;
+
 /* callbacks provided by xc_domain_save */
 struct save_callbacks {
     /* Called after expiration of checkpoint interval,
@@ -151,54 +157,6 @@ int xc_linux_build(xc_interface *xch,
                    unsigned int console_evtchn,
                    unsigned long *console_mfn);
 
-/** The same interface, but the dom structure is managed by the caller */
-struct xc_dom_image;
-int xc_dom_linux_build(xc_interface *xch,
-		       struct xc_dom_image *dom,
-		       uint32_t domid,
-		       unsigned int mem_mb,
-		       const char *image_name,
-		       const char *ramdisk_name,
-		       unsigned long flags,
-		       unsigned int store_evtchn,
-		       unsigned long *store_mfn,
-		       unsigned int console_evtchn,
-		       unsigned long *console_mfn);
-
-/**
- * This function will create a domain for a paravirtualized Linux
- * using buffers for kernel and initrd
- *
- * @parm xch a handle to an open hypervisor interface
- * @parm domid the id of the domain
- * @parm mem_mb memory size in megabytes
- * @parm image_buffer buffer containing kernel image
- * @parm image_size size of the kernel image buffer
- * @parm initrd_buffer name of the ramdisk image file
- * @parm initrd_size size of the ramdisk buffer
- * @parm cmdline command line string
- * @parm flags domain creation flags
- * @parm store_evtchn the store event channel for this domain to use
- * @parm store_mfn returned with the mfn of the store page
- * @parm console_evtchn the console event channel for this domain to use
- * @parm conole_mfn returned with the mfn of the console page
- * @return 0 on success, -1 on failure
- */
-int xc_linux_build_mem(xc_interface *xch,
-                       uint32_t domid,
-                       unsigned int mem_mb,
-                       const char *image_buffer,
-                       unsigned long image_size,
-                       const char *initrd_buffer,
-                       unsigned long initrd_size,
-                       const char *cmdline,
-                       const char *features,
-                       unsigned long flags,
-                       unsigned int store_evtchn,
-                       unsigned long *store_mfn,
-                       unsigned int console_evtchn,
-                       unsigned long *console_mfn);
-
 struct xc_hvm_firmware_module {
     uint8_t  *data;
     uint32_t  length;
@@ -209,18 +167,18 @@ struct xc_hvm_firmware_module {
  * Sets *lockfd to -1.
  * Has deallocated everything even on error.
  */
-int xc_suspend_evtchn_release(xc_interface *xch, xc_evtchn *xce, int domid, int suspend_evtchn, int *lockfd);
+int xc_suspend_evtchn_release(xc_interface *xch, xenevtchn_handle *xce, int domid, int suspend_evtchn, int *lockfd);
 
 /**
  * This function eats the initial notification.
  * xce must not be used for anything else
  * See xc_suspend_evtchn_init_sane re lockfd.
  */
-int xc_suspend_evtchn_init_exclusive(xc_interface *xch, xc_evtchn *xce,
+int xc_suspend_evtchn_init_exclusive(xc_interface *xch, xenevtchn_handle *xce,
                                      int domid, int port, int *lockfd);
 
 /* xce must not be used for anything else */
-int xc_await_suspend(xc_interface *xch, xc_evtchn *xce, int suspend_evtchn);
+int xc_await_suspend(xc_interface *xch, xenevtchn_handle *xce, int suspend_evtchn);
 
 /**
  * The port will be signaled immediately after this call
@@ -229,12 +187,8 @@ int xc_await_suspend(xc_interface *xch, xc_evtchn *xce, int suspend_evtchn);
  * and fed to xc_suspend_evtchn_release.  (On error *lockfd is
  * undefined and xc_suspend_evtchn_release is not allowed.)
  */
-int xc_suspend_evtchn_init_sane(xc_interface *xch, xc_evtchn *xce,
+int xc_suspend_evtchn_init_sane(xc_interface *xch, xenevtchn_handle *xce,
                                 int domid, int port, int *lockfd);
-
-int xc_get_bit_size(xc_interface *xch,
-                    const char *image_name, const char *cmdline,
-                    const char *features, int *type);
 
 int xc_mark_page_online(xc_interface *xch, unsigned long start,
                         unsigned long end, uint32_t *status);

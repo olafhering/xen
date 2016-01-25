@@ -104,6 +104,20 @@
  * Depending on the contents of the stream, there are likely to be several
  * parallel tasks being managed.  check_all_finished() is used to join all
  * tasks in both success and error cases.
+ *
+ * Failover for remus
+ *  - We buffer all records until a CHECKPOINT_END record is received
+ *  - We will consume the buffered records when a CHECKPOINT_END record
+ *    is received
+ *  - If we find some internal error, then rc or retval is not 0 in
+ *    libxl__xc_domain_restore_done(). In this case, we don't resume the
+ *    guest
+ *  - If we need to do failover from primary, then rc and retval are both
+ *    0 in libxl__xc_domain_restore_done(). In this case, the buffered
+ *    state will be dropped, because we haven't received a CHECKPOINT_END
+ *    record, and therefore the buffered state is inconsistent. In
+ *    libxl__xc_domain_restore_done(), we just complete the stream and
+ *    stream->completion_callback() will be called to resume the guest
  */
 
 /* Success/error/cleanup handling. */
@@ -539,6 +553,14 @@ static bool process_record(libxl__egc *egc,
         break;
 
     case REC_TYPE_EMULATOR_XENSTORE_DATA:
+        if (dcs->guest_config->b_info.device_model_version ==
+            LIBXL_DEVICE_MODEL_VERSION_NONE) {
+            rc = ERROR_FAIL;
+            LOG(ERROR,
+                "Received a xenstore emulator record when none was expected");
+            goto err;
+        }
+
         if (rec->hdr.length < sizeof(libxl__sr_emulator_hdr)) {
             rc = ERROR_FAIL;
             LOG(ERROR,
@@ -560,6 +582,14 @@ static bool process_record(libxl__egc *egc,
         break;
 
     case REC_TYPE_EMULATOR_CONTEXT:
+        if (dcs->guest_config->b_info.device_model_version ==
+            LIBXL_DEVICE_MODEL_VERSION_NONE) {
+            rc = ERROR_FAIL;
+            LOG(ERROR,
+                "Received an emulator context record when none was expected");
+            goto err;
+        }
+
         write_emulator_blob(egc, stream, rec);
         break;
 
@@ -742,6 +772,9 @@ void libxl__xc_domain_restore_done(libxl__egc *egc, void *dcs_void,
     libxl__stream_read_state *stream = &dcs->srs;
     STATE_AO_GC(dcs->ao);
 
+    /* convenience aliases */
+    const int checkpointed_stream = dcs->restore_params.checkpointed_stream;
+
     if (rc)
         goto err;
 
@@ -761,11 +794,20 @@ void libxl__xc_domain_restore_done(libxl__egc *egc, void *dcs_void,
      * If the stream is not still alive, we must not continue any work.
      */
     if (libxl__stream_read_inuse(stream)) {
-        /*
-         * Libxc has indicated that it is done with the stream.  Resume reading
-         * libxl records from it.
-         */
-        stream_continue(egc, stream);
+        if (checkpointed_stream) {
+            /*
+             * Failover from primary. Domain state is currently at a
+             * consistent checkpoint, complete the stream, and call
+             * stream->completion_callback() to resume the guest.
+             */
+            stream_complete(egc, stream, 0);
+        } else {
+            /*
+             * Libxc has indicated that it is done with the stream.
+             * Resume reading libxl records from it.
+             */
+            stream_continue(egc, stream);
+        }
     }
 }
 

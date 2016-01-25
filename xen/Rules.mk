@@ -10,7 +10,8 @@ lock_profile  ?= n
 crash_debug   ?= n
 frame_pointer ?= n
 lto           ?= n
-kexec         ?= y
+
+-include $(BASEDIR)/include/config/auto.conf
 
 include $(XEN_ROOT)/Config.mk
 
@@ -24,6 +25,10 @@ CFLAGS += -DNDEBUG
 endif
 ifeq ($(perfc_arrays),y)
 perfc := y
+endif
+
+ifneq ($(origin kexec),undefined)
+$(error "You must use 'make menuconfig' to enable/disable kexec now.")
 endif
 
 # Set ARCH/SUBARCH appropriately.
@@ -40,43 +45,23 @@ ALL_OBJS-y               += $(BASEDIR)/common/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/drivers/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/xsm/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/arch/$(TARGET_ARCH)/built_in.o
-ALL_OBJS-$(x86)          += $(BASEDIR)/crypto/built_in.o
+ALL_OBJS-$(CONFIG_X86)   += $(BASEDIR)/crypto/built_in.o
 
 CFLAGS += -nostdinc -fno-builtin -fno-common
 CFLAGS += -Werror -Wredundant-decls -Wno-pointer-arith
 CFLAGS += -pipe -g -D__XEN__ -include $(BASEDIR)/include/xen/config.h
 CFLAGS += '-D__OBJECT_FILE__="$@"'
 
-CFLAGS-$(XSM_ENABLE)    += -DXSM_ENABLE
-CFLAGS-$(FLASK_ENABLE)  += -DFLASK_ENABLE
 CFLAGS-$(verbose)       += -DVERBOSE
 CFLAGS-$(crash_debug)   += -DCRASH_DEBUG
 CFLAGS-$(perfc)         += -DPERF_COUNTERS
 CFLAGS-$(perfc_arrays)  += -DPERF_ARRAYS
 CFLAGS-$(lock_profile)  += -DLOCK_PROFILE
-CFLAGS-$(HAS_ACPI)      += -DHAS_ACPI
-CFLAGS-$(HAS_GDBSX)     += -DHAS_GDBSX
-CFLAGS-$(HAS_PASSTHROUGH) += -DHAS_PASSTHROUGH
-CFLAGS-$(HAS_DEVICE_TREE) += -DHAS_DEVICE_TREE
-CFLAGS-$(HAS_MEM_ACCESS)  += -DHAS_MEM_ACCESS
-CFLAGS-$(HAS_MEM_PAGING)  += -DHAS_MEM_PAGING
-CFLAGS-$(HAS_MEM_SHARING) += -DHAS_MEM_SHARING
-CFLAGS-$(HAS_PCI)       += -DHAS_PCI
-CFLAGS-$(HAS_IOPORTS)   += -DHAS_IOPORTS
-CFLAGS-$(HAS_PDX)       += -DHAS_PDX
 CFLAGS-$(frame_pointer) += -fno-omit-frame-pointer -DCONFIG_FRAME_POINTER
 
-ifneq ($(max_phys_cpus),)
-CFLAGS-y                += -DMAX_PHYS_CPUS=$(max_phys_cpus)
-endif
 ifneq ($(max_phys_irqs),)
 CFLAGS-y                += -DMAX_PHYS_IRQS=$(max_phys_irqs)
 endif
-
-CONFIG_KEXEC-$(HAS_KEXEC) := $(kexec)
-CONFIG_KEXEC              := $(CONFIG_KEXEC-y)
-
-CFLAGS-$(CONFIG_KEXEC)  += -DCONFIG_KEXEC
 
 AFLAGS-y                += -D__ASSEMBLY__ -include $(BASEDIR)/include/xen/config.h
 
@@ -105,7 +90,7 @@ include Makefile
 DEPS = .*.d
 define gendep
     ifneq ($(1),$(subst /,:,$(1)))
-        DEPS += $(dir $(1)).$(basename $(notdir $(1))).d
+        DEPS += $(dir $(1)).$(notdir $(1)).d
     endif
 endef
 $(foreach o,$(filter-out %/,$(obj-y)),$(eval $(call gendep,$(o))))

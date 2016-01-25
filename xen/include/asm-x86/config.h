@@ -28,8 +28,11 @@
 #define CONFIG_NUMA 1
 #define CONFIG_DISCONTIGMEM 1
 #define CONFIG_NUMA_EMU 1
-#define CONFIG_PAGEALLOC_MAX_ORDER (2 * PAGETABLE_ORDER)
 #define CONFIG_DOMAIN_PAGE 1
+
+#define CONFIG_PAGEALLOC_MAX_ORDER (2 * PAGETABLE_ORDER)
+#define CONFIG_DOMU_MAX_ORDER      PAGETABLE_ORDER
+#define CONFIG_HWDOM_MAX_ORDER     12
 
 /* Intel P4 currently has largest cache line (L2 line size is 128 bytes). */
 #define CONFIG_X86_L1_CACHE_SHIFT 7
@@ -44,27 +47,14 @@
 #define CONFIG_VGA 1
 #define CONFIG_VIDEO 1
 
-#define CONFIG_HOTPLUG 1
-#define CONFIG_HOTPLUG_CPU 1
-
 #define CONFIG_XENOPROF 1
 #define CONFIG_WATCHDOG 1
 
 #define CONFIG_MULTIBOOT 1
 
-#ifdef XSM_ENABLE
-#define CONFIG_LATE_HWDOM 1
-#endif
-
 #define HZ 100
 
 #define OPT_CONSOLE_STR "vga"
-
-#ifdef MAX_PHYS_CPUS
-#define NR_CPUS MAX_PHYS_CPUS
-#else
-#define NR_CPUS 256
-#endif
 
 /* Linkage for x86 */
 #define __ALIGN .align 16,0x90

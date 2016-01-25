@@ -99,7 +99,7 @@ static int debug_stack_lines = 40;
 integer_param("debug_stack_lines", debug_stack_lines);
 
 
-void __cpuinit init_traps(void)
+void init_traps(void)
 {
     /* Setup Hyp vector base */
     WRITE_SYSREG((vaddr_t)hyp_traps_vector, VBAR_EL2);
@@ -1233,6 +1233,7 @@ static arm_hypercall_t arm_hypercall_table[] = {
     HYPERCALL(hvm_op, 2),
     HYPERCALL(grant_table_op, 3),
     HYPERCALL(multicall, 2),
+    HYPERCALL(platform_op, 1),
     HYPERCALL_ARM(vcpu_op, 3),
 };
 

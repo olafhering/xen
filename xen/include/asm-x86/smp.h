@@ -37,7 +37,6 @@ extern void (*mtrr_hook) (void);
 
 extern void zap_low_mappings(void);
 
-#define MAX_APICID 256
 extern u32 x86_cpu_to_apicid[];
 
 #define cpu_physical_id(cpu)	x86_cpu_to_apicid[cpu]
@@ -53,8 +52,6 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm);
  * so this is correct in the x86 case.
  */
 #define raw_smp_processor_id() (get_processor_id())
-
-int hard_smp_processor_id(void);
 
 void __stop_this_cpu(void);
 

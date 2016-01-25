@@ -37,6 +37,7 @@
 #include <xen/wait.h>
 #include <xen/guest_access.h>
 #include <public/sysctl.h>
+#include <public/hvm/hvm_vcpu.h>
 #include <asm/regs.h>
 #include <asm/mc146818rtc.h>
 #include <asm/system.h>
@@ -230,6 +231,7 @@ static unsigned int __init noinline _domain_struct_bits(void)
 struct domain *alloc_domain_struct(void)
 {
     struct domain *d;
+    unsigned int order = get_order_from_bytes(sizeof(*d));
 #ifdef CONFIG_BIGMEM
     const unsigned int bits = 0;
 #else
@@ -243,10 +245,18 @@ struct domain *alloc_domain_struct(void)
          bits = _domain_struct_bits();
 #endif
 
+
+#ifndef LOCK_PROFILE
     BUILD_BUG_ON(sizeof(*d) > PAGE_SIZE);
-    d = alloc_xenheap_pages(0, MEMF_bits(bits));
+#endif
+    d = alloc_xenheap_pages(order, MEMF_bits(bits));
     if ( d != NULL )
-        clear_page(d);
+    {
+        unsigned int sz;
+
+        for ( sz = 0; sz < (PAGE_SIZE << order); sz += PAGE_SIZE )
+            clear_page((void *)d + sz);
+    }
     return d;
 }
 
@@ -532,8 +542,11 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
                    d->domain_id, config->emulation_flags);
             return -EINVAL;
         }
-        if ( is_hvm_domain(d) ? (config->emulation_flags != XEN_X86_EMU_ALL)
-                              : (config->emulation_flags != 0) )
+        if ( is_hardware_domain(d) )
+            config->emulation_flags |= XEN_X86_EMU_PIT;
+        if ( config->emulation_flags != 0 &&
+             (config->emulation_flags !=
+              (is_hvm_domain(d) ? XEN_X86_EMU_ALL : XEN_X86_EMU_PIT)) )
         {
             printk(XENLOG_G_ERR "d%d: Xen does not allow %s domain creation "
                    "with the current selection of emulators: %#x\n",
@@ -910,7 +923,22 @@ int arch_set_info_guest(
     {
         memcpy(v->arch.fpu_ctxt, &c.nat->fpu_ctxt, sizeof(c.nat->fpu_ctxt));
         if ( v->arch.xsave_area )
-             v->arch.xsave_area->xsave_hdr.xstate_bv = XSTATE_FP_SSE;
+        {
+            v->arch.xsave_area->xsave_hdr.xstate_bv = XSTATE_FP_SSE;
+            v->arch.xsave_area->xsave_hdr.xcomp_bv =
+                cpu_has_xsaves ? XSTATE_COMPACTION_ENABLED : 0;
+        }
+    }
+    else if ( v->arch.xsave_area )
+        memset(&v->arch.xsave_area->xsave_hdr, 0,
+               sizeof(v->arch.xsave_area->xsave_hdr));
+    else
+    {
+        typeof(v->arch.xsave_area->fpu_sse) *fpu_sse = v->arch.fpu_ctxt;
+
+        memset(fpu_sse, 0, sizeof(*fpu_sse));
+        fpu_sse->fcw = FCW_DEFAULT;
+        fpu_sse->mxcsr = MXCSR_DEFAULT;
     }
 
     if ( !compat )
@@ -1181,6 +1209,308 @@ int arch_set_info_guest(
         set_bit(_VPF_down, &v->pause_flags);
     return 0;
 #undef c
+}
+
+static inline int check_segment(struct segment_register *reg,
+                                enum x86_segment seg)
+{
+
+    if ( reg->attr.fields.pad != 0 )
+    {
+        gprintk(XENLOG_ERR, "Segment attribute bits 12-15 are not zero\n");
+        return -EINVAL;
+    }
+
+    if ( reg->attr.bytes == 0 )
+    {
+        if ( seg != x86_seg_ds && seg != x86_seg_es )
+        {
+            gprintk(XENLOG_ERR, "Null selector provided for CS, SS or TR\n");
+            return -EINVAL;
+        }
+        return 0;
+    }
+
+    if ( seg != x86_seg_tr && !reg->attr.fields.s )
+    {
+        gprintk(XENLOG_ERR,
+                "System segment provided for a code or data segment\n");
+        return -EINVAL;
+    }
+
+    if ( seg == x86_seg_tr && reg->attr.fields.s )
+    {
+        gprintk(XENLOG_ERR, "Code or data segment provided for TR\n");
+        return -EINVAL;
+    }
+
+    if ( !reg->attr.fields.p )
+    {
+        gprintk(XENLOG_ERR, "Non-present segment provided\n");
+        return -EINVAL;
+    }
+
+    if ( seg == x86_seg_cs && !(reg->attr.fields.type & 0x8) )
+    {
+        gprintk(XENLOG_ERR, "Non-code segment provided for CS\n");
+        return -EINVAL;
+    }
+
+    if ( seg == x86_seg_ss &&
+         ((reg->attr.fields.type & 0x8) || !(reg->attr.fields.type & 0x2)) )
+    {
+        gprintk(XENLOG_ERR, "Non-writeable segment provided for SS\n");
+        return -EINVAL;
+    }
+
+    if ( reg->attr.fields.s && seg != x86_seg_ss && seg != x86_seg_cs &&
+         (reg->attr.fields.type & 0x8) && !(reg->attr.fields.type & 0x2) )
+    {
+        gprintk(XENLOG_ERR, "Non-readable segment provided for DS or ES\n");
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+/* Called by VCPUOP_initialise for HVM guests. */
+int arch_set_info_hvm_guest(struct vcpu *v, const vcpu_hvm_context_t *ctx)
+{
+    struct cpu_user_regs *uregs = &v->arch.user_regs;
+    struct segment_register cs, ds, ss, es, tr;
+    const char *errstr;
+    int rc;
+
+    if ( ctx->pad != 0 )
+        return -EINVAL;
+
+    switch ( ctx->mode )
+    {
+    default:
+        return -EINVAL;
+
+    case VCPU_HVM_MODE_32B:
+    {
+        const struct vcpu_hvm_x86_32 *regs = &ctx->cpu_regs.x86_32;
+        uint32_t limit;
+
+        if ( ctx->cpu_regs.x86_32.pad1 != 0 ||
+             ctx->cpu_regs.x86_32.pad2[0] != 0 ||
+             ctx->cpu_regs.x86_32.pad2[1] != 0 ||
+             ctx->cpu_regs.x86_32.pad2[2] != 0 )
+            return -EINVAL;
+
+#define SEG(s, r) ({                                                        \
+    s = (struct segment_register){ .base = (r)->s ## _base,                 \
+                                   .limit = (r)->s ## _limit,               \
+                                   .attr.bytes = (r)->s ## _ar };           \
+    check_segment(&s, x86_seg_ ## s); })
+
+        rc = SEG(cs, regs);
+        rc |= SEG(ds, regs);
+        rc |= SEG(ss, regs);
+        rc |= SEG(es, regs);
+        rc |= SEG(tr, regs);
+#undef SEG
+
+        if ( rc != 0 )
+            return rc;
+
+        /* Basic sanity checks. */
+        limit = cs.limit;
+        if ( cs.attr.fields.g )
+            limit = (limit << 12) | 0xfff;
+        if ( regs->eip > limit )
+        {
+            gprintk(XENLOG_ERR, "EIP (%#08x) outside CS limit (%#08x)\n",
+                    regs->eip, limit);
+            return -EINVAL;
+        }
+
+        if ( ss.attr.fields.dpl != cs.attr.fields.dpl )
+        {
+            gprintk(XENLOG_ERR, "SS.DPL (%u) is different than CS.DPL (%u)\n",
+                    ss.attr.fields.dpl, cs.attr.fields.dpl);
+            return -EINVAL;
+        }
+
+        if ( ds.attr.fields.p && ds.attr.fields.dpl > cs.attr.fields.dpl )
+        {
+            gprintk(XENLOG_ERR, "DS.DPL (%u) is greater than CS.DPL (%u)\n",
+                    ds.attr.fields.dpl, cs.attr.fields.dpl);
+            return -EINVAL;
+        }
+
+        if ( es.attr.fields.p && es.attr.fields.dpl > cs.attr.fields.dpl )
+        {
+            gprintk(XENLOG_ERR, "ES.DPL (%u) is greater than CS.DPL (%u)\n",
+                    es.attr.fields.dpl, cs.attr.fields.dpl);
+            return -EINVAL;
+        }
+
+        if ( (regs->efer & EFER_LMA) && !(regs->efer & EFER_LME) )
+        {
+            gprintk(XENLOG_ERR, "EFER.LMA set without EFER.LME (%#016lx)\n",
+                    regs->efer);
+            return -EINVAL;
+        }
+
+        uregs->rax    = regs->eax;
+        uregs->rcx    = regs->ecx;
+        uregs->rdx    = regs->edx;
+        uregs->rbx    = regs->ebx;
+        uregs->rsp    = regs->esp;
+        uregs->rbp    = regs->ebp;
+        uregs->rsi    = regs->esi;
+        uregs->rdi    = regs->edi;
+        uregs->rip    = regs->eip;
+        uregs->rflags = regs->eflags;
+
+        v->arch.hvm_vcpu.guest_cr[0] = regs->cr0;
+        v->arch.hvm_vcpu.guest_cr[3] = regs->cr3;
+        v->arch.hvm_vcpu.guest_cr[4] = regs->cr4;
+        v->arch.hvm_vcpu.guest_efer  = regs->efer;
+    }
+    break;
+
+    case VCPU_HVM_MODE_64B:
+    {
+        const struct vcpu_hvm_x86_64 *regs = &ctx->cpu_regs.x86_64;
+
+        /* Basic sanity checks. */
+        if ( !is_canonical_address(regs->rip) )
+        {
+            gprintk(XENLOG_ERR, "RIP contains a non-canonical address (%#lx)\n",
+                    regs->rip);
+            return -EINVAL;
+        }
+
+        if ( !(regs->cr0 & X86_CR0_PG) )
+        {
+            gprintk(XENLOG_ERR, "CR0 doesn't have paging enabled (%#016lx)\n",
+                    regs->cr0);
+            return -EINVAL;
+        }
+
+        if ( !(regs->cr4 & X86_CR4_PAE) )
+        {
+            gprintk(XENLOG_ERR, "CR4 doesn't have PAE enabled (%#016lx)\n",
+                    regs->cr4);
+            return -EINVAL;
+        }
+
+        if ( !(regs->efer & EFER_LME) )
+        {
+            gprintk(XENLOG_ERR, "EFER doesn't have LME enabled (%#016lx)\n",
+                    regs->efer);
+            return -EINVAL;
+        }
+
+        uregs->rax    = regs->rax;
+        uregs->rcx    = regs->rcx;
+        uregs->rdx    = regs->rdx;
+        uregs->rbx    = regs->rbx;
+        uregs->rsp    = regs->rsp;
+        uregs->rbp    = regs->rbp;
+        uregs->rsi    = regs->rsi;
+        uregs->rdi    = regs->rdi;
+        uregs->rip    = regs->rip;
+        uregs->rflags = regs->rflags;
+
+        v->arch.hvm_vcpu.guest_cr[0] = regs->cr0;
+        v->arch.hvm_vcpu.guest_cr[3] = regs->cr3;
+        v->arch.hvm_vcpu.guest_cr[4] = regs->cr4;
+        v->arch.hvm_vcpu.guest_efer  = regs->efer;
+
+#define SEG(l, a) (struct segment_register){ .limit = (l), .attr.bytes = (a) }
+        cs = SEG(~0u, 0xa9b); /* 64bit code segment. */
+        ds = ss = es = SEG(~0u, 0xc93);
+        tr = SEG(0x67, 0x8b); /* 64bit TSS (busy). */
+#undef SEG
+    }
+    break;
+
+    }
+
+    if ( v->arch.hvm_vcpu.guest_efer & EFER_LME )
+        v->arch.hvm_vcpu.guest_efer |= EFER_LMA;
+
+    if ( v->arch.hvm_vcpu.guest_cr[4] & hvm_cr4_guest_reserved_bits(v, 0) )
+    {
+        gprintk(XENLOG_ERR, "Bad CR4 value: %#016lx\n",
+                v->arch.hvm_vcpu.guest_cr[4]);
+        return -EINVAL;
+    }
+
+    errstr = hvm_efer_valid(v, v->arch.hvm_vcpu.guest_efer, -1);
+    if ( errstr )
+    {
+        gprintk(XENLOG_ERR, "Bad EFER value (%#016lx): %s\n",
+               v->arch.hvm_vcpu.guest_efer, errstr);
+        return -EINVAL;
+    }
+
+    hvm_update_guest_cr(v, 0);
+    hvm_update_guest_cr(v, 3);
+    hvm_update_guest_cr(v, 4);
+    hvm_update_guest_efer(v);
+
+    if ( hvm_paging_enabled(v) && !paging_mode_hap(v->domain) )
+    {
+        /* Shadow-mode CR3 change. Check PDBR and update refcounts. */
+        struct page_info *page = get_page_from_gfn(v->domain,
+                                 v->arch.hvm_vcpu.guest_cr[3] >> PAGE_SHIFT,
+                                 NULL, P2M_ALLOC);
+        if ( !page )
+        {
+            gprintk(XENLOG_ERR, "Invalid CR3: %#lx\n",
+                    v->arch.hvm_vcpu.guest_cr[3]);
+            return -EINVAL;
+        }
+
+        v->arch.guest_table = pagetable_from_page(page);
+    }
+
+    hvm_set_segment_register(v, x86_seg_cs, &cs);
+    hvm_set_segment_register(v, x86_seg_ds, &ds);
+    hvm_set_segment_register(v, x86_seg_ss, &ss);
+    hvm_set_segment_register(v, x86_seg_es, &es);
+    hvm_set_segment_register(v, x86_seg_tr, &tr);
+
+    /* Sync AP's TSC with BSP's. */
+    v->arch.hvm_vcpu.cache_tsc_offset =
+        v->domain->vcpu[0]->arch.hvm_vcpu.cache_tsc_offset;
+    hvm_funcs.set_tsc_offset(v, v->arch.hvm_vcpu.cache_tsc_offset,
+                             v->domain->arch.hvm_domain.sync_tsc);
+
+    paging_update_paging_modes(v);
+
+    v->is_initialised = 1;
+    set_bit(_VPF_down, &v->pause_flags);
+
+    return 0;
+}
+
+int arch_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
+{
+    int rc;
+
+    if ( is_hvm_vcpu(v) )
+    {
+        struct domain *d = v->domain;
+        struct vcpu_hvm_context ctxt;
+
+        if ( copy_from_guest(&ctxt, arg, 1) )
+            return -EFAULT;
+
+        domain_lock(d);
+        rc = v->is_initialised ? -EEXIST : arch_set_info_hvm_guest(v, &ctxt);
+        domain_unlock(d);
+    }
+    else
+        rc = default_initialise_vcpu(v, arg);
+
+    return rc;
 }
 
 int arch_vcpu_reset(struct vcpu *v)
@@ -1594,6 +1924,9 @@ static void __context_switch(void)
 
             if ( xcr0 != get_xcr0() && !set_xcr0(xcr0) )
                 BUG();
+
+            if ( cpu_has_xsaves && has_hvm_container_vcpu(n) )
+                set_msr_xss(n->arch.hvm_vcpu.msr_xss);
         }
         vcpu_restore_fpu_eager(n);
         n->arch.ctxt_switch_to(n);

@@ -67,7 +67,8 @@ struct ept_data {
         };
         u64 eptp;
     };
-    cpumask_var_t synced_mask;
+    /* Set of PCPUs needing an INVEPT before a VMENTER. */
+    cpumask_var_t invalidate;
 };
 
 #define _VMX_DOMAIN_PML_ENABLED    0
@@ -80,20 +81,29 @@ struct vmx_domain {
 
 struct pi_desc {
     DECLARE_BITMAP(pir, NR_VECTORS);
-    u32 control;
-    u32 rsvd[7];
+    union {
+        struct {
+            u16     on     : 1,  /* bit 256 - Outstanding Notification */
+                    sn     : 1,  /* bit 257 - Suppress Notification */
+                    rsvd_1 : 14; /* bit 271:258 - Reserved */
+            u8      nv;          /* bit 279:272 - Notification Vector */
+            u8      rsvd_2;      /* bit 287:280 - Reserved */
+            u32     ndst;        /* bit 319:288 - Notification Destination */
+        };
+        u64 control;
+    };
+    u32 rsvd[6];
 } __attribute__ ((aligned (64)));
 
 #define ept_get_wl(ept)   ((ept)->ept_wl)
 #define ept_get_asr(ept)  ((ept)->asr)
 #define ept_get_eptp(ept) ((ept)->eptp)
-#define ept_get_synced_mask(ept) ((ept)->synced_mask)
 
 #define NR_PML_ENTRIES   512
 
 struct arch_vmx_struct {
-    /* Virtual address of VMCS. */
-    struct vmcs_struct  *vmcs;
+    /* Physical address of VMCS. */
+    paddr_t              vmcs_pa;
     /* VMCS shadow machine address. */
     paddr_t             vmcs_shadow_maddr;
 
@@ -225,6 +235,8 @@ extern u32 vmx_vmentry_control;
 #define SECONDARY_EXEC_ENABLE_VMCS_SHADOWING    0x00004000
 #define SECONDARY_EXEC_ENABLE_PML               0x00020000
 #define SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS   0x00040000
+#define SECONDARY_EXEC_XSAVES                   0x00100000
+#define SECONDARY_EXEC_PCOMMIT                  0x00200000
 extern u32 vmx_secondary_exec_control;
 
 #define VMX_EPT_EXEC_ONLY_SUPPORTED                         0x00000001
@@ -290,7 +302,10 @@ extern u64 vmx_ept_vpid_cap;
     (vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS)
 #define cpu_has_vmx_pml \
     (vmx_secondary_exec_control & SECONDARY_EXEC_ENABLE_PML)
-
+#define cpu_has_vmx_xsaves \
+    (vmx_secondary_exec_control & SECONDARY_EXEC_XSAVES)
+#define cpu_has_vmx_pcommit \
+    (vmx_secondary_exec_control & SECONDARY_EXEC_PCOMMIT)
 #define VMCS_RID_TYPE_MASK              0x80000000
 
 /* GUEST_INTERRUPTIBILITY_INFO flags. */
@@ -364,6 +379,7 @@ enum vmcs_field {
     VMREAD_BITMAP                   = 0x00002026,
     VMWRITE_BITMAP                  = 0x00002028,
     VIRT_EXCEPTION_INFO             = 0x0000202a,
+    XSS_EXIT_BITMAP                 = 0x0000202c,
     GUEST_PHYSICAL_ADDRESS          = 0x00002400,
     VMCS_LINK_POINTER               = 0x00002800,
     GUEST_IA32_DEBUGCTL             = 0x00002802,
@@ -488,7 +504,7 @@ void vmx_enable_intercept_for_msr(struct vcpu *v, u32 msr, int type);
 int vmx_read_guest_msr(u32 msr, u64 *val);
 int vmx_write_guest_msr(u32 msr, u64 val);
 int vmx_add_msr(u32 msr, int type);
-void vmx_vmcs_switch(struct vmcs_struct *from, struct vmcs_struct *to);
+void vmx_vmcs_switch(paddr_t from, paddr_t to);
 void vmx_set_eoi_exit_bitmap(struct vcpu *v, u8 vector);
 void vmx_clear_eoi_exit_bitmap(struct vcpu *v, u8 vector);
 int vmx_check_msr_bitmap(unsigned long *msr_bitmap, u32 msr, int access_type);

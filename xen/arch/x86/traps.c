@@ -108,7 +108,7 @@ void (*ioemul_handle_quirk)(
 static int debug_stack_lines = 20;
 integer_param("debug_stack_lines", debug_stack_lines);
 
-static bool_t __devinitdata opt_ler;
+static bool_t opt_ler;
 boolean_param("ler", opt_ler);
 
 #define stack_words_per_line 4
@@ -939,9 +939,9 @@ void pv_cpuid(struct cpu_user_regs *regs)
             goto unsupported;
         if ( regs->_ecx == 1 )
         {
-            a &= boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_XSAVEOPT)];
-            if ( !cpu_has_xsaves )
-                b = c = d = 0;
+            a &= (boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_XSAVEOPT)] &
+                  ~cpufeat_mask(X86_FEATURE_XSAVES));
+            b = c = d = 0;
         }
         break;
 
@@ -1812,11 +1812,9 @@ static bool_t pci_cfg_ok(struct domain *currd, unsigned int start,
             start |= CF8_ADDR_HI(currd->arch.pci_cf8);
     }
 
-    if ( xsm_pci_config_permission(XSM_HOOK, currd, machine_bdf,
-                                   start, start + size - 1, !!write) != 0 )
-         return 0;
-
-    return !write ||
+    return !write ?
+           xsm_pci_config_permission(XSM_HOOK, currd, machine_bdf,
+                                     start, start + size - 1, 0) == 0 :
            pci_conf_write_intercept(0, machine_bdf, start, size, write) >= 0;
 }
 
@@ -3616,7 +3614,7 @@ void load_TR(void)
         : "=m" (old_gdt) : "rm" (TSS_ENTRY << 3), "m" (tss_gdt) : "memory" );
 }
 
-void __devinit percpu_traps_init(void)
+void percpu_traps_init(void)
 {
     subarch_percpu_traps_init();
 

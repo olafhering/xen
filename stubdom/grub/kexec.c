@@ -100,9 +100,9 @@ static void do_exchange(struct xc_dom_image *dom, xen_pfn_t target_pfn, xen_pfn_
     dom->p2m_host[target_pfn] = source_mfn;
 }
 
-int kexec_allocate(struct xc_dom_image *dom, xen_vaddr_t up_to)
+int kexec_allocate(struct xc_dom_image *dom)
 {
-    unsigned long new_allocated = (up_to - dom->parms.virt_base) / PAGE_SIZE;
+    unsigned long new_allocated = dom->pfn_alloc_end - dom->rambase_pfn;
     unsigned long i;
 
     pages = realloc(pages, new_allocated * sizeof(*pages));
@@ -272,7 +272,11 @@ void kexec(void *kernel, long kernel_size, void *module, long module_size, char 
 #endif
 
     /* equivalent of xc_dom_mem_init */
-    dom->arch_hooks = xc_dom_find_arch_hooks(xc_handle, dom->guest_type);
+    if (xc_dom_set_arch_hooks(dom)) {
+        grub_printf("xc_dom_set_arch_hooks failed\n");
+        errnum = ERR_EXEC_FORMAT;
+        goto out;
+    }
     dom->total_pages = start_info.nr_pages;
 
     /* equivalent of arch_setup_meminit */
@@ -319,8 +323,6 @@ void kexec(void *kernel, long kernel_size, void *module, long module_size, char 
 
     /* Make sure the bootstrap page table does not RW-map any of our current
      * page table frames */
-    kexec_allocate(dom, dom->virt_pgtab_end);
-
     if ( (rc = xc_dom_update_guest_p2m(dom))) {
         grub_printf("xc_dom_update_guest_p2m returned %d\n", rc);
         errnum = ERR_BOOT_FAILURE;

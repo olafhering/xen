@@ -212,10 +212,6 @@ APPEND_CFLAGS += $(foreach i, $(APPEND_INCLUDES), -I$(i))
 EMBEDDED_EXTRA_CFLAGS := -nopie -fno-stack-protector -fno-stack-protector-all
 EMBEDDED_EXTRA_CFLAGS += -fno-exceptions
 
-# Enable XSM security module (by default, Flask).
-XSM_ENABLE ?= n
-FLASK_ENABLE ?= $(XSM_ENABLE)
-
 XEN_EXTFILES_URL ?= http://xenbits.xen.org/xen-extfiles
 # All the files at that location were downloaded from elsewhere on
 # the internet.  The original download URL is preserved as a comment
@@ -253,22 +249,22 @@ QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= af9785a9ed61daea52b47f0bf448f1f228beee1e
+OVMF_UPSTREAM_REVISION ?= 52a99493cce88a9d4ec8a02d7f1bd1a1001ce60d
 QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= 256035e01a1aa5739e34f245f3b1e9e8ee204210
-# Thu Jul 23 11:08:38 2015 +0100
-# arm: interrupt controller
+MINIOS_UPSTREAM_REVISION ?= 89268f00b0b0215057cb74edd94e866536a02489
+# Fri Jan 15 13:24:03 2016 +0000
+# mini-os: Include libxenforeignmemory with libxc
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.8.2
-# Tue Mar 17 10:52:16 2015 -0400
-# vgabios: On bda_save_restore() the saved vbe_mode also has flags in it
+SEABIOS_UPSTREAM_REVISION ?= 3403ac4313812752be6e6aac35239ca6888a8cab
+# Mon Dec 28 13:50:41 2015 +0100
+# build: fix typo in buildversion.py
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= bc00cad75d8bcc3ba696992bec219c21db8406aa
-# Tue Mar 11 10:19:23 2014 +0000
-# block-vvfat: fix resource leaks in read_directory()
+QEMU_TRADITIONAL_REVISION ?= 21f6526d1da331611ac5fe12967549d1a04e149b
+# Fri Jan 15 13:23:56 2016 +0000
+# qemu-xen-traditional: Add libxenforeignmemory to rpath-link
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

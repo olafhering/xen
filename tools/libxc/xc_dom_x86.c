@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <assert.h>
 
 #include <xen/xen.h>
 #include <xen/foreign/x86_32.h>
@@ -49,8 +50,6 @@
 #define X86_CR0_PE 0x01
 #define X86_CR0_ET 0x10
 
-#define VGA_HOLE_SIZE (0x20)
-
 #define SPECIALPAGE_PAGING   0
 #define SPECIALPAGE_ACCESS   1
 #define SPECIALPAGE_SHARING  2
@@ -59,8 +58,8 @@
 #define SPECIALPAGE_IOREQ    5
 #define SPECIALPAGE_IDENT_PT 6
 #define SPECIALPAGE_CONSOLE  7
-#define NR_SPECIAL_PAGES     8
-#define special_pfn(x) (0xff000u - NR_SPECIAL_PAGES + (x))
+#define special_pfn(x) \
+    (X86_HVM_END_SPECIAL_REGION - X86_HVM_NR_SPECIAL_PAGES + (x))
 
 #define NR_IOREQ_SERVER_PAGES 8
 #define ioreq_server_pfn(x) (special_pfn(0) - NR_IOREQ_SERVER_PAGES + (x))
@@ -68,6 +67,32 @@
 #define bits_to_mask(bits)       (((xen_vaddr_t)1 << (bits))-1)
 #define round_down(addr, mask)   ((addr) & ~(mask))
 #define round_up(addr, mask)     ((addr) | (mask))
+#define round_pg_up(addr)  (((addr) + PAGE_SIZE_X86 - 1) & ~(PAGE_SIZE_X86 - 1))
+
+struct xc_dom_params {
+    unsigned levels;
+    xen_vaddr_t vaddr_mask;
+    x86_pgentry_t lvl_prot[4];
+};
+
+struct xc_dom_x86_mapping_lvl {
+    xen_vaddr_t from;
+    xen_vaddr_t to;
+    xen_pfn_t pfn;
+    unsigned int pgtables;
+};
+
+struct xc_dom_x86_mapping {
+    struct xc_dom_x86_mapping_lvl area;
+    struct xc_dom_x86_mapping_lvl lvls[4];
+};
+
+struct xc_dom_image_x86 {
+    unsigned n_mappings;
+#define MAPPING_MAX 2
+    struct xc_dom_x86_mapping maps[MAPPING_MAX];
+    struct xc_dom_params *params;
+};
 
 /* get guest IO ABI protocol */
 const char *xc_domain_get_native_protocol(xc_interface *xch,
@@ -96,99 +121,160 @@ const char *xc_domain_get_native_protocol(xc_interface *xch,
     return protocol;
 }
 
-static unsigned long
-nr_page_tables(struct xc_dom_image *dom,
-               xen_vaddr_t start, xen_vaddr_t end, unsigned long bits)
+static int count_pgtables(struct xc_dom_image *dom, xen_vaddr_t from,
+                          xen_vaddr_t to, xen_pfn_t pfn)
 {
-    xen_vaddr_t mask = bits_to_mask(bits);
-    int tables;
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    struct xc_dom_x86_mapping *map, *map_cmp;
+    xen_pfn_t pfn_end;
+    xen_vaddr_t mask;
+    unsigned bits;
+    int l, m;
 
-    if ( bits == 0 )
-        return 0;  /* unused */
-
-    if ( bits == (8 * sizeof(unsigned long)) )
+    if ( domx86->n_mappings == MAPPING_MAX )
     {
-        /* must be pgd, need one */
-        start = 0;
-        end = -1;
-        tables = 1;
+        xc_dom_panic(dom->xch, XC_OUT_OF_MEMORY,
+                     "%s: too many mappings\n", __FUNCTION__);
+        return -ENOMEM;
     }
-    else
+    map = domx86->maps + domx86->n_mappings;
+
+    pfn_end = pfn + ((to - from) >> PAGE_SHIFT_X86);
+    if ( pfn_end >= dom->p2m_size )
     {
-        start = round_down(start, mask);
-        end = round_up(end, mask);
-        tables = ((end - start) >> bits) + 1;
+        xc_dom_panic(dom->xch, XC_OUT_OF_MEMORY,
+                     "%s: not enough memory for initial mapping (%#"PRIpfn" > %#"PRIpfn")",
+                     __FUNCTION__, pfn_end, dom->p2m_size);
+        return -ENOMEM;
+    }
+    for ( m = 0; m < domx86->n_mappings; m++ )
+    {
+        map_cmp = domx86->maps + m;
+        if ( from < map_cmp->area.to && to > map_cmp->area.from )
+        {
+            xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                         "%s: overlapping mappings\n", __FUNCTION__);
+            return -EINVAL;
+        }
     }
 
-    DOMPRINTF("%s: 0x%016" PRIx64 "/%ld: 0x%016" PRIx64
-              " -> 0x%016" PRIx64 ", %d table(s)",
-              __FUNCTION__, mask, bits, start, end, tables);
-    return tables;
+    memset(map, 0, sizeof(*map));
+    map->area.from = from & domx86->params->vaddr_mask;
+    map->area.to = to & domx86->params->vaddr_mask;
+
+    for ( l = domx86->params->levels - 1; l >= 0; l-- )
+    {
+        map->lvls[l].pfn = pfn + map->area.pgtables;
+        if ( l == domx86->params->levels - 1 )
+        {
+            /* Top level page table in first mapping only. */
+            if ( domx86->n_mappings == 0 )
+            {
+                map->lvls[l].from = 0;
+                map->lvls[l].to = domx86->params->vaddr_mask;
+                map->lvls[l].pgtables = 1;
+                map->area.pgtables++;
+            }
+            continue;
+        }
+
+        bits = PAGE_SHIFT_X86 + (l + 1) * PGTBL_LEVEL_SHIFT_X86;
+        mask = bits_to_mask(bits);
+        map->lvls[l].from = map->area.from & ~mask;
+        map->lvls[l].to = map->area.to | mask;
+
+        if ( domx86->params->levels == PGTBL_LEVELS_I386 &&
+             domx86->n_mappings == 0 && to < 0xc0000000 && l == 1 )
+        {
+            DOMPRINTF("%s: PAE: extra l2 page table for l3#3", __FUNCTION__);
+            map->lvls[l].to = domx86->params->vaddr_mask;
+        }
+
+        for ( m = 0; m < domx86->n_mappings; m++ )
+        {
+            map_cmp = domx86->maps + m;
+            if ( map_cmp->lvls[l].from == map_cmp->lvls[l].to )
+                continue;
+            if ( map->lvls[l].from >= map_cmp->lvls[l].from &&
+                 map->lvls[l].to <= map_cmp->lvls[l].to )
+            {
+                map->lvls[l].from = 0;
+                map->lvls[l].to = 0;
+                break;
+            }
+            assert(map->lvls[l].from >= map_cmp->lvls[l].from ||
+                   map->lvls[l].to <= map_cmp->lvls[l].to);
+            if ( map->lvls[l].from >= map_cmp->lvls[l].from &&
+                 map->lvls[l].from <= map_cmp->lvls[l].to )
+                map->lvls[l].from = map_cmp->lvls[l].to + 1;
+            if ( map->lvls[l].to >= map_cmp->lvls[l].from &&
+                 map->lvls[l].to <= map_cmp->lvls[l].to )
+                map->lvls[l].to = map_cmp->lvls[l].from - 1;
+        }
+        if ( map->lvls[l].from < map->lvls[l].to )
+            map->lvls[l].pgtables =
+                ((map->lvls[l].to - map->lvls[l].from) >> bits) + 1;
+        DOMPRINTF("%s: 0x%016" PRIx64 "/%d: 0x%016" PRIx64 " -> 0x%016" PRIx64
+                  ", %d table(s)", __FUNCTION__, mask, bits,
+                  map->lvls[l].from, map->lvls[l].to, map->lvls[l].pgtables);
+        map->area.pgtables += map->lvls[l].pgtables;
+    }
+
+    return 0;
 }
 
-static int count_pgtables(struct xc_dom_image *dom, int pae,
-                          int l4_bits, int l3_bits, int l2_bits, int l1_bits)
+static int alloc_pgtables(struct xc_dom_image *dom)
 {
     int pages, extra_pages;
     xen_vaddr_t try_virt_end;
-    xen_pfn_t try_pfn_end;
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    struct xc_dom_x86_mapping *map = domx86->maps + domx86->n_mappings;
 
     extra_pages = dom->alloc_bootstack ? 1 : 0;
-    extra_pages += dom->extra_pages;
-    extra_pages += 128; /* 512kB padding */
+    extra_pages += (512 * 1024) / PAGE_SIZE_X86; /* 512kB padding */
     pages = extra_pages;
     for ( ; ; )
     {
         try_virt_end = round_up(dom->virt_alloc_end + pages * PAGE_SIZE_X86,
                                 bits_to_mask(22)); /* 4MB alignment */
 
-        try_pfn_end = (try_virt_end - dom->parms.virt_base) >> PAGE_SHIFT_X86;
+        if ( count_pgtables(dom, dom->parms.virt_base, try_virt_end,
+                            dom->pfn_alloc_end) )
+            return -1;
 
-        if ( try_pfn_end > dom->p2m_size )
-        {
-            xc_dom_panic(dom->xch, XC_OUT_OF_MEMORY,
-                         "%s: not enough memory for initial mapping (%#"PRIpfn" > %#"PRIpfn")",
-                         __FUNCTION__, try_pfn_end, dom->p2m_size);
-            return -ENOMEM;
-        }
-
-        dom->pg_l4 =
-            nr_page_tables(dom, dom->parms.virt_base, try_virt_end, l4_bits);
-        dom->pg_l3 =
-            nr_page_tables(dom, dom->parms.virt_base, try_virt_end, l3_bits);
-        dom->pg_l2 =
-            nr_page_tables(dom, dom->parms.virt_base, try_virt_end, l2_bits);
-        dom->pg_l1 =
-            nr_page_tables(dom, dom->parms.virt_base, try_virt_end, l1_bits);
-        if (pae && try_virt_end < 0xc0000000)
-        {
-            DOMPRINTF("%s: PAE: extra l2 page table for l3#3",
-                      __FUNCTION__);
-            dom->pg_l2++;
-        }
-        dom->pgtables = dom->pg_l4 + dom->pg_l3 + dom->pg_l2 + dom->pg_l1;
-        pages = dom->pgtables + extra_pages;
+        pages = map->area.pgtables + extra_pages;
         if ( dom->virt_alloc_end + pages * PAGE_SIZE_X86 <= try_virt_end + 1 )
             break;
     }
+    map->area.pfn = 0;
+    domx86->n_mappings++;
     dom->virt_pgtab_end = try_virt_end + 1;
-    return 0;
+
+    return xc_dom_alloc_segment(dom, &dom->pgtables_seg, "page tables", 0,
+                                map->area.pgtables * PAGE_SIZE_X86);
 }
 
 /* ------------------------------------------------------------------------ */
 /* i386 pagetables                                                          */
 
-#define L1_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED)
-#define L2_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER)
-#define L3_PROT (_PAGE_PRESENT)
+static struct xc_dom_params x86_32_params = {
+    .levels = PGTBL_LEVELS_I386,
+    .vaddr_mask = bits_to_mask(VIRT_BITS_I386),
+    .lvl_prot[0] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED,
+    .lvl_prot[1] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
+    .lvl_prot[2] = _PAGE_PRESENT,
+};
 
-static int count_pgtables_x86_32_pae(struct xc_dom_image *dom)
+static int alloc_pgtables_x86_32_pae(struct xc_dom_image *dom)
 {
-    return count_pgtables(dom, 1, 0, 32,
-                          L3_PAGETABLE_SHIFT_PAE, L2_PAGETABLE_SHIFT_PAE);
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+
+    domx86->params = &x86_32_params;
+    return alloc_pgtables(dom);
 }
 
 #define pfn_to_paddr(pfn) ((xen_paddr_t)(pfn) << PAGE_SHIFT_X86)
+#define pgentry_to_pfn(entry) ((xen_pfn_t)((entry) >> PAGE_SHIFT_X86))
 
 /*
  * Move the l3 page table page below 4G for guests which do not
@@ -258,19 +344,100 @@ static xen_pfn_t move_l3_below_4G(struct xc_dom_image *dom,
     return l3mfn;
 }
 
+static x86_pgentry_t *get_pg_table_x86(struct xc_dom_image *dom, int m, int l)
+{
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    struct xc_dom_x86_mapping *map;
+    x86_pgentry_t *pg;
+
+    map = domx86->maps + m;
+    pg = xc_dom_pfn_to_ptr(dom, map->lvls[l].pfn, 0);
+    if ( pg )
+        return pg;
+
+    xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                 "%s: xc_dom_pfn_to_ptr failed", __FUNCTION__);
+    return NULL;
+}
+
+static x86_pgentry_t get_pg_prot_x86(struct xc_dom_image *dom, int l,
+                                     xen_pfn_t pfn)
+{
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    struct xc_dom_x86_mapping *map;
+    xen_pfn_t pfn_s, pfn_e;
+    x86_pgentry_t prot;
+    unsigned m;
+
+    prot = domx86->params->lvl_prot[l];
+    if ( l > 0 || dom->pvh_enabled )
+        return prot;
+
+    for ( m = 0; m < domx86->n_mappings; m++ )
+    {
+        map = domx86->maps + m;
+        pfn_s = map->lvls[domx86->params->levels - 1].pfn;
+        pfn_e = map->area.pgtables + pfn_s;
+        if ( pfn >= pfn_s && pfn < pfn_e )
+            return prot & ~_PAGE_RW;
+    }
+
+    return prot;
+}
+
+static int setup_pgtables_x86(struct xc_dom_image *dom)
+{
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    struct xc_dom_x86_mapping *map1, *map2;
+    struct xc_dom_x86_mapping_lvl *lvl;
+    xen_vaddr_t from, to;
+    xen_pfn_t pfn, p, p_s, p_e;
+    x86_pgentry_t *pg;
+    unsigned m1, m2;
+    int l;
+
+    for ( l = domx86->params->levels - 1; l >= 0; l-- )
+        for ( m1 = 0; m1 < domx86->n_mappings; m1++ )
+        {
+            map1 = domx86->maps + m1;
+            from = map1->lvls[l].from;
+            to = map1->lvls[l].to;
+            pg = get_pg_table_x86(dom, m1, l);
+            if ( !pg )
+                return -1;
+            for ( m2 = 0; m2 < domx86->n_mappings; m2++ )
+            {
+                map2 = domx86->maps + m2;
+                lvl = (l > 0) ? map2->lvls + l - 1 : &map2->area;
+                if ( l > 0 && lvl->pgtables == 0 )
+                    continue;
+                if ( lvl->from >= to || lvl->to <= from )
+                    continue;
+                p_s = (max(from, lvl->from) - from) >>
+                      (PAGE_SHIFT_X86 + l * PGTBL_LEVEL_SHIFT_X86);
+                p_e = (min(to, lvl->to) - from) >>
+                      (PAGE_SHIFT_X86 + l * PGTBL_LEVEL_SHIFT_X86);
+                pfn = ((max(from, lvl->from) - lvl->from) >>
+                      (PAGE_SHIFT_X86 + l * PGTBL_LEVEL_SHIFT_X86)) + lvl->pfn;
+                for ( p = p_s; p <= p_e; p++ )
+                {
+                    pg[p] = pfn_to_paddr(xc_dom_p2m(dom, pfn)) |
+                            get_pg_prot_x86(dom, l, pfn);
+                    pfn++;
+                }
+            }
+        }
+
+    return 0;
+}
+
 static int setup_pgtables_x86_32_pae(struct xc_dom_image *dom)
 {
-    xen_pfn_t l3pfn = dom->pgtables_seg.pfn;
-    xen_pfn_t l2pfn = l3pfn + dom->pg_l3;
-    xen_pfn_t l1pfn = l2pfn + dom->pg_l2;
-    l3_pgentry_64_t *l3tab;
-    l2_pgentry_64_t *l2tab = NULL;
-    l1_pgentry_64_t *l1tab = NULL;
-    unsigned long l3off, l2off = 0, l1off;
-    xen_vaddr_t addr;
-    xen_pfn_t pgpfn;
-    xen_pfn_t l3mfn = xc_dom_p2m(dom, l3pfn);
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    xen_pfn_t l3mfn, l3pfn;
 
+    l3pfn = domx86->maps[0].lvls[2].pfn;
+    l3mfn = xc_dom_p2m(dom, l3pfn);
     if ( dom->parms.pae == XEN_PAE_YES )
     {
         if ( l3mfn >= 0x100000 )
@@ -286,186 +453,38 @@ static int setup_pgtables_x86_32_pae(struct xc_dom_image *dom)
         }
     }
 
-    l3tab = xc_dom_pfn_to_ptr(dom, l3pfn, 1);
-    if ( l3tab == NULL )
-        goto pfn_error;
-
-    for ( addr = dom->parms.virt_base; addr < dom->virt_pgtab_end;
-          addr += PAGE_SIZE_X86 )
-    {
-        if ( l2tab == NULL )
-        {
-            /* get L2 tab, make L3 entry */
-            l2tab = xc_dom_pfn_to_ptr(dom, l2pfn, 1);
-            if ( l2tab == NULL )
-                goto pfn_error;
-            l3off = l3_table_offset_pae(addr);
-            l3tab[l3off] =
-                pfn_to_paddr(xc_dom_p2m(dom, l2pfn)) | L3_PROT;
-            l2pfn++;
-        }
-
-        if ( l1tab == NULL )
-        {
-            /* get L1 tab, make L2 entry */
-            l1tab = xc_dom_pfn_to_ptr(dom, l1pfn, 1);
-            if ( l1tab == NULL )
-                goto pfn_error;
-            l2off = l2_table_offset_pae(addr);
-            l2tab[l2off] =
-                pfn_to_paddr(xc_dom_p2m(dom, l1pfn)) | L2_PROT;
-            l1pfn++;
-        }
-
-        /* make L1 entry */
-        l1off = l1_table_offset_pae(addr);
-        pgpfn = (addr - dom->parms.virt_base) >> PAGE_SHIFT_X86;
-        l1tab[l1off] =
-            pfn_to_paddr(xc_dom_p2m(dom, pgpfn)) | L1_PROT;
-        if ( (!dom->pvh_enabled)                &&
-             (addr >= dom->pgtables_seg.vstart) &&
-             (addr < dom->pgtables_seg.vend) )
-            l1tab[l1off] &= ~_PAGE_RW; /* page tables are r/o */
-
-        if ( l1off == (L1_PAGETABLE_ENTRIES_PAE - 1) )
-        {
-            l1tab = NULL;
-            if ( l2off == (L2_PAGETABLE_ENTRIES_PAE - 1) )
-                l2tab = NULL;
-        }
-    }
-
-    if ( dom->virt_pgtab_end <= 0xc0000000 )
-    {
-        DOMPRINTF("%s: PAE: extra l2 page table for l3#3", __FUNCTION__);
-        l3tab[3] = pfn_to_paddr(xc_dom_p2m(dom, l2pfn)) | L3_PROT;
-    }
-    return 0;
-
-pfn_error:
-    xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                 "%s: xc_dom_pfn_to_ptr failed", __FUNCTION__);
-    return -EINVAL;
+    return setup_pgtables_x86(dom);
 }
-
-#undef L1_PROT
-#undef L2_PROT
-#undef L3_PROT
 
 /* ------------------------------------------------------------------------ */
 /* x86_64 pagetables                                                        */
 
-static int count_pgtables_x86_64(struct xc_dom_image *dom)
-{
-    return count_pgtables(dom, 0,
-                          L4_PAGETABLE_SHIFT_X86_64 + 9,
-                          L4_PAGETABLE_SHIFT_X86_64,
-                          L3_PAGETABLE_SHIFT_X86_64,
-                          L2_PAGETABLE_SHIFT_X86_64);
-}
+static struct xc_dom_params x86_64_params = {
+    .levels = PGTBL_LEVELS_X86_64,
+    .vaddr_mask = bits_to_mask(VIRT_BITS_X86_64),
+    .lvl_prot[0] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED,
+    .lvl_prot[1] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
+    .lvl_prot[2] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
+    .lvl_prot[3] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
+};
 
-#define L1_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED)
-#define L2_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER)
-#define L3_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER)
-#define L4_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER)
+static int alloc_pgtables_x86_64(struct xc_dom_image *dom)
+{
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+
+    domx86->params = &x86_64_params;
+    return alloc_pgtables(dom);
+}
 
 static int setup_pgtables_x86_64(struct xc_dom_image *dom)
 {
-    xen_pfn_t l4pfn = dom->pgtables_seg.pfn;
-    xen_pfn_t l3pfn = l4pfn + dom->pg_l4;
-    xen_pfn_t l2pfn = l3pfn + dom->pg_l3;
-    xen_pfn_t l1pfn = l2pfn + dom->pg_l2;
-    l4_pgentry_64_t *l4tab = xc_dom_pfn_to_ptr(dom, l4pfn, 1);
-    l3_pgentry_64_t *l3tab = NULL;
-    l2_pgentry_64_t *l2tab = NULL;
-    l1_pgentry_64_t *l1tab = NULL;
-    uint64_t l4off, l3off = 0, l2off = 0, l1off;
-    uint64_t addr;
-    xen_pfn_t pgpfn;
-
-    if ( l4tab == NULL )
-        goto pfn_error;
-
-    for ( addr = dom->parms.virt_base; addr < dom->virt_pgtab_end;
-          addr += PAGE_SIZE_X86 )
-    {
-        if ( l3tab == NULL )
-        {
-            /* get L3 tab, make L4 entry */
-            l3tab = xc_dom_pfn_to_ptr(dom, l3pfn, 1);
-            if ( l3tab == NULL )
-                goto pfn_error;
-            l4off = l4_table_offset_x86_64(addr);
-            l4tab[l4off] =
-                pfn_to_paddr(xc_dom_p2m(dom, l3pfn)) | L4_PROT;
-            l3pfn++;
-        }
-
-        if ( l2tab == NULL )
-        {
-            /* get L2 tab, make L3 entry */
-            l2tab = xc_dom_pfn_to_ptr(dom, l2pfn, 1);
-            if ( l2tab == NULL )
-                goto pfn_error;
-            l3off = l3_table_offset_x86_64(addr);
-            l3tab[l3off] =
-                pfn_to_paddr(xc_dom_p2m(dom, l2pfn)) | L3_PROT;
-            l2pfn++;
-        }
-
-        if ( l1tab == NULL )
-        {
-            /* get L1 tab, make L2 entry */
-            l1tab = xc_dom_pfn_to_ptr(dom, l1pfn, 1);
-            if ( l1tab == NULL )
-                goto pfn_error;
-            l2off = l2_table_offset_x86_64(addr);
-            l2tab[l2off] =
-                pfn_to_paddr(xc_dom_p2m(dom, l1pfn)) | L2_PROT;
-            l1pfn++;
-        }
-
-        /* make L1 entry */
-        l1off = l1_table_offset_x86_64(addr);
-        pgpfn = (addr - dom->parms.virt_base) >> PAGE_SHIFT_X86;
-        l1tab[l1off] =
-            pfn_to_paddr(xc_dom_p2m(dom, pgpfn)) | L1_PROT;
-        if ( (!dom->pvh_enabled)                &&
-             (addr >= dom->pgtables_seg.vstart) &&
-             (addr < dom->pgtables_seg.vend) )
-            l1tab[l1off] &= ~_PAGE_RW; /* page tables are r/o */
-
-        if ( l1off == (L1_PAGETABLE_ENTRIES_X86_64 - 1) )
-        {
-            l1tab = NULL;
-            if ( l2off == (L2_PAGETABLE_ENTRIES_X86_64 - 1) )
-            {
-                l2tab = NULL;
-                if ( l3off == (L3_PAGETABLE_ENTRIES_X86_64 - 1) )
-                    l3tab = NULL;
-            }
-        }
-    }
-    return 0;
-
-pfn_error:
-    xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                 "%s: xc_dom_pfn_to_ptr failed", __FUNCTION__);
-    return -EINVAL;
+    return setup_pgtables_x86(dom);
 }
-
-#undef L1_PROT
-#undef L2_PROT
-#undef L3_PROT
-#undef L4_PROT
 
 /* ------------------------------------------------------------------------ */
 
-static int alloc_magic_pages(struct xc_dom_image *dom)
+static int alloc_p2m_list(struct xc_dom_image *dom, size_t p2m_alloc_size)
 {
-    size_t p2m_alloc_size = dom->p2m_size * dom->arch_hooks->sizeof_pfn;
-
-    /* allocate phys2mach table */
     if ( xc_dom_alloc_segment(dom, &dom->p2m_seg, "phys2mach",
                               0, p2m_alloc_size) )
         return -1;
@@ -473,12 +492,63 @@ static int alloc_magic_pages(struct xc_dom_image *dom)
     if ( dom->p2m_guest == NULL )
         return -1;
 
+    return 0;
+}
+
+static int alloc_p2m_list_x86_32(struct xc_dom_image *dom)
+{
+    size_t p2m_alloc_size = dom->p2m_size * dom->arch_hooks->sizeof_pfn;
+
+    p2m_alloc_size = round_pg_up(p2m_alloc_size);
+    return alloc_p2m_list(dom, p2m_alloc_size);
+}
+
+static int alloc_p2m_list_x86_64(struct xc_dom_image *dom)
+{
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    struct xc_dom_x86_mapping *map = domx86->maps + domx86->n_mappings;
+    size_t p2m_alloc_size = dom->p2m_size * dom->arch_hooks->sizeof_pfn;
+    xen_vaddr_t from, to;
+    unsigned lvl;
+
+    p2m_alloc_size = round_pg_up(p2m_alloc_size);
+    if ( dom->parms.p2m_base != UNSET_ADDR )
+    {
+        from = dom->parms.p2m_base;
+        to = from + p2m_alloc_size - 1;
+        if ( count_pgtables(dom, from, to, dom->pfn_alloc_end) )
+            return -1;
+
+        map->area.pfn = dom->pfn_alloc_end;
+        for ( lvl = 0; lvl < 4; lvl++ )
+            map->lvls[lvl].pfn += p2m_alloc_size >> PAGE_SHIFT_X86;
+        domx86->n_mappings++;
+        p2m_alloc_size += map->area.pgtables << PAGE_SHIFT_X86;
+    }
+
+    return alloc_p2m_list(dom, p2m_alloc_size);
+}
+
+/* ------------------------------------------------------------------------ */
+
+static int alloc_magic_pages(struct xc_dom_image *dom)
+{
     /* allocate special pages */
     dom->start_info_pfn = xc_dom_alloc_page(dom, "start info");
+    if ( dom->start_info_pfn == INVALID_PFN )
+        return -1;
     dom->xenstore_pfn = xc_dom_alloc_page(dom, "xenstore");
+    if ( dom->xenstore_pfn == INVALID_PFN )
+        return -1;
     dom->console_pfn = xc_dom_alloc_page(dom, "console");
+    if ( dom->console_pfn == INVALID_PFN )
+        return -1;
     if ( xc_dom_feature_translated(dom) )
+    {
         dom->shared_info_pfn = xc_dom_alloc_page(dom, "shared info");
+        if ( dom->shared_info_pfn == INVALID_PFN )
+            return -1;
+    }
     dom->alloc_bootstack = 1;
 
     return 0;
@@ -516,33 +586,26 @@ static void build_hvm_info(void *hvm_info_page, struct xc_dom_image *dom)
 static int alloc_magic_pages_hvm(struct xc_dom_image *dom)
 {
     unsigned long i;
-    void *hvm_info_page;
     uint32_t *ident_pt, domid = dom->guest_domid;
     int rc;
-    xen_pfn_t special_array[NR_SPECIAL_PAGES];
+    xen_pfn_t special_array[X86_HVM_NR_SPECIAL_PAGES];
     xen_pfn_t ioreq_server_array[NR_IOREQ_SERVER_PAGES];
     xc_interface *xch = dom->xch;
 
-    if ( (hvm_info_page = xc_map_foreign_range(
-              xch, domid, PAGE_SIZE, PROT_READ | PROT_WRITE,
-              HVM_INFO_PFN)) == NULL )
-        goto error_out;
-    build_hvm_info(hvm_info_page, dom);
-    munmap(hvm_info_page, PAGE_SIZE);
-
     /* Allocate and clear special pages. */
-    for ( i = 0; i < NR_SPECIAL_PAGES; i++ )
+    for ( i = 0; i < X86_HVM_NR_SPECIAL_PAGES; i++ )
         special_array[i] = special_pfn(i);
 
-    rc = xc_domain_populate_physmap_exact(xch, domid, NR_SPECIAL_PAGES, 0, 0,
-                                          special_array);
+    rc = xc_domain_populate_physmap_exact(xch, domid, X86_HVM_NR_SPECIAL_PAGES,
+                                          0, 0, special_array);
     if ( rc != 0 )
     {
         DOMPRINTF("Could not allocate special pages.");
         goto error_out;
     }
 
-    if ( xc_clear_domain_pages(xch, domid, special_pfn(0), NR_SPECIAL_PAGES) )
+    if ( xc_clear_domain_pages(xch, domid, special_pfn(0),
+                               X86_HVM_NR_SPECIAL_PAGES) )
             goto error_out;
 
     xc_hvm_param_set(xch, domid, HVM_PARAM_STORE_PFN,
@@ -560,30 +623,55 @@ static int alloc_magic_pages_hvm(struct xc_dom_image *dom)
     xc_hvm_param_set(xch, domid, HVM_PARAM_SHARING_RING_PFN,
                      special_pfn(SPECIALPAGE_SHARING));
 
-    /*
-     * Allocate and clear additional ioreq server pages. The default
-     * server will use the IOREQ and BUFIOREQ special pages above.
-     */
-    for ( i = 0; i < NR_IOREQ_SERVER_PAGES; i++ )
-        ioreq_server_array[i] = ioreq_server_pfn(i);
-
-    rc = xc_domain_populate_physmap_exact(xch, domid, NR_IOREQ_SERVER_PAGES, 0,
-                                          0, ioreq_server_array);
-    if ( rc != 0 )
+    if ( !dom->device_model )
     {
-        DOMPRINTF("Could not allocate ioreq server pages.");
-        goto error_out;
+        size_t start_info_size = sizeof(struct hvm_start_info);
+
+        if ( dom->cmdline )
+        {
+            dom->cmdline_size = ROUNDUP(strlen(dom->cmdline) + 1, 8);
+            start_info_size += dom->cmdline_size;
+        }
+
+        /* Limited to one module. */
+        if ( dom->ramdisk_blob )
+            start_info_size += sizeof(struct hvm_modlist_entry);
+
+        rc = xc_dom_alloc_segment(dom, &dom->start_info_seg,
+                                  "HVMlite start info", 0, start_info_size);
+        if ( rc != 0 )
+        {
+            DOMPRINTF("Unable to reserve memory for the start info");
+            goto out;
+        }
     }
+    else
+    {
+        /*
+         * Allocate and clear additional ioreq server pages. The default
+         * server will use the IOREQ and BUFIOREQ special pages above.
+         */
+        for ( i = 0; i < NR_IOREQ_SERVER_PAGES; i++ )
+            ioreq_server_array[i] = ioreq_server_pfn(i);
 
-    if ( xc_clear_domain_pages(xch, domid, ioreq_server_pfn(0),
-                               NR_IOREQ_SERVER_PAGES) )
+        rc = xc_domain_populate_physmap_exact(xch, domid, NR_IOREQ_SERVER_PAGES, 0,
+                                              0, ioreq_server_array);
+        if ( rc != 0 )
+        {
+            DOMPRINTF("Could not allocate ioreq server pages.");
             goto error_out;
+        }
 
-    /* Tell the domain where the pages are and how many there are */
-    xc_hvm_param_set(xch, domid, HVM_PARAM_IOREQ_SERVER_PFN,
-                     ioreq_server_pfn(0));
-    xc_hvm_param_set(xch, domid, HVM_PARAM_NR_IOREQ_SERVER_PAGES,
-                     NR_IOREQ_SERVER_PAGES);
+        if ( xc_clear_domain_pages(xch, domid, ioreq_server_pfn(0),
+                                   NR_IOREQ_SERVER_PAGES) )
+                goto error_out;
+
+        /* Tell the domain where the pages are and how many there are */
+        xc_hvm_param_set(xch, domid, HVM_PARAM_IOREQ_SERVER_PFN,
+                         ioreq_server_pfn(0));
+        xc_hvm_param_set(xch, domid, HVM_PARAM_NR_IOREQ_SERVER_PAGES,
+                         NR_IOREQ_SERVER_PAGES);
+    }
 
     /*
      * Identity-map page table is required for running with CR0.PG=0 when
@@ -617,6 +705,7 @@ static int alloc_magic_pages_hvm(struct xc_dom_image *dom)
 
 static int start_info_x86_32(struct xc_dom_image *dom)
 {
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
     start_info_x86_32_t *start_info =
         xc_dom_pfn_to_ptr(dom, dom->start_info_pfn, 1);
     xen_pfn_t shinfo =
@@ -637,7 +726,7 @@ static int start_info_x86_32(struct xc_dom_image *dom)
     start_info->nr_pages = dom->total_pages;
     start_info->shared_info = shinfo << PAGE_SHIFT_X86;
     start_info->pt_base = dom->pgtables_seg.vstart;
-    start_info->nr_pt_frames = dom->pgtables;
+    start_info->nr_pt_frames = domx86->maps[0].area.pgtables;
     start_info->mfn_list = dom->p2m_seg.vstart;
 
     start_info->flags = dom->flags;
@@ -648,8 +737,8 @@ static int start_info_x86_32(struct xc_dom_image *dom)
 
     if ( dom->ramdisk_blob )
     {
-        start_info->mod_start = dom->ramdisk_seg.vstart;
-        start_info->mod_len = dom->ramdisk_seg.vend - dom->ramdisk_seg.vstart;
+        start_info->mod_start = dom->initrd_start;
+        start_info->mod_len = dom->initrd_len;
     }
 
     if ( dom->cmdline )
@@ -663,6 +752,7 @@ static int start_info_x86_32(struct xc_dom_image *dom)
 
 static int start_info_x86_64(struct xc_dom_image *dom)
 {
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
     start_info_x86_64_t *start_info =
         xc_dom_pfn_to_ptr(dom, dom->start_info_pfn, 1);
     xen_pfn_t shinfo =
@@ -683,8 +773,13 @@ static int start_info_x86_64(struct xc_dom_image *dom)
     start_info->nr_pages = dom->total_pages;
     start_info->shared_info = shinfo << PAGE_SHIFT_X86;
     start_info->pt_base = dom->pgtables_seg.vstart;
-    start_info->nr_pt_frames = dom->pgtables;
+    start_info->nr_pt_frames = domx86->maps[0].area.pgtables;
     start_info->mfn_list = dom->p2m_seg.vstart;
+    if ( dom->parms.p2m_base != UNSET_ADDR )
+    {
+        start_info->first_p2m_pfn = dom->p2m_seg.pfn;
+        start_info->nr_p2m_frames = dom->p2m_seg.pages;
+    }
 
     start_info->flags = dom->flags;
     start_info->store_mfn = xc_dom_p2m(dom, dom->xenstore_pfn);
@@ -694,8 +789,8 @@ static int start_info_x86_64(struct xc_dom_image *dom)
 
     if ( dom->ramdisk_blob )
     {
-        start_info->mod_start = dom->ramdisk_seg.vstart;
-        start_info->mod_len = dom->ramdisk_seg.vend - dom->ramdisk_seg.vstart;
+        start_info->mod_start = dom->initrd_start;
+        start_info->mod_len = dom->initrd_len;
     }
 
     if ( dom->cmdline )
@@ -841,27 +936,6 @@ static int vcpu_hvm(struct xc_dom_image *dom)
         struct hvm_save_descriptor end_d;
         HVM_SAVE_TYPE(END) end;
     } bsp_ctx;
-    /*
-     * The layout of the fpu context structure is the same for
-     * both 32 and 64 bits.
-     */
-    struct {
-        uint16_t fcw;
-        uint16_t fsw;
-        uint8_t ftw;
-        uint8_t rsvd1;
-        uint16_t fop;
-        union {
-            uint64_t addr;
-            struct {
-                uint32_t offs;
-                uint16_t sel;
-                uint16_t rsvd;
-            };
-        } fip, fdp;
-        uint32_t mxcsr;
-        uint32_t mxcsr_mask;
-    } *fpu_ctxt;
     uint8_t *full_ctx = NULL;
     int rc;
 
@@ -929,25 +1003,11 @@ static int vcpu_hvm(struct xc_dom_image *dom)
     /* Set the control registers. */
     bsp_ctx.cpu.cr0 = X86_CR0_PE | X86_CR0_ET;
 
-    /*
-     * XXX: Set initial FPU state.
-     *
-     * This should be removed once Xen is able to know if the
-     * FPU state saved is valid or not, now Xen always sets
-     * fpu_initialised to true regardless of the FPU state.
-     *
-     * The code below mimics the FPU sate after executing
-     * fninit
-     * ldmxcsr 0x1f80
-     */
-    fpu_ctxt = (typeof(fpu_ctxt))bsp_ctx.cpu.fpu_regs;
-
-    fpu_ctxt->fcw = 0x37f;
-    fpu_ctxt->ftw = 0xff;
-    fpu_ctxt->mxcsr = 0x1f80;
-
     /* Set the IP. */
     bsp_ctx.cpu.rip = dom->parms.phys_entry;
+
+    if ( dom->start_info_seg.pfn )
+        bsp_ctx.cpu.rbx = dom->start_info_seg.pfn << PAGE_SHIFT;
 
     /* Set the end descriptor. */
     bsp_ctx.end_d.typecode = HVM_SAVE_CODE(END);
@@ -1103,7 +1163,7 @@ static int meminit_pv(struct xc_dom_image *dom)
     if ( dom->p2m_host == NULL )
         return -EINVAL;
     for ( pfn = 0; pfn < dom->p2m_size; pfn++ )
-        dom->p2m_host[pfn] = INVALID_P2M_ENTRY;
+        dom->p2m_host[pfn] = INVALID_PFN;
 
     /* allocate guest memory */
     for ( i = 0; i < nr_vmemranges; i++ )
@@ -1314,7 +1374,8 @@ static int meminit_hvm(struct xc_dom_image *dom)
      * allocated is pointless.
      */
     if ( claim_enabled ) {
-        rc = xc_domain_claim_pages(xch, domid, target_pages - VGA_HOLE_SIZE);
+        rc = xc_domain_claim_pages(xch, domid,
+                                   target_pages - dom->vga_hole_size);
         if ( rc != 0 )
         {
             DOMPRINTF("Could not allocate memory for HVM guest as we cannot claim memory!");
@@ -1330,7 +1391,8 @@ static int meminit_hvm(struct xc_dom_image *dom)
          * tot_pages will be target_pages - VGA_HOLE_SIZE after
          * this call.
          */
-        rc = xc_domain_set_pod_target(xch, domid, target_pages - VGA_HOLE_SIZE,
+        rc = xc_domain_set_pod_target(xch, domid,
+                                      target_pages - dom->vga_hole_size,
                                       NULL, NULL, NULL);
         if ( rc != 0 )
         {
@@ -1349,8 +1411,9 @@ static int meminit_hvm(struct xc_dom_image *dom)
      * Under 2MB mode, we allocate pages in batches of no more than 8MB to 
      * ensure that we can be preempted and hence dom0 remains responsive.
      */
-    rc = xc_domain_populate_physmap_exact(
-        xch, domid, 0xa0, 0, memflags, &dom->p2m_host[0x00]);
+    if ( dom->device_model )
+        rc = xc_domain_populate_physmap_exact(
+            xch, domid, 0xa0, 0, memflags, &dom->p2m_host[0x00]);
 
     stat_normal_pages = 0;
     for ( vmemid = 0; vmemid < nr_vmemranges; vmemid++ )
@@ -1369,7 +1432,7 @@ static int meminit_hvm(struct xc_dom_image *dom)
          * 0xA0000-0xC0000. Note that 0x00000-0xA0000 is populated just
          * before this loop.
          */
-        if ( vmemranges[vmemid].start == 0 )
+        if ( vmemranges[vmemid].start == 0 && dom->device_model )
         {
             cur_pages = 0xc0;
             stat_normal_pages += 0xc0;
@@ -1569,7 +1632,10 @@ static int bootlate_pv(struct xc_dom_image *dom)
     if ( !xc_dom_feature_translated(dom) )
     {
         /* paravirtualized guest */
+
+        /* Drop references to all initial page tables before pinning. */
         xc_dom_unmap_one(dom, dom->pgtables_seg.pfn);
+        xc_dom_unmap_one(dom, dom->p2m_seg.pfn);
         rc = pin_table(dom->xch, pgd_type,
                        xc_dom_p2m(dom, dom->pgtables_seg.pfn),
                        dom->guest_domid);
@@ -1620,9 +1686,82 @@ static int bootlate_pv(struct xc_dom_image *dom)
     return 0;
 }
 
-static int bootlate_hvm(struct xc_dom_image *dom)
+static int alloc_pgtables_hvm(struct xc_dom_image *dom)
 {
     DOMPRINTF("%s: doing nothing", __func__);
+    return 0;
+}
+
+static int bootlate_hvm(struct xc_dom_image *dom)
+{
+    uint32_t domid = dom->guest_domid;
+    xc_interface *xch = dom->xch;
+
+    if ( !dom->device_model )
+    {
+        struct hvm_start_info *start_info;
+        size_t start_info_size;
+        void *start_page;
+
+        start_info_size = sizeof(*start_info) + dom->cmdline_size;
+        if ( dom->ramdisk_blob )
+            start_info_size += sizeof(struct hvm_modlist_entry);
+
+        if ( start_info_size >
+             dom->start_info_seg.pages << XC_DOM_PAGE_SHIFT(dom) )
+        {
+            DOMPRINTF("Trying to map beyond start_info_seg");
+            return -1;
+        }
+
+        start_page = xc_map_foreign_range(xch, domid, start_info_size,
+                                          PROT_READ | PROT_WRITE,
+                                          dom->start_info_seg.pfn);
+        if ( start_page == NULL )
+        {
+            DOMPRINTF("Unable to map HVM start info page");
+            return -1;
+        }
+
+        start_info = start_page;
+
+        if ( dom->cmdline )
+        {
+            char *cmdline = start_page + sizeof(*start_info);
+
+            strncpy(cmdline, dom->cmdline, dom->cmdline_size);
+            start_info->cmdline_paddr = (dom->start_info_seg.pfn << PAGE_SHIFT) +
+                                ((uintptr_t)cmdline - (uintptr_t)start_info);
+        }
+
+        if ( dom->ramdisk_blob )
+        {
+            struct hvm_modlist_entry *modlist =
+                start_page + sizeof(*start_info) + dom->cmdline_size;
+
+            modlist[0].paddr = dom->ramdisk_seg.vstart - dom->parms.virt_base;
+            modlist[0].size = dom->ramdisk_seg.vend - dom->ramdisk_seg.vstart;
+            start_info->modlist_paddr = (dom->start_info_seg.pfn << PAGE_SHIFT) +
+                                ((uintptr_t)modlist - (uintptr_t)start_info);
+            start_info->nr_modules = 1;
+        }
+
+        start_info->magic = HVM_START_MAGIC_VALUE;
+
+        munmap(start_page, start_info_size);
+    }
+    else
+    {
+        void *hvm_info_page;
+
+        if ( (hvm_info_page = xc_map_foreign_range(
+                  xch, domid, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                  HVM_INFO_PFN)) == NULL )
+            return -1;
+        build_hvm_info(hvm_info_page, dom);
+        munmap(hvm_info_page, PAGE_SIZE);
+    }
+
     return 0;
 }
 
@@ -1642,8 +1781,11 @@ static struct xc_dom_arch xc_dom_32_pae = {
     .native_protocol = XEN_IO_PROTO_ABI_X86_32,
     .page_shift = PAGE_SHIFT_X86,
     .sizeof_pfn = 4,
+    .p2m_base_supported = 0,
+    .arch_private_size = sizeof(struct xc_dom_image_x86),
     .alloc_magic_pages = alloc_magic_pages,
-    .count_pgtables = count_pgtables_x86_32_pae,
+    .alloc_pgtables = alloc_pgtables_x86_32_pae,
+    .alloc_p2m_list = alloc_p2m_list_x86_32,
     .setup_pgtables = setup_pgtables_x86_32_pae,
     .start_info = start_info_x86_32,
     .shared_info = shared_info_x86_32,
@@ -1658,8 +1800,11 @@ static struct xc_dom_arch xc_dom_64 = {
     .native_protocol = XEN_IO_PROTO_ABI_X86_64,
     .page_shift = PAGE_SHIFT_X86,
     .sizeof_pfn = 8,
+    .p2m_base_supported = 1,
+    .arch_private_size = sizeof(struct xc_dom_image_x86),
     .alloc_magic_pages = alloc_magic_pages,
-    .count_pgtables = count_pgtables_x86_64,
+    .alloc_pgtables = alloc_pgtables_x86_64,
+    .alloc_p2m_list = alloc_p2m_list_x86_64,
     .setup_pgtables = setup_pgtables_x86_64,
     .start_info = start_info_x86_64,
     .shared_info = shared_info_x86_64,
@@ -1675,7 +1820,7 @@ static struct xc_dom_arch xc_hvm_32 = {
     .page_shift = PAGE_SHIFT_X86,
     .sizeof_pfn = 4,
     .alloc_magic_pages = alloc_magic_pages_hvm,
-    .count_pgtables = NULL,
+    .alloc_pgtables = alloc_pgtables_hvm,
     .setup_pgtables = NULL,
     .start_info = NULL,
     .shared_info = NULL,

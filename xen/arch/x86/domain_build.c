@@ -353,7 +353,7 @@ static unsigned long __init compute_dom0_nr_pages(
 
         vstart = parms->virt_base;
         vend = round_pgup(parms->virt_kend);
-        if ( !parms->elf_notes[XEN_ELFNOTE_MOD_START_PFN].data.num )
+        if ( !parms->unmapped_initrd )
             vend += round_pgup(initrd_len);
         end = vend + nr_pages * sizeof_long;
 
@@ -1037,7 +1037,7 @@ int __init construct_dom0(
     v_start          = parms.virt_base;
     vkern_start      = parms.virt_kstart;
     vkern_end        = parms.virt_kend;
-    if ( parms.elf_notes[XEN_ELFNOTE_MOD_START_PFN].data.num )
+    if ( parms.unmapped_initrd )
     {
         vinitrd_start  = vinitrd_end = 0;
         vphysmap_start = round_pgup(vkern_end);
@@ -1533,7 +1533,7 @@ int __init construct_dom0(
 
     /* The hardware domain is initially permitted full I/O capabilities. */
     rc |= ioports_permit_access(d, 0, 0xFFFF);
-    rc |= iomem_permit_access(d, 0UL, ~0UL);
+    rc |= iomem_permit_access(d, 0UL, (1UL << (paddr_bits - PAGE_SHIFT)) - 1);
     rc |= irqs_permit_access(d, 1, nr_irqs_gsi - 1);
 
     /*

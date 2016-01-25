@@ -330,6 +330,10 @@ void hvm_set_callback_via(struct domain *d, uint64_t via)
          (via_type > HVMIRQ_callback_vector) )
         via_type = HVMIRQ_callback_none;
 
+    if ( via_type != HVMIRQ_callback_vector &&
+         (!has_vlapic(d) || !has_vioapic(d) || !has_vpic(d)) )
+        return;
+
     spin_lock(&d->arch.hvm_domain.irq_lock);
 
     /* Tear down old callback via. */
@@ -382,7 +386,8 @@ void hvm_set_callback_via(struct domain *d, uint64_t via)
 
     spin_unlock(&d->arch.hvm_domain.irq_lock);
 
-    dprintk(XENLOG_G_INFO, "Dom%u callback via changed to ", d->domain_id);
+#ifndef NDEBUG
+    printk(XENLOG_G_INFO "Dom%u callback via changed to ", d->domain_id);
     switch ( via_type )
     {
     case HVMIRQ_callback_gsi:
@@ -398,6 +403,7 @@ void hvm_set_callback_via(struct domain *d, uint64_t via)
         printk("None\n");
         break;
     }
+#endif
 }
 
 struct hvm_intack hvm_vcpu_has_pending_irq(struct vcpu *v)

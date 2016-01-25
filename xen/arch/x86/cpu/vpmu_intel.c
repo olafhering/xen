@@ -87,7 +87,7 @@ static unsigned int __read_mostly arch_pmc_cnt, fixed_pmc_cnt;
 /* Masks used for testing whether and MSR is valid */
 #define ARCH_CTRL_MASK  (~((1ull << 32) - 1) | (1ull << 21))
 static uint64_t __read_mostly fixed_ctrl_mask, fixed_counters_mask;
-static uint64_t __read_mostly global_ovf_ctrl_mask;
+static uint64_t __read_mostly global_ovf_ctrl_mask, global_ctrl_mask;
 
 /* Total size of PMU registers block (copied to/from PV(H) guest) */
 static unsigned int __read_mostly regs_sz;
@@ -166,10 +166,9 @@ static int core2_get_arch_pmc_count(void)
  */
 static int core2_get_fixed_pmc_count(void)
 {
-    u32 eax;
+    u32 edx = cpuid_edx(0xa);
 
-    eax = cpuid_eax(0xa);
-    return MASK_EXTR(eax, PMU_FIXED_NR_MASK);
+    return MASK_EXTR(edx, PMU_FIXED_NR_MASK);
 }
 
 /* edx bits 5-12: Bit width of fixed-function performance counters  */
@@ -265,7 +264,6 @@ static void core2_vpmu_set_msr_bitmap(unsigned long *msr_bitmap)
          clear_bit(msraddr_to_bitpos(MSR_P6_EVNTSEL(i)), msr_bitmap);
 
     clear_bit(msraddr_to_bitpos(MSR_CORE_PERF_FIXED_CTR_CTRL), msr_bitmap);
-    clear_bit(msraddr_to_bitpos(MSR_IA32_PEBS_ENABLE), msr_bitmap);
     clear_bit(msraddr_to_bitpos(MSR_IA32_DS_AREA), msr_bitmap);
 }
 
@@ -297,7 +295,6 @@ static void core2_vpmu_unset_msr_bitmap(unsigned long *msr_bitmap)
         set_bit(msraddr_to_bitpos(MSR_P6_EVNTSEL(i)), msr_bitmap);
 
     set_bit(msraddr_to_bitpos(MSR_CORE_PERF_FIXED_CTR_CTRL), msr_bitmap);
-    set_bit(msraddr_to_bitpos(MSR_IA32_PEBS_ENABLE), msr_bitmap);
     set_bit(msraddr_to_bitpos(MSR_IA32_DS_AREA), msr_bitmap);
 }
 
@@ -337,7 +334,7 @@ static int core2_vpmu_save(struct vcpu *v, bool_t to_guest)
 
     if ( to_guest )
     {
-        ASSERT(!is_hvm_vcpu(v));
+        ASSERT(!has_vlapic(v->domain));
         memcpy((void *)(&vpmu->xenpmu_data->pmu.c.intel) + regs_off,
                vpmu->context + regs_off, regs_sz);
     }
@@ -367,8 +364,8 @@ static inline void __core2_vpmu_load(struct vcpu *v)
     }
 
     wrmsrl(MSR_CORE_PERF_FIXED_CTR_CTRL, core2_vpmu_cxt->fixed_ctrl);
-    wrmsrl(MSR_IA32_DS_AREA, core2_vpmu_cxt->ds_area);
-    wrmsrl(MSR_IA32_PEBS_ENABLE, core2_vpmu_cxt->pebs_enable);
+    if ( vpmu_is_set(vcpu_vpmu(v), VPMU_CPU_HAS_DS) )
+        wrmsrl(MSR_IA32_DS_AREA, core2_vpmu_cxt->ds_area);
 
     if ( !has_hvm_container_vcpu(v) )
     {
@@ -391,6 +388,10 @@ static int core2_vpmu_verify(struct vcpu *v)
     uint64_t enabled_cntrs = 0;
 
     if ( core2_vpmu_cxt->global_ovf_ctrl & global_ovf_ctrl_mask )
+        return -EINVAL;
+    if ( core2_vpmu_cxt->global_ctrl & global_ctrl_mask )
+        return -EINVAL;
+    if ( core2_vpmu_cxt->pebs_enable )
         return -EINVAL;
 
     fixed_ctrl = core2_vpmu_cxt->fixed_ctrl;
@@ -416,8 +417,10 @@ static int core2_vpmu_verify(struct vcpu *v)
             enabled_cntrs |= (1ULL << i);
     }
 
-    if ( vpmu_is_set(vcpu_vpmu(v), VPMU_CPU_HAS_DS) &&
-         !is_canonical_address(core2_vpmu_cxt->ds_area) )
+    if ( vpmu_is_set(vpmu, VPMU_CPU_HAS_DS) &&
+         !(has_hvm_container_vcpu(v)
+           ? is_canonical_address(core2_vpmu_cxt->ds_area)
+           : __addr_ok(core2_vpmu_cxt->ds_area)) )
         return -EINVAL;
 
     if ( (core2_vpmu_cxt->global_ctrl & enabled_cntrs) ||
@@ -442,7 +445,7 @@ static int core2_vpmu_load(struct vcpu *v, bool_t from_guest)
     {
         int ret;
 
-        ASSERT(!is_hvm_vcpu(v));
+        ASSERT(!has_vlapic(v->domain));
 
         memcpy(vpmu->context + regs_off,
                (void *)&v->arch.vpmu.xenpmu_data->pmu.c.intel + regs_off,
@@ -502,7 +505,7 @@ static int core2_vpmu_alloc_resource(struct vcpu *v)
     vpmu->context = core2_vpmu_cxt;
     vpmu->priv_context = p;
 
-    if ( !is_hvm_vcpu(v) )
+    if ( !has_vlapic(v->domain) )
     {
         /* Copy fixed/arch register offsets to shared area */
         ASSERT(vpmu->xenpmu_data);
@@ -602,15 +605,21 @@ static int core2_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content,
                  "MSR_PERF_GLOBAL_STATUS(0x38E)!\n");
         return -EINVAL;
     case MSR_IA32_PEBS_ENABLE:
-        if ( msr_content & 1 )
-            gdprintk(XENLOG_WARNING, "Guest is trying to enable PEBS, "
-                     "which is not supported.\n");
-        core2_vpmu_cxt->pebs_enable = msr_content;
+        if ( vpmu_features & (XENPMU_FEATURE_IPC_ONLY |
+                              XENPMU_FEATURE_ARCH_ONLY) )
+            return -EINVAL;
+        if ( msr_content )
+            /* PEBS is reported as unavailable in MSR_IA32_MISC_ENABLE */
+            return -EINVAL;
         return 0;
     case MSR_IA32_DS_AREA:
+        if ( !(vpmu_features & XENPMU_FEATURE_INTEL_BTS) )
+            return -EINVAL;
         if ( vpmu_is_set(vpmu, VPMU_CPU_HAS_DS) )
         {
-            if ( !is_canonical_address(msr_content) )
+            if ( !(has_hvm_container_vcpu(v)
+                   ? is_canonical_address(msr_content)
+                   : __addr_ok(msr_content)) )
             {
                 gdprintk(XENLOG_WARNING,
                          "Illegal address for IA32_DS_AREA: %#" PRIx64 "x\n",
@@ -623,6 +632,8 @@ static int core2_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content,
         gdprintk(XENLOG_WARNING, "Guest setting of DTS is ignored.\n");
         return 0;
     case MSR_CORE_PERF_GLOBAL_CTRL:
+        if ( msr_content & global_ctrl_mask )
+            return -EINVAL;
         core2_vpmu_cxt->global_ctrl = msr_content;
         break;
     case MSR_CORE_PERF_FIXED_CTR_CTRL:
@@ -652,10 +663,50 @@ static int core2_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content,
         tmp = msr - MSR_P6_EVNTSEL(0);
         if ( tmp >= 0 && tmp < arch_pmc_cnt )
         {
+            bool_t blocked = 0;
+            uint64_t umaskevent = msr_content & MSR_IA32_CMT_EVTSEL_UE_MASK;
             struct xen_pmu_cntr_pair *xen_pmu_cntr_pair =
                 vpmu_reg_pointer(core2_vpmu_cxt, arch_counters);
 
             if ( msr_content & ARCH_CTRL_MASK )
+                return -EINVAL;
+
+            /* PMC filters */
+            if ( vpmu_features & (XENPMU_FEATURE_IPC_ONLY |
+                                  XENPMU_FEATURE_ARCH_ONLY) )
+            {
+                blocked = 1;
+                switch ( umaskevent )
+                {
+                /*
+                 * See the Pre-Defined Architectural Performance Events table
+                 * from the Intel 64 and IA-32 Architectures Software
+                 * Developer's Manual, Volume 3B, System Programming Guide,
+                 * Part 2.
+                 */
+                case 0x003c:	/* UnHalted Core Cycles */
+                case 0x013c:	/* UnHalted Reference Cycles */
+                case 0x00c0:	/* Instructions Retired */
+                    blocked = 0;
+                    break;
+                }
+            }
+
+            if ( vpmu_features & XENPMU_FEATURE_ARCH_ONLY )
+            {
+                /* Additional counters beyond IPC only; blocked already set. */
+                switch ( umaskevent )
+                {
+                case 0x4f2e:	/* Last Level Cache References */
+                case 0x412e:	/* Last Level Cache Misses */
+                case 0x00c4:	/* Branch Instructions Retired */
+                case 0x00c5:	/* All Branch Mispredict Retired */
+                    blocked = 0;
+                    break;
+               }
+            }
+
+            if ( blocked )
                 return -EINVAL;
 
             if ( has_hvm_container_vcpu(v) )
@@ -725,6 +776,7 @@ static int core2_vpmu_do_rdmsr(unsigned int msr, uint64_t *msr_content)
         /* Extension for BTS */
         if ( vpmu_is_set(vpmu, VPMU_CPU_HAS_BTS) )
             *msr_content &= ~MSR_IA32_MISC_ENABLE_BTS_UNAVAIL;
+        *msr_content |= MSR_IA32_MISC_ENABLE_PEBS_UNAVAIL;
     }
 
     return 0;
@@ -734,11 +786,11 @@ static void core2_vpmu_do_cpuid(unsigned int input,
                                 unsigned int *eax, unsigned int *ebx,
                                 unsigned int *ecx, unsigned int *edx)
 {
-    if (input == 0x1)
+    switch ( input )
     {
-        struct vpmu_struct *vpmu = vcpu_vpmu(current);
+    case 0x1:
 
-        if ( vpmu_is_set(vpmu, VPMU_CPU_HAS_DS) )
+        if ( vpmu_is_set(vcpu_vpmu(current), VPMU_CPU_HAS_DS) )
         {
             /* Switch on the 'Debug Store' feature in CPUID.EAX[1]:EDX[21] */
             *edx |= cpufeat_mask(X86_FEATURE_DS);
@@ -747,6 +799,13 @@ static void core2_vpmu_do_cpuid(unsigned int input,
             if ( cpu_has(&current_cpu_data, X86_FEATURE_DSCPL) )
                 *ecx |= cpufeat_mask(X86_FEATURE_DSCPL);
         }
+        break;
+
+    case 0xa:
+        /* Report at most version 3 since that's all we currently emulate */
+        if ( MASK_EXTR(*eax, PMU_VERSION_MASK) > 3 )
+            *eax = (*eax & ~PMU_VERSION_MASK) | MASK_INSR(3, PMU_VERSION_MASK);
+        break;
     }
 }
 
@@ -809,7 +868,7 @@ static int core2_vpmu_do_interrupt(struct cpu_user_regs *regs)
         if ( is_pmc_quirk )
             handle_pmc_quirk(msr_content);
         core2_vpmu_cxt->global_status |= msr_content;
-        msr_content = 0xC000000700000000 | ((1 << arch_pmc_cnt) - 1);
+        msr_content = ~global_ovf_ctrl_mask;
         wrmsrl(MSR_CORE_PERF_GLOBAL_OVF_CTRL, msr_content);
     }
     else
@@ -956,59 +1015,32 @@ int vmx_vpmu_initialise(struct vcpu *v)
 int __init core2_vpmu_init(void)
 {
     u64 caps;
+    unsigned int version = 0;
+
+    if ( current_cpu_data.cpuid_level >= 0xa )
+        version = MASK_EXTR(cpuid_eax(0xa), PMU_VERSION_MASK);
+
+    switch ( version )
+    {
+    case 4:
+        printk(XENLOG_INFO "VPMU: PMU version 4 is not fully supported. "
+               "Emulating version 3\n");
+        /* FALLTHROUGH */
+
+    case 2:
+    case 3:
+        break;
+
+    default:
+        printk(XENLOG_WARNING "VPMU: PMU version %u is not supported\n",
+               version);
+        return -EINVAL;
+    }
 
     if ( current_cpu_data.x86 != 6 )
     {
         printk(XENLOG_WARNING "VPMU: only family 6 is supported\n");
         return -EINVAL;
-    }
-
-    switch ( current_cpu_data.x86_model )
-    {
-        /* Core2: */
-        case 0x0f: /* original 65 nm celeron/pentium/core2/xeon, "Merom"/"Conroe" */
-        case 0x16: /* single-core 65 nm celeron/core2solo "Merom-L"/"Conroe-L" */
-        case 0x17: /* 45 nm celeron/core2/xeon "Penryn"/"Wolfdale" */
-        case 0x1d: /* six-core 45 nm xeon "Dunnington" */
-
-        case 0x2a: /* SandyBridge */
-        case 0x2d: /* SandyBridge, "Romley-EP" */
-
-        /* Nehalem: */
-        case 0x1a: /* 45 nm nehalem, "Bloomfield" */
-        case 0x1e: /* 45 nm nehalem, "Lynnfield", "Clarksfield", "Jasper Forest" */
-        case 0x2e: /* 45 nm nehalem-ex, "Beckton" */
-
-        /* Westmere: */
-        case 0x25: /* 32 nm nehalem, "Clarkdale", "Arrandale" */
-        case 0x2c: /* 32 nm nehalem, "Gulftown", "Westmere-EP" */
-        case 0x2f: /* 32 nm Westmere-EX */
-
-        case 0x3a: /* IvyBridge */
-        case 0x3e: /* IvyBridge EP */
-
-        /* Haswell: */
-        case 0x3c:
-        case 0x3f:
-        case 0x45:
-        case 0x46:
-
-        /* Broadwell */
-        case 0x3d:
-        case 0x4f:
-        case 0x56:
-
-        /* future: */
-        case 0x4e:
-
-        /* next gen Xeon Phi */
-        case 0x57:
-            break;
-
-        default:
-            printk(XENLOG_WARNING "VPMU: Unsupported CPU model %#x\n",
-                   current_cpu_data.x86_model);
-            return -EINVAL;
     }
 
     arch_pmc_cnt = core2_get_arch_pmc_count();
@@ -1017,10 +1049,20 @@ int __init core2_vpmu_init(void)
     full_width_write = (caps >> 13) & 1;
 
     fixed_ctrl_mask = ~((1ull << (fixed_pmc_cnt * FIXED_CTR_CTRL_BITS)) - 1);
+    if ( version == 2 )
+        fixed_ctrl_mask |= 0x444;
     fixed_counters_mask = ~((1ull << core2_get_bitwidth_fix_count()) - 1);
+    global_ctrl_mask = ~((((1ULL << fixed_pmc_cnt) - 1) << 32) |
+                         ((1ULL << arch_pmc_cnt) - 1));
     global_ovf_ctrl_mask = ~(0xC000000000000000 |
                              (((1ULL << fixed_pmc_cnt) - 1) << 32) |
                              ((1ULL << arch_pmc_cnt) - 1));
+    if ( version > 2 )
+        /*
+         * Even though we don't support Uncore counters guests should be
+         * able to clear all available overflows.
+         */
+        global_ovf_ctrl_mask &= ~(1ULL << 61);
 
     regs_sz = (sizeof(struct xen_pmu_intel_ctxt) - regs_off) +
               sizeof(uint64_t) * fixed_pmc_cnt +

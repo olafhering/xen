@@ -49,7 +49,7 @@ void set_cpuid_faulting(bool_t enable)
  * edx = 0xBFEBFBFF when executing CPUID.EAX = 1 normally. If you want to
  * 'rev down' to E8400, you can set these values in these Xen boot parameters.
  */
-static void __devinit set_cpuidmask(const struct cpuinfo_x86 *c)
+static void set_cpuidmask(const struct cpuinfo_x86 *c)
 {
 	static unsigned int msr_basic, msr_ext, msr_xsave;
 	static enum { not_parsed, no_mask, set_mask } status;
@@ -156,27 +156,32 @@ static void __devinit set_cpuidmask(const struct cpuinfo_x86 *c)
 	}
 }
 
-void __devinit early_intel_workaround(struct cpuinfo_x86 *c)
+static void early_init_intel(struct cpuinfo_x86 *c)
 {
-	if (c->x86_vendor != X86_VENDOR_INTEL)
-		return;
 	/* Netburst reports 64 bytes clflush size, but does IO in 128 bytes */
 	if (c->x86 == 15 && c->x86_cache_alignment == 64)
 		c->x86_cache_alignment = 128;
 
-	/* Unmask CPUID levels if masked: */
+	/* Unmask CPUID levels and NX if masked: */
 	if (c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xd)) {
-		u64 misc_enable;
+		u64 misc_enable, disable;
 
 		rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
 
-		if (misc_enable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID) {
-			misc_enable &= ~MSR_IA32_MISC_ENABLE_LIMIT_CPUID;
-			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-			c->cpuid_level = cpuid_eax(0);
-			if (opt_cpu_info || c == &boot_cpu_data)
-				printk(KERN_INFO "revised cpuid level: %d\n",
-				       c->cpuid_level);
+		disable = misc_enable & (MSR_IA32_MISC_ENABLE_LIMIT_CPUID |
+					 MSR_IA32_MISC_ENABLE_XD_DISABLE);
+		if (disable) {
+			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable & ~disable);
+			bootsym(trampoline_misc_enable_off) |= disable;
+		}
+
+		if (disable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID)
+			printk(KERN_INFO "revised cpuid level: %d\n",
+			       cpuid_eax(0));
+		if (disable & MSR_IA32_MISC_ENABLE_XD_DISABLE) {
+			write_efer(read_efer() | EFER_NX);
+			printk(KERN_INFO
+			       "re-enabled NX (Execute Disable) protection\n");
 		}
 	}
 
@@ -193,7 +198,7 @@ void __devinit early_intel_workaround(struct cpuinfo_x86 *c)
  * Xeon 7400 erratum AAI65 (and further newer Xeons)
  * MONITOR/MWAIT may have excessive false wakeups
  */
-static void __devinit Intel_errata_workarounds(struct cpuinfo_x86 *c)
+static void Intel_errata_workarounds(struct cpuinfo_x86 *c)
 {
 	unsigned long lo, hi;
 
@@ -216,7 +221,7 @@ static void __devinit Intel_errata_workarounds(struct cpuinfo_x86 *c)
 /*
  * find out the number of processor cores on the die
  */
-static int __devinit num_cpu_cores(struct cpuinfo_x86 *c)
+static int num_cpu_cores(struct cpuinfo_x86 *c)
 {
 	unsigned int eax, ebx, ecx, edx;
 
@@ -231,7 +236,7 @@ static int __devinit num_cpu_cores(struct cpuinfo_x86 *c)
 		return 1;
 }
 
-static void __devinit init_intel(struct cpuinfo_x86 *c)
+static void init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
 
@@ -290,6 +295,7 @@ static void __devinit init_intel(struct cpuinfo_x86 *c)
 static const struct cpu_dev intel_cpu_dev = {
 	.c_vendor	= "Intel",
 	.c_ident 	= { "GenuineIntel" },
+	.c_early_init	= early_init_intel,
 	.c_init		= init_intel,
 };
 

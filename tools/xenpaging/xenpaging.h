@@ -24,6 +24,9 @@
 #define __XEN_PAGING2_H__
 
 
+#include <xenevtchn.h>
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
+#include <xenctrl.h>
 #include <xc_private.h>
 #include <xen/event_channel.h>
 #include <xen/vm_event.h>
@@ -32,7 +35,7 @@
 
 struct vm_event {
     domid_t domain_id;
-    xc_evtchn *xce_handle;
+    xenevtchn_handle *xce_handle;
     int port;
     vm_event_back_ring_t back_ring;
     uint32_t evtchn_port;

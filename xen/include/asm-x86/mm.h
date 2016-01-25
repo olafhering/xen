@@ -7,6 +7,7 @@
 #include <xen/spinlock.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
+#include <asm/x86_emulate.h>
 
 /*
  * Per-page-frame information.
@@ -276,6 +277,7 @@ extern void share_xen_page_with_guest(
     struct page_info *page, struct domain *d, int readonly);
 extern void share_xen_page_with_privileged_guests(
     struct page_info *page, int readonly);
+extern void free_shared_domheap_page(struct page_info *page);
 
 #define frame_table ((struct page_info *)FRAMETABLE_VIRT_START)
 #define spage_table ((struct spage_info *)SPAGETABLE_VIRT_START)
@@ -488,6 +490,22 @@ void memguard_unguard_range(void *p, unsigned long l);
 void memguard_guard_stack(void *p);
 void memguard_unguard_stack(void *p);
 
+struct mmio_ro_emulate_ctxt {
+        unsigned long cr2;
+        unsigned int seg, bdf;
+};
+
+extern int mmio_ro_emulated_write(enum x86_segment seg,
+                                  unsigned long offset,
+                                  void *p_data,
+                                  unsigned int bytes,
+                                  struct x86_emulate_ctxt *ctxt);
+extern int mmcfg_intercept_write(enum x86_segment seg,
+                                 unsigned long offset,
+                                 void *p_data,
+                                 unsigned int bytes,
+                                 struct x86_emulate_ctxt *ctxt);
+
 int  ptwr_do_page_fault(struct vcpu *, unsigned long,
                         struct cpu_user_regs *);
 int  mmio_ro_do_page_fault(struct vcpu *, unsigned long,
@@ -566,7 +584,7 @@ typedef struct mm_lock {
 } mm_lock_t;
 
 typedef struct mm_rwlock {
-    rwlock_t           lock;
+    percpu_rwlock_t    lock;
     int                unlock_level;
     int                recurse_count;
     int                locker; /* CPU that holds the write lock */

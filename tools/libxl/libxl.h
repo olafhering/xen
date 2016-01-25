@@ -200,6 +200,12 @@
 #define LIBXL_HAVE_DEVICETREE_PASSTHROUGH 1
 
 /*
+ * libxl_domain_build_info has device_model_user to specify the user to
+ * run the device model with. See docs/misc/qemu-deprivilege.txt.
+ */
+#define LIBXL_HAVE_DEVICE_MODEL_USER 1
+
+/*
  * libxl_domain_build_info has the arm.gic_version field.
  */
 #define LIBXL_HAVE_BUILDINFO_ARM_GIC_VERSION 1
@@ -554,6 +560,15 @@ typedef struct libxl__ctx libxl_ctx;
 #define LIBXL_HAVE_DOMINFO_OUTSTANDING_MEMKB 1
 
 /*
+ * LIBXL_HAVE_DOMINFO_NEVER_STOP
+ *
+ * If this is defined, libxl_dominfo will contain a flag called never_stop
+ * indicating that the specific domain should never be stopped by the
+ * toolstack.
+ */
+#define LIBXL_HAVE_DOMINFO_NEVER_STOP 1
+
+/*
  * LIBXL_HAVE_QXL
  *
  * If defined, then the libxl_vga_interface_type will contain another value:
@@ -859,6 +874,14 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  * the libxl_gfx_passthru_kind enumeration is defined.
 */
 #define LIBXL_HAVE_GFX_PASSTHRU_KIND
+
+/*
+ * LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE
+ *
+ * In the case that LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE is set libxl
+ * allows the creation of HVM guests without a device model.
+ */
+#define LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE 1
 
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
@@ -1199,6 +1222,11 @@ int libxl_domain_resume(libxl_ctx *ctx, uint32_t domid, int suspend_cancel,
                         const libxl_asyncop_how *ao_how)
                         LIBXL_EXTERNAL_CALLERS_ONLY;
 
+/*
+ * This function doesn't return unless something has gone wrong with
+ * the replication to the secondary. If this function returns then the
+ * caller should resume the (primary) domain.
+ */
 int libxl_domain_remus_start(libxl_ctx *ctx, libxl_domain_remus_info *info,
                              uint32_t domid, int send_fd, int recv_fd,
                              const libxl_asyncop_how *ao_how)
@@ -1397,6 +1425,71 @@ void libxl_vtpminfo_list_free(libxl_vtpminfo *, int nr_vtpms);
  *
  *   This function does not interact with the guest and therefore
  *   cannot block on the guest.
+ *
+ * Controllers
+ * -----------
+ *
+ * Most devices are treated individually.  Some classes of device,
+ * however, like USB or SCSI, inherently have the need to have a
+ * hierarchy of different levels, with lower-level devices "attached"
+ * to higher-level ones.  USB for instance has "controllers" at the
+ * top, which have buses, on which are devices, which consist of
+ * multiple interfaces.  SCSI has "hosts" at the top, then buses,
+ * targets, and LUNs.
+ *
+ * In that case, for each <class>, there will be a set of functions
+ * and types for each <level>.  For example, for <class>=usb, there
+ * may be <levels> ctrl (controller) and dev (device), with ctrl being
+ * level 0.
+ *
+ * libxl_device_<class><level0>_<function> will act more or
+ * less like top-level non-bus devices: they will either create or
+ * accept a libxl_devid which will be unique within the
+ * <class><level0> libxl_devid namespace.
+ *
+ * Lower-level devices must have a unique way to be identified.  One
+ * way to do this would be to name it via the name of the next level
+ * up plus an index; for instance, <ctrl devid, port number>.  Another
+ * way would be to have another devid namespace for that level.  This
+ * identifier will be used for queries and removals.
+ *
+ * Lower-level devices will include in their
+ * libxl_device_<class><level> struct a field referring to the unique
+ * index of the level above.  For instance, libxl_device_usbdev might
+ * contain the controller devid.
+ *
+ * In the case where there are multiple different ways to implement a
+ * given device -- for instance, one which is fully PV and one which
+ * uses an emulator -- the controller will contain a field which
+ * specifies what type of implementation is used.  The implementations
+ * of individual devices will be known by the controller to which they
+ * are attached.
+ *
+ * If libxl_device_<class><level>_add receives an empty reference to
+ * the level above, it may return an error.  Or it may (but is not
+ * required to) automatically choose a suitable device in the level
+ * above to which to attach the new device at this level.  It may also
+ * (but is not required to) automatically create a new device at the
+ * level above if no suitable devices exist.  Each class should
+ * document its behavior.
+ *
+ * libxl_device_<class><level>_list will list all devices of <class>
+ * at <level> in the domain.  For example, libxl_device_usbctrl_list
+ * will list all usb controllers; libxl_class_usbdev_list will list
+ * all usb devices across all controllers.
+ *
+ * For each class, the domain config file will contain a single list
+ * for each level.  libxl will first iterate through the list of
+ * top-level devices, then iterate through each level down in turn,
+ * adding devices to devices in the level above.  For instance, there
+ * will be one list for all usb controllers, and one list for all usb
+ * devices.
+ *
+ * If libxl_device_<class><level>_add automatically creates
+ * higher-level devices as necessary, then it is permissible for the
+ * higher-level lists to be empty and the device list to have devices
+ * with the field containing a reference to the higher level device
+ * uninitialized.
  */
 
 /* Disks */

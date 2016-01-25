@@ -38,8 +38,8 @@
 #include <public/sched.h>
 #include <xsm/xsm.h>
 
-/* opt_sched: scheduler - default to credit */
-static char __initdata opt_sched[10] = "credit";
+/* opt_sched: scheduler - default to configured value */
+static char __initdata opt_sched[10] = CONFIG_SCHED_DEFAULT;
 string_param("sched", opt_sched);
 
 /* if sched_smt_power_savings is set,
@@ -64,12 +64,9 @@ static void poll_timer_fn(void *data);
 DEFINE_PER_CPU(struct schedule_data, schedule_data);
 DEFINE_PER_CPU(struct scheduler *, scheduler);
 
-static const struct scheduler *schedulers[] = {
-    &sched_credit_def,
-    &sched_credit2_def,
-    &sched_arinc653_def,
-    &sched_rtds_def,
-};
+extern const struct scheduler *__start_schedulers_array[], *__end_schedulers_array[];
+#define NUM_SCHEDULERS (__end_schedulers_array - __start_schedulers_array)
+#define schedulers __start_schedulers_array
 
 static struct scheduler __read_mostly ops;
 
@@ -240,20 +237,22 @@ int sched_init_vcpu(struct vcpu *v, unsigned int processor)
     init_timer(&v->poll_timer, poll_timer_fn,
                v, v->processor);
 
-    /* Idle VCPUs are scheduled immediately. */
+    v->sched_priv = SCHED_OP(DOM2OP(d), alloc_vdata, v, d->sched_priv);
+    if ( v->sched_priv == NULL )
+        return 1;
+
+    TRACE_2D(TRC_SCHED_DOM_ADD, v->domain->domain_id, v->vcpu_id);
+
+    /* Idle VCPUs are scheduled immediately, so don't put them in runqueue. */
     if ( is_idle_domain(d) )
     {
         per_cpu(schedule_data, v->processor).curr = v;
         v->is_running = 1;
     }
-
-    TRACE_2D(TRC_SCHED_DOM_ADD, v->domain->domain_id, v->vcpu_id);
-
-    v->sched_priv = SCHED_OP(DOM2OP(d), alloc_vdata, v, d->sched_priv);
-    if ( v->sched_priv == NULL )
-        return 1;
-
-    SCHED_OP(DOM2OP(d), insert_vcpu, v);
+    else
+    {
+        SCHED_OP(DOM2OP(d), insert_vcpu, v);
+    }
 
     return 0;
 }
@@ -1378,6 +1377,27 @@ static int cpu_schedule_up(unsigned int cpu)
 
     if ( idle_vcpu[cpu] == NULL )
         alloc_vcpu(idle_vcpu[0]->domain, cpu, cpu);
+    else
+    {
+        struct vcpu *idle = idle_vcpu[cpu];
+
+        /*
+         * During (ACPI?) suspend the idle vCPU for this pCPU is not freed,
+         * while its scheduler specific data (what is pointed by sched_priv)
+         * is. Also, at this stage of the resume path, we attach the pCPU
+         * to the default scheduler, no matter in what cpupool it was before
+         * suspend. To avoid inconsistency, let's allocate default scheduler
+         * data for the idle vCPU here. If the pCPU was in a different pool
+         * with a different scheduler, it is schedule_cpu_switch(), invoked
+         * later, that will set things up as appropriate.
+         */
+        ASSERT(idle->sched_priv == NULL);
+
+        idle->sched_priv = SCHED_OP(&ops, alloc_vdata, idle,
+                                    idle->domain->sched_priv);
+        if ( idle->sched_priv == NULL )
+            return -ENOMEM;
+    }
     if ( idle_vcpu[cpu] == NULL )
         return -ENOMEM;
 
@@ -1395,6 +1415,10 @@ static void cpu_schedule_down(unsigned int cpu)
 
     if ( sd->sched_priv != NULL )
         SCHED_OP(sched, free_pdata, sd->sched_priv, cpu);
+    SCHED_OP(sched, free_vdata, idle_vcpu[cpu]->sched_priv);
+
+    idle_vcpu[cpu]->sched_priv = NULL;
+    sd->sched_priv = NULL;
 
     kill_timer(&sd->s_timer);
 }
@@ -1433,7 +1457,7 @@ void __init scheduler_init(void)
 
     open_softirq(SCHEDULE_SOFTIRQ, schedule);
 
-    for ( i = 0; i < ARRAY_SIZE(schedulers); i++ )
+    for ( i = 0; i < NUM_SCHEDULERS; i++)
     {
         if ( schedulers[i]->global_init && schedulers[i]->global_init() < 0 )
             schedulers[i] = NULL;
@@ -1444,7 +1468,7 @@ void __init scheduler_init(void)
     if ( !ops.name )
     {
         printk("Could not find scheduler: %s\n", opt_sched);
-        for ( i = 0; i < ARRAY_SIZE(schedulers); i++ )
+        for ( i = 0; i < NUM_SCHEDULERS; i++ )
             if ( schedulers[i] )
             {
                 ops = *schedulers[i];
@@ -1485,17 +1509,42 @@ void __init scheduler_init(void)
         BUG();
 }
 
+/*
+ * Move a pCPU outside of the influence of the scheduler of its current
+ * cpupool, or subject it to the scheduler of a new cpupool.
+ *
+ * For the pCPUs that are removed from their cpupool, their scheduler becomes
+ * &ops (the default scheduler, selected at boot, which also services the
+ * default cpupool). However, as these pCPUs are not really part of any pool,
+ * there won't be any scheduling event on them, not even from the default
+ * scheduler. Basically, they will just sit idle until they are explicitly
+ * added back to a cpupool.
+ */
 int schedule_cpu_switch(unsigned int cpu, struct cpupool *c)
 {
-    unsigned long flags;
     struct vcpu *idle;
     spinlock_t *lock;
     void *ppriv, *ppriv_old, *vpriv, *vpriv_old;
     struct scheduler *old_ops = per_cpu(scheduler, cpu);
     struct scheduler *new_ops = (c == NULL) ? &ops : c->sched;
+    struct cpupool *old_pool = per_cpu(cpupool, cpu);
+
+    /*
+     * pCPUs only move from a valid cpupool to free (i.e., out of any pool),
+     * or from free to a valid cpupool. In the former case (which happens when
+     * c is NULL), we want the CPU to have been marked as free already, as
+     * well as to not be valid for the source pool any longer, when we get to
+     * here. In the latter case (which happens when c is a valid cpupool), we
+     * want the CPU to still be marked as free, as well as to not yet be valid
+     * for the destination pool.
+     */
+    ASSERT(c != old_pool && (c != NULL || old_pool != NULL));
+    ASSERT(cpumask_test_cpu(cpu, &cpupool_free_cpus));
+    ASSERT((c == NULL && !cpumask_test_cpu(cpu, old_pool->cpu_valid)) ||
+           (c != NULL && !cpumask_test_cpu(cpu, c->cpu_valid)));
 
     if ( old_ops == new_ops )
-        return 0;
+        goto out;
 
     idle = idle_vcpu[cpu];
     ppriv = SCHED_OP(new_ops, alloc_pdata, cpu);
@@ -1508,7 +1557,7 @@ int schedule_cpu_switch(unsigned int cpu, struct cpupool *c)
         return -ENOMEM;
     }
 
-    lock = pcpu_schedule_lock_irqsave(cpu, &flags);
+    lock = pcpu_schedule_lock_irq(cpu);
 
     SCHED_OP(old_ops, tick_suspend, cpu);
     vpriv_old = idle->sched_priv;
@@ -1517,12 +1566,14 @@ int schedule_cpu_switch(unsigned int cpu, struct cpupool *c)
     ppriv_old = per_cpu(schedule_data, cpu).sched_priv;
     per_cpu(schedule_data, cpu).sched_priv = ppriv;
     SCHED_OP(new_ops, tick_resume, cpu);
-    SCHED_OP(new_ops, insert_vcpu, idle);
 
-    pcpu_schedule_unlock_irqrestore(lock, flags, cpu);
+    pcpu_schedule_unlock_irq(lock, cpu);
 
     SCHED_OP(old_ops, free_vdata, vpriv_old);
     SCHED_OP(old_ops, free_pdata, ppriv_old, cpu);
+
+ out:
+    per_cpu(cpupool, cpu) = c;
 
     return 0;
 }
@@ -1537,7 +1588,7 @@ struct scheduler *scheduler_alloc(unsigned int sched_id, int *perr)
     int i;
     struct scheduler *sched;
 
-    for ( i = 0; i < ARRAY_SIZE(schedulers); i++ )
+    for ( i = 0; i < NUM_SCHEDULERS; i++ )
         if ( schedulers[i] && schedulers[i]->sched_id == sched_id )
             goto found;
     *perr = -ENOENT;

@@ -54,7 +54,7 @@ int libxl__xs_writev_perms(libxl__gc *gc, xs_transaction_t t,
         return 0;
 
     for (i = 0; kvs[i] != NULL; i += 2) {
-        path = libxl__sprintf(gc, "%s/%s", dir, kvs[i]);
+        path = GCSPRINTF("%s/%s", dir, kvs[i]);
         if (path && kvs[i + 1]) {
             int length = strlen(kvs[i + 1]);
             xs_write(ctx->xsh, t, path, kvs[i + 1], length);
@@ -96,23 +96,35 @@ out:
 
 }
 
-int libxl__xs_write(libxl__gc *gc, xs_transaction_t t,
-                    const char *path, const char *fmt, ...)
+int libxl__xs_vprintf(libxl__gc *gc, xs_transaction_t t,
+                      const char *path, const char *fmt, va_list ap)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
     char *s;
+    bool ok;
+
+    s = libxl__vsprintf(gc, fmt, ap);
+
+    ok = xs_write(ctx->xsh, t, path, s, strlen(s));
+    if (!ok) {
+        LOGE(ERROR, "xenstore write failed: `%s' = `%s'", path, s);
+        return ERROR_FAIL;
+    }
+
+    return 0;
+}
+
+int libxl__xs_printf(libxl__gc *gc, xs_transaction_t t,
+                     const char *path, const char *fmt, ...)
+{
     va_list ap;
-    int ret;
+    int rc;
+
     va_start(ap, fmt);
-    ret = vasprintf(&s, fmt, ap);
+    rc = libxl__xs_vprintf(gc, t, path, fmt, ap);
     va_end(ap);
 
-    if (ret == -1) {
-        return -1;
-    }
-    xs_write(ctx->xsh, t, path, s, ret);
-    free(s);
-    return 0;
+    return rc;
 }
 
 char * libxl__xs_read(libxl__gc *gc, xs_transaction_t t, const char *path)
@@ -147,19 +159,31 @@ char **libxl__xs_directory(libxl__gc *gc, xs_transaction_t t,
     return ret;
 }
 
-bool libxl__xs_mkdir(libxl__gc *gc, xs_transaction_t t,
-                     const char *path, struct xs_permissions *perms,
-			         unsigned int num_perms)
+int libxl__xs_mknod(libxl__gc *gc, xs_transaction_t t,
+                    const char *path, struct xs_permissions *perms,
+                    unsigned int num_perms)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    if (!xs_mkdir(ctx->xsh, t, path))
-        return false;
-    return xs_set_permissions(ctx->xsh, t, path, perms, num_perms);
+    bool ok;
+
+    ok = xs_write(ctx->xsh, t, path, "", 0);
+    if (!ok) {
+        LOGE(ERROR, "xenstore write failed: `%s' = ''", path);
+        return ERROR_FAIL;
+    }
+
+    ok = xs_set_permissions(ctx->xsh, t, path, perms, num_perms);
+    if (!ok) {
+        LOGE(ERROR, "xenstore set permissions failed on `%s'", path);
+        return ERROR_FAIL;
+    }
+
+    return 0;
 }
 
 char *libxl__xs_libxl_path(libxl__gc *gc, uint32_t domid)
 {
-    char *s = libxl__sprintf(gc, "/libxl/%i", domid);
+    char *s = GCSPRINTF("/libxl/%i", domid);
     if (!s)
         LOG(ERROR, "cannot allocate create paths");
     return s;

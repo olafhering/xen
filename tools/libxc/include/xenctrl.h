@@ -5,9 +5,6 @@
  *
  * Copyright (c) 2003-2004, K A Fraser.
  *
- * xc_gnttab functions:
- * Copyright (c) 2007-2008, D G Murray <Derek.Murray@cl.cam.ac.uk>
- *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation;
@@ -117,9 +114,6 @@
  */
 
 typedef struct xc_interface_core xc_interface;
-typedef struct xc_interface_core xc_evtchn;
-typedef struct xc_interface_core xc_gnttab;
-typedef struct xc_interface_core xc_gntshr;
 
 enum xc_error_code {
   XC_ERROR_NONE = 0,
@@ -186,15 +180,6 @@ enum xc_open_flags {
  * @return 0 on success, -1 otherwise.
  */
 int xc_interface_close(xc_interface *xch);
-
-/**
- * Query the active OS interface (i.e. that which would be returned by
- * xc_interface_open) to find out if it is fake (i.e. backends onto
- * something other than an actual Xen hypervisor).
- *
- * @return 0 is "real", >0 if fake, -1 on error.
- */
-int xc_interface_is_fake(void);
 
 /*
  * HYPERCALL SAFE MEMORY BUFFER
@@ -456,7 +441,7 @@ typedef struct xc_dominfo {
     uint32_t      ssidref;
     unsigned int  dying:1, crashed:1, shutdown:1,
                   paused:1, blocked:1, running:1,
-                  hvm:1, debugged:1, pvh:1;
+                  hvm:1, debugged:1, pvh:1, xenstore:1;
     unsigned int  shutdown_reason; /* only meaningful if shutdown==1 */
     unsigned long nr_pages; /* current number, not maximum */
     unsigned long nr_outstanding_pages;
@@ -502,17 +487,9 @@ typedef union
 
 
 typedef struct xen_arch_domainconfig xc_domain_configuration_t;
-int xc_domain_create_config(xc_interface *xch,
-                            uint32_t ssidref,
-                            xen_domain_handle_t handle,
-                            uint32_t flags,
-                            uint32_t *pdomid,
-                            xc_domain_configuration_t *config);
-int xc_domain_create(xc_interface *xch,
-                     uint32_t ssidref,
-                     xen_domain_handle_t handle,
-                     uint32_t flags,
-                     uint32_t *pdomid);
+int xc_domain_create(xc_interface *xch, uint32_t ssidref,
+                     xen_domain_handle_t handle, uint32_t flags,
+                     uint32_t *pdomid, xc_domain_configuration_t *config);
 
 
 /* Functions to produce a dump of a given domain
@@ -1093,7 +1070,6 @@ int xc_cpupool_movedomain(xc_interface *xch,
  */
 xc_cpumap_t xc_cpupool_freeinfo(xc_interface *xch);
 
-
 /*
  * EVENT CHANNEL FUNCTIONS
  *
@@ -1128,101 +1104,7 @@ int xc_evtchn_reset(xc_interface *xch,
 typedef struct evtchn_status xc_evtchn_status_t;
 int xc_evtchn_status(xc_interface *xch, xc_evtchn_status_t *status);
 
-/*
- * Return a handle to the event channel driver, or NULL on failure, in
- * which case errno will be set appropriately.
- *
- * Note:
- * After fork a child process must not use any opened xc evtchn
- * handle inherited from their parent. They must open a new handle if
- * they want to interact with xc.
- *
- * Before Xen pre-4.1 this function would sometimes report errors with perror.
- */
-xc_evtchn *xc_evtchn_open(xentoollog_logger *logger,
-                             unsigned open_flags);
 
-/*
- * Close a handle previously allocated with xc_evtchn_open().
- */
-int xc_evtchn_close(xc_evtchn *xce);
-
-/*
- * Return an fd that can be select()ed on.
- *
- * Note that due to bugs, setting this fd to non blocking may not
- * work: you would hope that it would result in xc_evtchn_pending
- * failing with EWOULDBLOCK if there are no events signaled, but in
- * fact it may block.  (Bug is present in at least Linux 3.12, and
- * perhaps on other platforms or later version.)
- *
- * To be safe, you must use poll() or select() before each call to
- * xc_evtchn_pending.  If you have multiple threads (or processes)
- * sharing a single xce handle this will not work, and there is no
- * straightforward workaround.  Please design your program some other
- * way.
- */
-int xc_evtchn_fd(xc_evtchn *xce);
-
-/*
- * Notify the given event channel. Returns -1 on failure, in which case
- * errno will be set appropriately.
- */
-int xc_evtchn_notify(xc_evtchn *xce, evtchn_port_t port);
-
-/*
- * Returns a new event port awaiting interdomain connection from the given
- * domain ID, or -1 on failure, in which case errno will be set appropriately.
- */
-evtchn_port_or_error_t
-xc_evtchn_bind_unbound_port(xc_evtchn *xce, int domid);
-
-/*
- * Returns a new event port bound to the remote port for the given domain ID,
- * or -1 on failure, in which case errno will be set appropriately.
- */
-evtchn_port_or_error_t
-xc_evtchn_bind_interdomain(xc_evtchn *xce, int domid,
-                           evtchn_port_t remote_port);
-
-/*
- * Bind an event channel to the given VIRQ. Returns the event channel bound to
- * the VIRQ, or -1 on failure, in which case errno will be set appropriately.
- */
-evtchn_port_or_error_t
-xc_evtchn_bind_virq(xc_evtchn *xce, unsigned int virq);
-
-/*
- * Unbind the given event channel. Returns -1 on failure, in which case errno
- * will be set appropriately.
- */
-int xc_evtchn_unbind(xc_evtchn *xce, evtchn_port_t port);
-
-/*
- * Return the next event channel to become pending, or -1 on failure, in which
- * case errno will be set appropriately.
- *
- * At the hypervisor level the event channel will have been masked,
- * and then cleared, by the underlying machinery (evtchn kernel
- * driver, or equivalent).  So if the event channel is signaled again
- * after it is returned here, it will be queued up, and delivered
- * again after you unmask it.  (See the documentation in the Xen
- * public header event_channel.h.)
- *
- * On receiving the notification from xc_evtchn_pending, you should
- * normally: check (by other means) what work needs doing; do the
- * necessary work (if any); unmask the event channel with
- * xc_evtchn_unmask (if you want to receive any further
- * notifications).
- */
-evtchn_port_or_error_t
-xc_evtchn_pending(xc_evtchn *xce);
-
-/*
- * Unmask the given event channel. Returns -1 on failure, in which case errno
- * will be set appropriately.
- */
-int xc_evtchn_unmask(xc_evtchn *xce, evtchn_port_t port);
 
 int xc_physdev_pci_access_modify(xc_interface *xch,
                                  uint32_t domid,
@@ -1487,42 +1369,6 @@ int xc_lockprof_query(xc_interface *xch,
 void *xc_memalign(xc_interface *xch, size_t alignment, size_t size);
 
 /**
- * Memory maps a range within one domain to a local address range.  Mappings
- * should be unmapped with munmap and should follow the same rules as mmap
- * regarding page alignment.  Returns NULL on failure.
- *
- * @parm xch a handle on an open hypervisor interface
- * @parm dom the domain to map memory from
- * @parm size the amount of memory to map (in multiples of page size)
- * @parm prot same flag as in mmap().
- * @parm mfn the frame address to map.
- */
-void *xc_map_foreign_range(xc_interface *xch, uint32_t dom,
-                            int size, int prot,
-                            unsigned long mfn );
-
-void *xc_map_foreign_pages(xc_interface *xch, uint32_t dom, int prot,
-                           const xen_pfn_t *arr, int num );
-
-/**
- * DEPRECATED - use xc_map_foreign_bulk() instead.
- *
- * Like xc_map_foreign_pages(), except it can succeeed partially.
- * When a page cannot be mapped, its PFN in @arr is or'ed with
- * 0xF0000000 to indicate the error.
- */
-void *xc_map_foreign_batch(xc_interface *xch, uint32_t dom, int prot,
-                           xen_pfn_t *arr, int num );
-
-/**
- * Like xc_map_foreign_pages(), except it can succeed partially.
- * When a page cannot be mapped, its respective field in @err is
- * set to the corresponding errno value.
- */
-void *xc_map_foreign_bulk(xc_interface *xch, uint32_t dom, int prot,
-                          const xen_pfn_t *arr, int *err, unsigned int num);
-
-/**
  * Translates a virtual address in the context of a given domain and
  * vcpu returning the GFN containing the address (that is, an MFN for 
  * PV guests, a PFN for HVM guests).  Returns 0 for failure.
@@ -1652,116 +1498,6 @@ int xc_domain_subscribe_for_suspend(
  * These functions sometimes log messages as above, but not always.
  */
 
-/*
- * Note:
- * After fork a child process must not use any opened xc gnttab
- * handle inherited from their parent. They must open a new handle if
- * they want to interact with xc.
- *
- * Return an fd onto the grant table driver.  Logs errors.
- */
-xc_gnttab *xc_gnttab_open(xentoollog_logger *logger,
-			  unsigned open_flags);
-
-/*
- * Close a handle previously allocated with xc_gnttab_open().
- * Never logs errors.
- */
-int xc_gnttab_close(xc_gnttab *xcg);
-
-/*
- * Memory maps a grant reference from one domain to a local address range.
- * Mappings should be unmapped with xc_gnttab_munmap.  Logs errors.
- *
- * @parm xcg a handle on an open grant table interface
- * @parm domid the domain to map memory from
- * @parm ref the grant reference ID to map
- * @parm prot same flag as in mmap()
- */
-void *xc_gnttab_map_grant_ref(xc_gnttab *xcg,
-                              uint32_t domid,
-                              uint32_t ref,
-                              int prot);
-
-/**
- * Memory maps one or more grant references from one or more domains to a
- * contiguous local address range. Mappings should be unmapped with
- * xc_gnttab_munmap.  Logs errors.
- *
- * @parm xcg a handle on an open grant table interface
- * @parm count the number of grant references to be mapped
- * @parm domids an array of @count domain IDs by which the corresponding @refs
- *              were granted
- * @parm refs an array of @count grant references to be mapped
- * @parm prot same flag as in mmap()
- */
-void *xc_gnttab_map_grant_refs(xc_gnttab *xcg,
-                               uint32_t count,
-                               uint32_t *domids,
-                               uint32_t *refs,
-                               int prot);
-
-/**
- * Memory maps one or more grant references from one domain to a
- * contiguous local address range. Mappings should be unmapped with
- * xc_gnttab_munmap.  Logs errors.
- *
- * @parm xcg a handle on an open grant table interface
- * @parm count the number of grant references to be mapped
- * @parm domid the domain to map memory from
- * @parm refs an array of @count grant references to be mapped
- * @parm prot same flag as in mmap()
- */
-void *xc_gnttab_map_domain_grant_refs(xc_gnttab *xcg,
-                                      uint32_t count,
-                                      uint32_t domid,
-                                      uint32_t *refs,
-                                      int prot);
-
-/**
- * Memory maps a grant reference from one domain to a local address range.
- * Mappings should be unmapped with xc_gnttab_munmap. If notify_offset or
- * notify_port are not -1, this version will attempt to set up an unmap
- * notification at the given offset and event channel. When the page is
- * unmapped, the byte at the given offset will be zeroed and a wakeup will be
- * sent to the given event channel.  Logs errors.
- *
- * @parm xcg a handle on an open grant table interface
- * @parm domid the domain to map memory from
- * @parm ref the grant reference ID to map
- * @parm prot same flag as in mmap()
- * @parm notify_offset The byte offset in the page to use for unmap
- *                     notification; -1 for none.
- * @parm notify_port The event channel port to use for unmap notify, or -1
- */
-void *xc_gnttab_map_grant_ref_notify(xc_gnttab *xcg,
-                                     uint32_t domid,
-                                     uint32_t ref,
-                                     int prot,
-                                     uint32_t notify_offset,
-                                     evtchn_port_t notify_port);
-
-/*
- * Unmaps the @count pages starting at @start_address, which were mapped by a
- * call to xc_gnttab_map_grant_ref or xc_gnttab_map_grant_refs. Never logs.
- */
-int xc_gnttab_munmap(xc_gnttab *xcg,
-                     void *start_address,
-                     uint32_t count);
-
-/*
- * Sets the maximum number of grants that may be mapped by the given instance
- * to @count.  Never logs.
- *
- * N.B. This function must be called after opening the handle, and before any
- *      other functions are invoked on it.
- *
- * N.B. When variable-length grants are mapped, fragmentation may be observed,
- *      and it may not be possible to satisfy requests up to the maximum number
- *      of grants.
- */
-int xc_gnttab_set_max_grants(xc_gnttab *xcg,
-			     uint32_t count);
 
 int xc_gnttab_op(xc_interface *xch, int cmd,
                  void * op, int op_size, int count);
@@ -1771,59 +1507,6 @@ int xc_gnttab_get_version(xc_interface *xch, int domid); /* Never logs */
 grant_entry_v1_t *xc_gnttab_map_table_v1(xc_interface *xch, int domid, int *gnt_num);
 grant_entry_v2_t *xc_gnttab_map_table_v2(xc_interface *xch, int domid, int *gnt_num);
 /* Sometimes these don't set errno [fixme], and sometimes they don't log. */
-
-/*
- * Return an fd onto the grant sharing driver.  Logs errors.
- *
- * Note:
- * After fork a child process must not use any opened xc gntshr
- * handle inherited from their parent. They must open a new handle if
- * they want to interact with xc.
- *
- */
-xc_gntshr *xc_gntshr_open(xentoollog_logger *logger,
-			  unsigned open_flags);
-
-/*
- * Close a handle previously allocated with xc_gntshr_open().
- * Never logs errors.
- */
-int xc_gntshr_close(xc_gntshr *xcg);
-
-/*
- * Creates and shares pages with another domain.
- * 
- * @parm xcg a handle to an open grant sharing instance
- * @parm domid the domain to share memory with
- * @parm count the number of pages to share
- * @parm refs the grant references of the pages (output)
- * @parm writable true if the other domain can write to the pages
- * @return local mapping of the pages
- */
-void *xc_gntshr_share_pages(xc_gntshr *xcg, uint32_t domid,
-                            int count, uint32_t *refs, int writable);
-
-/*
- * Creates and shares a page with another domain, with unmap notification.
- * 
- * @parm xcg a handle to an open grant sharing instance
- * @parm domid the domain to share memory with
- * @parm refs the grant reference of the pages (output)
- * @parm writable true if the other domain can write to the page
- * @parm notify_offset The byte offset in the page to use for unmap
- *                     notification; -1 for none.
- * @parm notify_port The event channel port to use for unmap notify, or -1
- * @return local mapping of the page
- */
-void *xc_gntshr_share_page_notify(xc_gntshr *xcg, uint32_t domid,
-                                  uint32_t *ref, int writable,
-                                  uint32_t notify_offset,
-                                  evtchn_port_t notify_port);
-/*
- * Unmaps the @count pages starting at @start_address, which were mapped by a
- * call to xc_gntshr_share_*. Never logs.
- */
-int xc_gntshr_munmap(xc_gntshr *xcg, void *start_address, uint32_t count);
 
 int xc_physdev_map_pirq(xc_interface *xch,
                         int domid,
@@ -2858,6 +2541,9 @@ int xc_psr_cat_get_l3_info(xc_interface *xch, uint32_t socket,
                            uint32_t *cos_max, uint32_t *cbm_len,
                            bool *cdp_enabled);
 #endif
+
+/* Compat shims */
+#include "xenctrl_compat.h"
 
 #endif /* XENCTRL_H */
 

@@ -153,8 +153,8 @@ static int write_batch(struct xc_sr_context *ctx)
 
     if ( nr_pages > 0 )
     {
-        guest_mapping = xc_map_foreign_bulk(
-            xch, ctx->domid, PROT_READ, mfns, errors, nr_pages);
+        guest_mapping = xenforeignmemory_map(xch->fmem,
+            ctx->domid, PROT_READ, nr_pages, mfns, errors);
         if ( !guest_mapping )
         {
             PERROR("Failed to map guest pages");
@@ -174,7 +174,7 @@ static int write_batch(struct xc_sr_context *ctx)
 
             if ( errors[p] )
             {
-                ERROR("Mapping of pfn %#lx (mfn %#lx) failed %d",
+                ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
                       ctx->save.batch_pfns[i], mfns[p], errors[p]);
                 goto err;
             }
@@ -263,7 +263,7 @@ static int write_batch(struct xc_sr_context *ctx)
  err:
     free(rec_pfns);
     if ( guest_mapping )
-        munmap(guest_mapping, nr_pages_mapped * PAGE_SIZE);
+        xenforeignmemory_unmap(xch->fmem, guest_mapping, nr_pages_mapped);
     for ( i = 0; local_pages && i < nr_pfns; ++i )
         free(local_pages[i]);
     free(iov);
@@ -394,7 +394,8 @@ static int send_dirty_pages(struct xc_sr_context *ctx,
         DPRINTF("Bitmap contained more entries than expected...");
 
     xc_report_progress_step(xch, entries, entries);
-    return 0;
+
+    return ctx->save.ops.check_vm_state(ctx);
 }
 
 /*
@@ -677,6 +678,10 @@ static int setup(struct xc_sr_context *ctx)
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
+    rc = ctx->save.ops.setup(ctx);
+    if ( rc )
+        goto err;
+
     dirty_bitmap = xc_hypercall_buffer_alloc_pages(
                    xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->save.p2m_size)));
     ctx->save.batch_pfns = malloc(MAX_BATCH_SIZE *
@@ -691,10 +696,6 @@ static int setup(struct xc_sr_context *ctx)
         errno = ENOMEM;
         goto err;
     }
-
-    rc = ctx->save.ops.setup(ctx);
-    if ( rc )
-        goto err;
 
     rc = 0;
 
@@ -751,6 +752,10 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
         if ( rc )
             goto err;
 
+        rc = ctx->save.ops.check_vm_state(ctx);
+        if ( rc )
+            goto err;
+
         if ( ctx->save.live )
             rc = send_domain_memory_live(ctx);
         else if ( ctx->save.checkpointed )
@@ -786,11 +791,13 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
             if ( rc )
                 goto err;
 
-            ctx->save.callbacks->postcopy(ctx->save.callbacks->data);
+            rc = ctx->save.callbacks->postcopy(ctx->save.callbacks->data);
+            if ( rc <= 0 )
+                goto err;
 
             rc = ctx->save.callbacks->checkpoint(ctx->save.callbacks->data);
             if ( rc <= 0 )
-                ctx->save.checkpointed = false;
+                goto err;
         }
     } while ( ctx->save.checkpointed );
 
@@ -824,7 +831,6 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
                    uint32_t max_iters, uint32_t max_factor, uint32_t flags,
                    struct save_callbacks* callbacks, int hvm)
 {
-    xen_pfn_t nr_pfns;
     struct xc_sr_context ctx =
         {
             .xch = xch,
@@ -868,21 +874,6 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
     }
 
     ctx.domid = dom;
-
-    if ( xc_domain_nr_gpfns(xch, dom, &nr_pfns) < 0 )
-    {
-        PERROR("Unable to obtain the guest p2m size");
-        return -1;
-    }
-
-    ctx.save.p2m_size = nr_pfns;
-
-    if ( ctx.save.p2m_size > ~XEN_DOMCTL_PFINFO_LTAB_MASK )
-    {
-        errno = E2BIG;
-        ERROR("Cannot save this big a guest");
-        return -1;
-    }
 
     if ( ctx.dominfo.hvm )
     {

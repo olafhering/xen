@@ -275,10 +275,10 @@ Building the python tools may fail unless certain options are passed to
 setup.py. Config.mk contains additional info how to use this variable.
 PYTHON_PREFIX_ARG=
 
-The hypervisor may be build with XSM support, which can be changed with
-the following variables.
-XSM_ENABLE=y
-FLASK_ENABLE=y
+The hypervisor may be build with XSM/Flask support, which can be changed
+by running:
+make -C xen menuconfig
+and enabling XSM/Flask in the 'Common Features' menu.
 
 Do a build for coverage.
 coverage=y
@@ -302,6 +302,13 @@ systemctl enable xenconsoled.service
 Other optional services are:
 systemctl enable xendomains.service
 systemctl enable xen-watchdog.service
+
+
+QEMU Deprivilege
+================
+It is recommended to run QEMU as non-root.
+See docs/misc/qemu-deprivilege.txt for an explanation on what you need
+to do at installation time to run QEMU as a dedicated user.
 
 
 History of options

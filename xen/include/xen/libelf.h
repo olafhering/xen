@@ -386,6 +386,7 @@ elf_errorstatus elf_reloc(struct elf_binary *elf);
 /* xc_libelf_dominfo.c                                                      */
 
 #define UNSET_ADDR          ((uint64_t)-1)
+#define UNSET_ADDR32        ((uint32_t)-1)
 
 enum xen_elfnote_type {
     XEN_ENT_NONE = 0,
@@ -423,6 +424,7 @@ struct elf_dom_parms {
     char loader[16];
     enum xen_pae_type pae;
     bool bsd_symtab;
+    bool unmapped_initrd;
     uint64_t virt_base;
     uint64_t virt_entry;
     uint64_t virt_hypercall;

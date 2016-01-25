@@ -6,12 +6,6 @@
 # 'make clean' before rebuilding.
 #
 
-HAS_DEVICE_TREE := y
-HAS_VIDEO := y
-HAS_ARM_HDLCD := y
-HAS_PASSTHROUGH := y
-HAS_PDX := y
-
 CFLAGS += -I$(BASEDIR)/include
 
 $(call cc-options-add,CFLAGS,CC,$(EMBEDDED_EXTRA_CFLAGS))
@@ -37,8 +31,6 @@ endif
 ifneq ($(call cc-option,$(CC),-fvisibility=hidden,n),n)
 CFLAGS += -DGCC_HAS_VISIBILITY_ATTRIBUTE
 endif
-
-CFLAGS-$(HAS_GICV3) += -DHAS_GICV3
 
 EARLY_PRINTK := n
 

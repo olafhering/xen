@@ -43,6 +43,8 @@ int libxl__domain_suspend_device_model(libxl__gc *gc,
         if (ret)
             unlink(filename);
         break;
+    case LIBXL_DEVICE_MODEL_VERSION_NONE:
+        break;
     default:
         return ERROR_INVAL;
     }
@@ -107,9 +109,9 @@ static void domain_suspend_callback_common(libxl__egc *egc,
     if ((hvm_s_state == 0) && (dss->guest_evtchn.port >= 0)) {
         LOG(DEBUG, "issuing %s suspend request via event channel",
             dss->hvm ? "PVHVM" : "PV");
-        ret = xc_evtchn_notify(CTX->xce, dss->guest_evtchn.port);
+        ret = xenevtchn_notify(CTX->xce, dss->guest_evtchn.port);
         if (ret < 0) {
-            LOG(ERROR, "xc_evtchn_notify failed ret=%d", ret);
+            LOG(ERROR, "xenevtchn_notify failed ret=%d", ret);
             rc = ERROR_FAIL;
             goto err;
         }

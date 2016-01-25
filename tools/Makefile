@@ -3,8 +3,9 @@ include $(XEN_ROOT)/tools/Rules.mk
 
 SUBDIRS-y :=
 SUBDIRS-y += include
+SUBDIRS-y += libs
 SUBDIRS-y += libxc
-SUBDIRS-$(FLASK_ENABLE) += flask
+SUBDIRS-y += flask
 SUBDIRS-y += xenstore
 SUBDIRS-y += misc
 SUBDIRS-y += examples
@@ -29,6 +30,7 @@ endif
 
 SUBDIRS-y += xenpmd
 SUBDIRS-y += libxl
+SUBDIRS-y += helpers
 SUBDIRS-$(CONFIG_X86) += xenpaging
 SUBDIRS-$(CONFIG_X86) += debugger/gdbsx
 SUBDIRS-$(CONFIG_X86) += debugger/kdd
@@ -247,13 +249,28 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 		--libdir=$(LIBEXEC_LIB) \
 		--includedir=$(LIBEXEC_INC) \
 		--source-path=$$source \
-		--extra-cflags="-I$(XEN_ROOT)/tools/include \
+		--extra-cflags="-DXC_WANT_COMPAT_EVTCHN_API=1 \
+		-DXC_WANT_COMPAT_GNTTAB_API=1 \
+		-DXC_WANT_COMPAT_MAP_FOREIGN_API=1 \
+		-I$(XEN_ROOT)/tools/include \
+		-I$(XEN_ROOT)/tools/libs/toollog/include \
+		-I$(XEN_ROOT)/tools/libs/evtchn/include \
+		-I$(XEN_ROOT)/tools/libs/gnttab/include \
+		-I$(XEN_ROOT)/tools/libs/foreignmemory/include \
 		-I$(XEN_ROOT)/tools/libxc/include \
 		-I$(XEN_ROOT)/tools/xenstore/include \
 		-I$(XEN_ROOT)/tools/xenstore/compat/include \
 		$(EXTRA_CFLAGS_QEMU_XEN)" \
 		--extra-ldflags="-L$(XEN_ROOT)/tools/libxc \
 		-L$(XEN_ROOT)/tools/xenstore \
+		-L$(XEN_ROOT)/tools/libs/evtchn \
+		-L$(XEN_ROOT)/tools/libs/gnttab \
+		-L$(XEN_ROOT)/tools/libs/foreignmemory \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/toollog \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/evtchn \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/gnttab \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/call \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/foreignmemory \
 		$(QEMU_UPSTREAM_RPATH)" \
 		--bindir=$(LIBEXEC_BIN) \
 		--datadir=$(SHAREDIR)/qemu-xen \

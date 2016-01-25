@@ -27,9 +27,9 @@
 /* DO NOT implement this function; it is supposed to trigger link errors */
 void __xsm_action_mismatch_detected(void);
 
-#ifdef XSM_ENABLE
+#ifdef CONFIG_XSM
 
-/* In XSM_ENABLE builds, this header file is included from xsm/dummy.c, and
+/* In CONFIG_XSM builds, this header file is included from xsm/dummy.c, and
  * contains static (not inline) functions compiled to the dummy XSM module.
  * There is no xsm_default_t argument available, so the value from the assertion
  * is used to initialize the variable.
@@ -39,9 +39,9 @@ void __xsm_action_mismatch_detected(void);
 #define XSM_DEFAULT_VOID void
 #define XSM_ASSERT_ACTION(def) xsm_default_t action = def; (void)action
 
-#else /* XSM_ENABLE */
+#else /* CONFIG_XSM */
 
-/* In !XSM_ENABLE builds, this header file is included from xsm/xsm.h, and
+/* In !CONFIG_XSM builds, this header file is included from xsm/xsm.h, and
  * contains inline functions for each XSM hook. These functions also perform
  * compile-time checks on the xsm_default_t argument to ensure that the behavior
  * of the dummy XSM module is the same as the behavior with XSM disabled.
@@ -51,7 +51,7 @@ void __xsm_action_mismatch_detected(void);
 #define XSM_DEFAULT_VOID xsm_default_t action
 #define XSM_ASSERT_ACTION(def) LINKER_BUG_ON(def != action)
 
-#endif /* XSM_ENABLE */
+#endif /* CONFIG_XSM */
 
 static always_inline int xsm_default_action(
     xsm_default_t action, struct domain *src, struct domain *target)
@@ -69,6 +69,10 @@ static always_inline int xsm_default_action(
         /* fall through */
     case XSM_PRIV:
         if ( src->is_privileged )
+            return 0;
+        return -EPERM;
+    case XSM_XS_PRIV:
+        if ( src->is_xenstore || src->is_privileged )
             return 0;
         return -EPERM;
     default:
@@ -123,6 +127,8 @@ static XSM_INLINE int xsm_domctl(XSM_DEFAULT_ARG struct domain *d, int cmd)
     case XEN_DOMCTL_bind_pt_irq:
     case XEN_DOMCTL_unbind_pt_irq:
         return xsm_default_action(XSM_DM_PRIV, current->domain, d);
+    case XEN_DOMCTL_getdomaininfo:
+        return xsm_default_action(XSM_XS_PRIV, current->domain, d);
     default:
         return xsm_default_action(XSM_PRIV, current->domain, d);
     }
@@ -323,7 +329,7 @@ static XSM_INLINE int xsm_get_vnumainfo(XSM_DEFAULT_ARG struct domain *d)
     return xsm_default_action(action, current->domain, d);
 }
 
-#if defined(HAS_PASSTHROUGH) && defined(HAS_PCI)
+#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_PCI)
 static XSM_INLINE int xsm_get_device_group(XSM_DEFAULT_ARG uint32_t machine_bdf)
 {
     XSM_ASSERT_ACTION(XSM_HOOK);
@@ -350,7 +356,7 @@ static XSM_INLINE int xsm_deassign_device(XSM_DEFAULT_ARG struct domain *d, uint
 
 #endif /* HAS_PASSTHROUGH && HAS_PCI */
 
-#if defined(HAS_PASSTHROUGH) && defined(HAS_DEVICE_TREE)
+#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
 static XSM_INLINE int xsm_test_assign_dtdevice(XSM_DEFAULT_ARG const char *dtpath)
 {
     XSM_ASSERT_ACTION(XSM_HOOK);
@@ -560,7 +566,7 @@ static XSM_INLINE int xsm_vm_event_control(XSM_DEFAULT_ARG struct domain *d, int
     return xsm_default_action(action, current->domain, d);
 }
 
-#ifdef HAS_MEM_ACCESS
+#ifdef CONFIG_HAS_MEM_ACCESS
 static XSM_INLINE int xsm_mem_access(XSM_DEFAULT_ARG struct domain *d)
 {
     XSM_ASSERT_ACTION(XSM_DM_PRIV);
@@ -568,7 +574,7 @@ static XSM_INLINE int xsm_mem_access(XSM_DEFAULT_ARG struct domain *d)
 }
 #endif
 
-#ifdef HAS_MEM_PAGING
+#ifdef CONFIG_HAS_MEM_PAGING
 static XSM_INLINE int xsm_mem_paging(XSM_DEFAULT_ARG struct domain *d)
 {
     XSM_ASSERT_ACTION(XSM_DM_PRIV);
@@ -576,13 +582,19 @@ static XSM_INLINE int xsm_mem_paging(XSM_DEFAULT_ARG struct domain *d)
 }
 #endif
 
-#ifdef HAS_MEM_SHARING
+#ifdef CONFIG_HAS_MEM_SHARING
 static XSM_INLINE int xsm_mem_sharing(XSM_DEFAULT_ARG struct domain *d)
 {
     XSM_ASSERT_ACTION(XSM_DM_PRIV);
     return xsm_default_action(action, current->domain, d);
 }
 #endif
+
+static XSM_INLINE int xsm_platform_op(XSM_DEFAULT_ARG uint32_t op)
+{
+    XSM_ASSERT_ACTION(XSM_PRIV);
+    return xsm_default_action(action, current->domain, NULL);
+}
 
 #ifdef CONFIG_X86
 static XSM_INLINE int xsm_do_mca(XSM_DEFAULT_VOID)
@@ -637,12 +649,6 @@ static XSM_INLINE int xsm_apic(XSM_DEFAULT_ARG struct domain *d, int cmd)
 {
     XSM_ASSERT_ACTION(XSM_PRIV);
     return xsm_default_action(action, d, NULL);
-}
-
-static XSM_INLINE int xsm_platform_op(XSM_DEFAULT_ARG uint32_t op)
-{
-    XSM_ASSERT_ACTION(XSM_PRIV);
-    return xsm_default_action(action, current->domain, NULL);
 }
 
 static XSM_INLINE int xsm_machine_memory_map(XSM_DEFAULT_VOID)

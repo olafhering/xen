@@ -13,10 +13,15 @@
  * License along with this library; If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef _XC_DOM_H
+#define _XC_DOM_H
+
 #include <xen/libelf/libelf.h>
 #include <xenguest.h>
 
-#define INVALID_P2M_ENTRY   ((xen_pfn_t)-1)
+#define INVALID_PFN ((xen_pfn_t)-1)
+#define X86_HVM_NR_SPECIAL_PAGES    8
+#define X86_HVM_END_SPECIAL_REGION  0xff000u
 
 /* --- typedefs and structs ---------------------------------------- */
 
@@ -29,6 +34,7 @@ struct xc_dom_seg {
     xen_vaddr_t vstart;
     xen_vaddr_t vend;
     xen_pfn_t pfn;
+    xen_pfn_t pages;
 };
 
 struct xc_dom_mem {
@@ -65,6 +71,7 @@ struct xc_dom_image {
 
     /* arguments and parameters */
     char *cmdline;
+    size_t cmdline_size;
     uint32_t f_requested[XENFEAT_NR_SUBMAPS];
 
     /* info from (elf) kernel image */
@@ -85,22 +92,26 @@ struct xc_dom_image {
     struct xc_dom_seg p2m_seg;
     struct xc_dom_seg pgtables_seg;
     struct xc_dom_seg devicetree_seg;
+    struct xc_dom_seg start_info_seg; /* HVMlite only */
     xen_pfn_t start_info_pfn;
     xen_pfn_t console_pfn;
     xen_pfn_t xenstore_pfn;
     xen_pfn_t shared_info_pfn;
     xen_pfn_t bootstack_pfn;
+    xen_pfn_t pfn_alloc_end;
     xen_vaddr_t virt_alloc_end;
     xen_vaddr_t bsd_symtab_start;
 
-    /* initial page tables */
-    unsigned int pgtables;
-    unsigned int pg_l4;
-    unsigned int pg_l3;
-    unsigned int pg_l2;
-    unsigned int pg_l1;
+    /*
+     * initrd parameters as specified in start_info page
+     * Depending on capabilities of the booted kernel this may be a virtual
+     * address or a pfn. Type is neutral and large enough to hold a virtual
+     * address of a 64 bit kernel even with 32 bit toolstack.
+     */
+    uint64_t initrd_start;
+    uint64_t initrd_len;
+
     unsigned int alloc_bootstack;
-    unsigned int extra_pages;
     xen_vaddr_t virt_pgtab_end;
 
     /* other state info */
@@ -173,10 +184,13 @@ struct xc_dom_image {
     unsigned int *vnode_to_pnode;
     unsigned int nr_vnodes;
 
+    /* domain type/architecture specific data */
+    void *arch_private;
+
     /* kernel loader */
     struct xc_dom_arch *arch_hooks;
-    /* allocate up to virt_alloc_end */
-    int (*allocate) (struct xc_dom_image * dom, xen_vaddr_t up_to);
+    /* allocate up to pfn_alloc_end */
+    int (*allocate) (struct xc_dom_image * dom);
 
     /* Container type (HVM or PV). */
     enum {
@@ -190,6 +204,10 @@ struct xc_dom_image {
     xen_paddr_t mmio_size;
     xen_paddr_t lowmem_end;
     xen_paddr_t highmem_end;
+    xen_pfn_t vga_hole_size;
+
+    /* If unset disables the setup of the IOREQ pages. */
+    bool device_model;
 
     /* Extra ACPI tables passed to HVMLOADER */
     struct xc_hvm_firmware_module acpi_module;
@@ -218,7 +236,8 @@ void xc_dom_register_loader(struct xc_dom_loader *loader);
 struct xc_dom_arch {
     /* pagetable setup */
     int (*alloc_magic_pages) (struct xc_dom_image * dom);
-    int (*count_pgtables) (struct xc_dom_image * dom);
+    int (*alloc_pgtables) (struct xc_dom_image * dom);
+    int (*alloc_p2m_list) (struct xc_dom_image * dom);
     int (*setup_pgtables) (struct xc_dom_image * dom);
 
     /* arch-specific data structs setup */
@@ -235,13 +254,15 @@ struct xc_dom_arch {
     char *native_protocol;
     int page_shift;
     int sizeof_pfn;
+    int p2m_base_supported;
+    int arch_private_size;
 
     struct xc_dom_arch *next;
 };
 void xc_dom_register_arch_hooks(struct xc_dom_arch *hooks);
 
 #define XC_DOM_PAGE_SHIFT(dom)  ((dom)->arch_hooks->page_shift)
-#define XC_DOM_PAGE_SIZE(dom)   (1 << (dom)->arch_hooks->page_shift)
+#define XC_DOM_PAGE_SIZE(dom)   (1LL << (dom)->arch_hooks->page_shift)
 
 /* --- main functions ---------------------------------------------- */
 
@@ -288,7 +309,7 @@ int xc_dom_devicetree_mem(struct xc_dom_image *dom, const void *mem,
                           size_t memsize);
 
 int xc_dom_parse_image(struct xc_dom_image *dom);
-struct xc_dom_arch *xc_dom_find_arch_hooks(xc_interface *xch, char *guest_type);
+int xc_dom_set_arch_hooks(struct xc_dom_image *dom);
 int xc_dom_build_image(struct xc_dom_image *dom);
 int xc_dom_update_guest_p2m(struct xc_dom_image *dom);
 
@@ -342,7 +363,7 @@ char *xc_dom_strdup(struct xc_dom_image *dom, const char *str);
 
 /* --- alloc memory pool ------------------------------------------- */
 
-int xc_dom_alloc_page(struct xc_dom_image *dom, char *name);
+xen_pfn_t xc_dom_alloc_page(struct xc_dom_image *dom, char *name);
 int xc_dom_alloc_segment(struct xc_dom_image *dom,
                          struct xc_dom_seg *seg, char *name,
                          xen_vaddr_t start, xen_vaddr_t size);
@@ -360,14 +381,11 @@ static inline void *xc_dom_seg_to_ptr_pages(struct xc_dom_image *dom,
                                       struct xc_dom_seg *seg,
                                       xen_pfn_t *pages_out)
 {
-    xen_vaddr_t segsize = seg->vend - seg->vstart;
-    unsigned int page_size = XC_DOM_PAGE_SIZE(dom);
-    xen_pfn_t pages = (segsize + page_size - 1) / page_size;
     void *retval;
 
-    retval = xc_dom_pfn_to_ptr(dom, seg->pfn, pages);
+    retval = xc_dom_pfn_to_ptr(dom, seg->pfn, seg->pages);
 
-    *pages_out = retval ? pages : 0;
+    *pages_out = retval ? seg->pages : 0;
     return retval;
 }
 
@@ -405,6 +423,8 @@ static inline xen_pfn_t xc_dom_p2m(struct xc_dom_image *dom, xen_pfn_t pfn)
         return INVALID_MFN;
     return dom->p2m_host[pfn - dom->rambase_pfn];
 }
+
+#endif /* _XC_DOM_H */
 
 /*
  * Local variables:

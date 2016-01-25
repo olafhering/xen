@@ -29,14 +29,15 @@
 #include "xenstored_transaction.h"
 #include "xenstored_watch.h"
 
+#include <xenevtchn.h>
 #include <xenctrl.h>
 #include <xen/grant_table.h>
 
 static xc_interface **xc_handle;
-xc_gnttab **xcg_handle;
+xengnttab_handle **xgt_handle;
 static evtchn_port_t virq_port;
 
-xc_evtchn *xce_handle = NULL;
+xenevtchn_handle *xce_handle = NULL;
 
 struct domain
 {
@@ -128,7 +129,7 @@ static int writechn(struct connection *conn,
 	xen_mb();
 	intf->rsp_prod += len;
 
-	xc_evtchn_notify(xce_handle, conn->domain->port);
+	xenevtchn_notify(xce_handle, conn->domain->port);
 
 	return len;
 }
@@ -158,16 +159,16 @@ static int readchn(struct connection *conn, void *data, unsigned int len)
 	xen_mb();
 	intf->req_cons += len;
 
-	xc_evtchn_notify(xce_handle, conn->domain->port);
+	xenevtchn_notify(xce_handle, conn->domain->port);
 
 	return len;
 }
 
 static void *map_interface(domid_t domid, unsigned long mfn)
 {
-	if (*xcg_handle != NULL) {
+	if (*xgt_handle != NULL) {
 		/* this is the preferred method */
-		return xc_gnttab_map_grant_ref(*xcg_handle, domid,
+		return xengnttab_map_grant_ref(*xgt_handle, domid,
 			GNTTAB_RESERVED_XENSTORE, PROT_READ|PROT_WRITE);
 	} else {
 		return xc_map_foreign_range(*xc_handle, domid,
@@ -177,8 +178,8 @@ static void *map_interface(domid_t domid, unsigned long mfn)
 
 static void unmap_interface(void *interface)
 {
-	if (*xcg_handle != NULL)
-		xc_gnttab_munmap(*xcg_handle, interface, 1);
+	if (*xgt_handle != NULL)
+		xengnttab_unmap(*xgt_handle, interface, 1);
 	else
 		munmap(interface, XC_PAGE_SIZE);
 }
@@ -190,7 +191,7 @@ static int destroy_domain(void *_domain)
 	list_del(&domain->list);
 
 	if (domain->port) {
-		if (xc_evtchn_unbind(xce_handle, domain->port) == -1)
+		if (xenevtchn_unbind(xce_handle, domain->port) == -1)
 			eprintf("> Unbinding port %i failed!\n", domain->port);
 	}
 
@@ -239,13 +240,13 @@ void handle_event(void)
 {
 	evtchn_port_t port;
 
-	if ((port = xc_evtchn_pending(xce_handle)) == -1)
+	if ((port = xenevtchn_pending(xce_handle)) == -1)
 		barf_perror("Failed to read from event fd");
 
 	if (port == virq_port)
 		domain_cleanup();
 
-	if (xc_evtchn_unmask(xce_handle, port) == -1)
+	if (xenevtchn_unmask(xce_handle, port) == -1)
 		barf_perror("Failed to write to event fd");
 }
 
@@ -287,7 +288,7 @@ static struct domain *new_domain(void *context, unsigned int domid,
 	talloc_set_destructor(domain, destroy_domain);
 
 	/* Tell kernel we're interested in this event. */
-	rc = xc_evtchn_bind_interdomain(xce_handle, domid, port);
+	rc = xenevtchn_bind_interdomain(xce_handle, domid, port);
 	if (rc == -1)
 	    return NULL;
 	domain->port = rc;
@@ -392,8 +393,8 @@ void do_introduce(struct connection *conn, struct buffered_data *in)
 	} else if ((domain->mfn == mfn) && (domain->conn != conn)) {
 		/* Use XS_INTRODUCE for recreating the xenbus event-channel. */
 		if (domain->port)
-			xc_evtchn_unbind(xce_handle, domain->port);
-		rc = xc_evtchn_bind_interdomain(xce_handle, domid, port);
+			xenevtchn_unbind(xce_handle, domain->port);
+		rc = xenevtchn_bind_interdomain(xce_handle, domid, port);
 		domain->port = (rc == -1) ? 0 : rc;
 		domain->remote_port = port;
 	} else {
@@ -576,9 +577,9 @@ static int close_xc_handle(void *_handle)
 	return 0;
 }
 
-static int close_xcg_handle(void *_handle)
+static int close_xgt_handle(void *_handle)
 {
-	xc_gnttab_close(*(xc_gnttab **)_handle);
+	xengnttab_close(*(xengnttab_handle **)_handle);
 	return 0;
 }
 
@@ -614,7 +615,7 @@ static int dom0_init(void)
 
 	talloc_steal(dom0->conn, dom0); 
 
-	xc_evtchn_notify(xce_handle, dom0->port); 
+	xenevtchn_notify(xce_handle, dom0->port);
 
 	return 0; 
 }
@@ -633,17 +634,17 @@ void domain_init(void)
 
 	talloc_set_destructor(xc_handle, close_xc_handle);
 
-	xcg_handle = talloc(talloc_autofree_context(), xc_gnttab*);
-	if (!xcg_handle)
+	xgt_handle = talloc(talloc_autofree_context(), xengnttab_handle*);
+	if (!xgt_handle)
 		barf_perror("Failed to allocate domain gnttab handle");
 
-	*xcg_handle = xc_gnttab_open(NULL, 0);
-	if (*xcg_handle == NULL)
+	*xgt_handle = xengnttab_open(NULL, 0);
+	if (*xgt_handle == NULL)
 		xprintf("WARNING: Failed to open connection to gnttab\n");
 	else
-		talloc_set_destructor(xcg_handle, close_xcg_handle);
+		talloc_set_destructor(xgt_handle, close_xgt_handle);
 
-	xce_handle = xc_evtchn_open(NULL, 0);
+	xce_handle = xenevtchn_open(NULL, 0);
 
 	if (xce_handle == NULL)
 		barf_perror("Failed to open evtchn device");
@@ -651,7 +652,7 @@ void domain_init(void)
 	if (dom0_init() != 0) 
 		barf_perror("Failed to initialize dom0 state"); 
 
-	if ((rc = xc_evtchn_bind_virq(xce_handle, VIRQ_DOM_EXC)) == -1)
+	if ((rc = xenevtchn_bind_virq(xce_handle, VIRQ_DOM_EXC)) == -1)
 		barf_perror("Failed to bind to domain exception virq port");
 	virq_port = rc;
 }

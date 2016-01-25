@@ -3,6 +3,12 @@
 
 #include "xc_sr_common_x86_pv.h"
 
+/* Check a 64 bit virtual address for being canonical. */
+static inline bool is_canonical_address(xen_vaddr_t vaddr)
+{
+    return ((int64_t)vaddr >> 47) == ((int64_t)vaddr >> 63);
+}
+
 /*
  * Maps the guests shared info page.
  */
@@ -68,11 +74,55 @@ static int copy_mfns_from_guest(const struct xc_sr_context *ctx,
 }
 
 /*
+ * Map the p2m leave pages and build an array of their pfns.
+ */
+static int map_p2m_leaves(struct xc_sr_context *ctx, xen_pfn_t *mfns,
+                          size_t n_mfns)
+{
+    xc_interface *xch = ctx->xch;
+    unsigned x;
+
+    ctx->x86_pv.p2m = xc_map_foreign_pages(xch, ctx->domid, PROT_READ,
+                                           mfns, n_mfns);
+    if ( !ctx->x86_pv.p2m )
+    {
+        PERROR("Failed to map p2m frames");
+        return -1;
+    }
+
+    ctx->save.p2m_size = ctx->x86_pv.max_pfn + 1;
+    ctx->x86_pv.p2m_frames = n_mfns;
+    ctx->x86_pv.p2m_pfns = malloc(n_mfns * sizeof(*mfns));
+    if ( !ctx->x86_pv.p2m_pfns )
+    {
+        ERROR("Cannot allocate %zu bytes for p2m pfns list",
+              n_mfns * sizeof(*mfns));
+        return -1;
+    }
+
+    /* Convert leaf frames from mfns to pfns. */
+    for ( x = 0; x < n_mfns; ++x )
+    {
+        if ( !mfn_in_pseudophysmap(ctx, mfns[x]) )
+        {
+            ERROR("Bad mfn in p2m_frame_list[%u]", x);
+            dump_bad_pseudophysmap_entry(ctx, mfns[x]);
+            errno = ERANGE;
+            return -1;
+        }
+
+        ctx->x86_pv.p2m_pfns[x] = mfn_to_pfn(ctx, mfns[x]);
+    }
+
+    return 0;
+}
+
+/*
  * Walk the guests frame list list and frame list to identify and map the
  * frames making up the guests p2m table.  Construct a list of pfns making up
  * the table.
  */
-static int map_p2m(struct xc_sr_context *ctx)
+static int map_p2m_tree(struct xc_sr_context *ctx)
 {
     /* Terminology:
      *
@@ -83,8 +133,8 @@ static int map_p2m(struct xc_sr_context *ctx)
      */
     xc_interface *xch = ctx->xch;
     int rc = -1;
-    unsigned x, fpp, fll_entries, fl_entries;
-    xen_pfn_t fll_mfn;
+    unsigned x, saved_x, fpp, fll_entries, fl_entries;
+    xen_pfn_t fll_mfn, saved_mfn, max_pfn;
 
     xen_pfn_t *local_fll = NULL;
     void *guest_fll = NULL;
@@ -96,7 +146,11 @@ static int map_p2m(struct xc_sr_context *ctx)
 
     fpp = PAGE_SIZE / ctx->x86_pv.width;
     fll_entries = (ctx->x86_pv.max_pfn / (fpp * fpp)) + 1;
-    fl_entries  = (ctx->x86_pv.max_pfn / fpp) + 1;
+    if ( fll_entries > fpp )
+    {
+        ERROR("max_pfn %#lx too large for p2m tree", ctx->x86_pv.max_pfn);
+        goto err;
+    }
 
     fll_mfn = GET_FIELD(ctx->x86_pv.shinfo, arch.pfn_to_mfn_frame_list_list,
                         ctx->x86_pv.width);
@@ -131,6 +185,8 @@ static int map_p2m(struct xc_sr_context *ctx)
     }
 
     /* Check for bad mfns in frame list list. */
+    saved_mfn = 0;
+    saved_x = 0;
     for ( x = 0; x < fll_entries; ++x )
     {
         if ( local_fll[x] == 0 || local_fll[x] > ctx->x86_pv.max_mfn )
@@ -139,7 +195,33 @@ static int map_p2m(struct xc_sr_context *ctx)
                   local_fll[x], x, fll_entries);
             goto err;
         }
+        if ( local_fll[x] != saved_mfn )
+        {
+            saved_mfn = local_fll[x];
+            saved_x = x;
+        }
     }
+
+    /*
+     * Check for actual lower max_pfn:
+     * If the trailing entries of the frame list list were all the same we can
+     * assume they all reference mid pages all referencing p2m pages with all
+     * invalid entries. Otherwise there would be multiple pfns referencing all
+     * the same mfn which can't work across migration, as this sharing would be
+     * broken by the migration process.
+     * Adjust max_pfn if possible to avoid allocating much larger areas as
+     * needed for p2m and logdirty map.
+     */
+    max_pfn = (saved_x + 1) * fpp * fpp - 1;
+    if ( max_pfn < ctx->x86_pv.max_pfn )
+    {
+        ctx->x86_pv.max_pfn = max_pfn;
+        fll_entries = (ctx->x86_pv.max_pfn / (fpp * fpp)) + 1;
+    }
+    ctx->x86_pv.p2m_frames = (ctx->x86_pv.max_pfn + fpp) / fpp;
+    DPRINTF("max_pfn %#lx, p2m_frames %d", ctx->x86_pv.max_pfn,
+            ctx->x86_pv.p2m_frames);
+    fl_entries  = (ctx->x86_pv.max_pfn / fpp) + 1;
 
     /* Map the guest mid p2m frames. */
     guest_fl = xc_map_foreign_pages(xch, ctx->domid, PROT_READ,
@@ -176,38 +258,8 @@ static int map_p2m(struct xc_sr_context *ctx)
     }
 
     /* Map the p2m leaves themselves. */
-    ctx->x86_pv.p2m = xc_map_foreign_pages(xch, ctx->domid, PROT_READ,
-                                           local_fl, fl_entries);
-    if ( !ctx->x86_pv.p2m )
-    {
-        PERROR("Failed to map p2m frames");
-        goto err;
-    }
+    rc = map_p2m_leaves(ctx, local_fl, fl_entries);
 
-    ctx->x86_pv.p2m_frames = fl_entries;
-    ctx->x86_pv.p2m_pfns = malloc(local_fl_size);
-    if ( !ctx->x86_pv.p2m_pfns )
-    {
-        ERROR("Cannot allocate %zu bytes for p2m pfns list",
-              local_fl_size);
-        goto err;
-    }
-
-    /* Convert leaf frames from mfns to pfns. */
-    for ( x = 0; x < fl_entries; ++x )
-    {
-        if ( !mfn_in_pseudophysmap(ctx, local_fl[x]) )
-        {
-            ERROR("Bad mfn in p2m_frame_list[%u]", x);
-            dump_bad_pseudophysmap_entry(ctx, local_fl[x]);
-            errno = ERANGE;
-            goto err;
-        }
-
-        ctx->x86_pv.p2m_pfns[x] = mfn_to_pfn(ctx, local_fl[x]);
-    }
-
-    rc = 0;
 err:
 
     free(local_fl);
@@ -219,6 +271,206 @@ err:
         munmap(guest_fll, PAGE_SIZE);
 
     return rc;
+}
+
+/*
+ * Get p2m_generation count.
+ * Returns an error if the generation count has changed since the last call.
+ */
+static int get_p2m_generation(struct xc_sr_context *ctx)
+{
+    uint64_t p2m_generation;
+    int rc;
+
+    p2m_generation = GET_FIELD(ctx->x86_pv.shinfo, arch.p2m_generation,
+                               ctx->x86_pv.width);
+
+    rc = (p2m_generation == ctx->x86_pv.p2m_generation) ? 0 : -1;
+    ctx->x86_pv.p2m_generation = p2m_generation;
+
+    return rc;
+}
+
+static int x86_pv_check_vm_state_p2m_list(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    int rc;
+
+    if ( !ctx->save.live )
+        return 0;
+
+    rc = get_p2m_generation(ctx);
+    if ( rc )
+        ERROR("p2m generation count changed. Migration aborted.");
+
+    return rc;
+}
+
+/*
+ * Map the guest p2m frames specified via a cr3 value, a virtual address, and
+ * the maximum pfn. PTE entries are 64 bits for both, 32 and 64 bit guests as
+ * in 32 bit case we support PAE guests only.
+ */
+static int map_p2m_list(struct xc_sr_context *ctx, uint64_t p2m_cr3)
+{
+    xc_interface *xch = ctx->xch;
+    xen_vaddr_t p2m_vaddr, p2m_end, mask, off;
+    xen_pfn_t p2m_mfn, mfn, saved_mfn, max_pfn;
+    uint64_t *ptes = NULL;
+    xen_pfn_t *mfns = NULL;
+    unsigned fpp, n_pages, level, shift, idx_start, idx_end, idx, saved_idx;
+    int rc = -1;
+
+    p2m_mfn = cr3_to_mfn(ctx, p2m_cr3);
+    assert(p2m_mfn != 0);
+    if ( p2m_mfn > ctx->x86_pv.max_mfn )
+    {
+        ERROR("Bad p2m_cr3 value %#" PRIx64, p2m_cr3);
+        errno = ERANGE;
+        goto err;
+    }
+
+    get_p2m_generation(ctx);
+
+    p2m_vaddr = GET_FIELD(ctx->x86_pv.shinfo, arch.p2m_vaddr,
+                          ctx->x86_pv.width);
+    fpp = PAGE_SIZE / ctx->x86_pv.width;
+    ctx->x86_pv.p2m_frames = ctx->x86_pv.max_pfn / fpp + 1;
+    p2m_end = p2m_vaddr + ctx->x86_pv.p2m_frames * PAGE_SIZE - 1;
+
+    if ( ctx->x86_pv.width == 8 )
+    {
+        mask = 0x0000ffffffffffffULL;
+        if ( !is_canonical_address(p2m_vaddr) ||
+             !is_canonical_address(p2m_end) ||
+             p2m_end < p2m_vaddr ||
+             (p2m_vaddr <= HYPERVISOR_VIRT_END_X86_64 &&
+              p2m_end > HYPERVISOR_VIRT_START_X86_64) )
+        {
+            ERROR("Bad virtual p2m address range %#" PRIx64 "-%#" PRIx64,
+                  p2m_vaddr, p2m_end);
+            errno = ERANGE;
+            goto err;
+        }
+    }
+    else
+    {
+        mask = 0x00000000ffffffffULL;
+        if ( p2m_vaddr > mask || p2m_end > mask || p2m_end < p2m_vaddr ||
+             (p2m_vaddr <= HYPERVISOR_VIRT_END_X86_32 &&
+              p2m_end > HYPERVISOR_VIRT_START_X86_32) )
+        {
+            ERROR("Bad virtual p2m address range %#" PRIx64 "-%#" PRIx64,
+                  p2m_vaddr, p2m_end);
+            errno = ERANGE;
+            goto err;
+        }
+    }
+
+    DPRINTF("p2m list from %#" PRIx64 " to %#" PRIx64 ", root at %#lx",
+            p2m_vaddr, p2m_end, p2m_mfn);
+    DPRINTF("max_pfn %#lx, p2m_frames %d", ctx->x86_pv.max_pfn,
+            ctx->x86_pv.p2m_frames);
+
+    mfns = malloc(sizeof(*mfns));
+    if ( !mfns )
+    {
+        ERROR("Cannot allocate memory for array of %u mfns", 1);
+        goto err;
+    }
+    mfns[0] = p2m_mfn;
+    off = 0;
+    saved_mfn = 0;
+    idx_start = idx_end = saved_idx = 0;
+
+    for ( level = ctx->x86_pv.levels; level > 0; level-- )
+    {
+        n_pages = idx_end - idx_start + 1;
+        ptes = xc_map_foreign_pages(xch, ctx->domid, PROT_READ, mfns, n_pages);
+        if ( !ptes )
+        {
+            PERROR("Failed to map %u page table pages for p2m list", n_pages);
+            goto err;
+        }
+        free(mfns);
+
+        shift = level * 9 + 3;
+        idx_start = ((p2m_vaddr - off) & mask) >> shift;
+        idx_end = ((p2m_end - off) & mask) >> shift;
+        idx = idx_end - idx_start + 1;
+        mfns = malloc(sizeof(*mfns) * idx);
+        if ( !mfns )
+        {
+            ERROR("Cannot allocate memory for array of %u mfns", idx);
+            goto err;
+        }
+
+        for ( idx = idx_start; idx <= idx_end; idx++ )
+        {
+            mfn = pte_to_frame(ptes[idx]);
+            if ( mfn == 0 || mfn > ctx->x86_pv.max_mfn )
+            {
+                ERROR("Bad mfn %#lx during page table walk for vaddr %#" PRIx64 " at level %d of p2m list",
+                      mfn, off + ((xen_vaddr_t)idx << shift), level);
+                errno = ERANGE;
+                goto err;
+            }
+            mfns[idx - idx_start] = mfn;
+
+            /* Maximum pfn check at level 2. Same reasoning as for p2m tree. */
+            if ( level == 2 )
+            {
+                if ( mfn != saved_mfn )
+                {
+                    saved_mfn = mfn;
+                    saved_idx = idx - idx_start;
+                }
+            }
+        }
+
+        if ( level == 2 )
+        {
+            max_pfn = ((xen_pfn_t)saved_idx << 9) * fpp - 1;
+            if ( max_pfn < ctx->x86_pv.max_pfn )
+            {
+                ctx->x86_pv.max_pfn = max_pfn;
+                ctx->x86_pv.p2m_frames = (ctx->x86_pv.max_pfn + fpp) / fpp;
+                p2m_end = p2m_vaddr + ctx->x86_pv.p2m_frames * PAGE_SIZE - 1;
+                idx_end = idx_start + saved_idx;
+            }
+        }
+
+        munmap(ptes, n_pages * PAGE_SIZE);
+        ptes = NULL;
+        off = p2m_vaddr & ((mask >> shift) << shift);
+    }
+
+    /* Map the p2m leaves themselves. */
+    rc = map_p2m_leaves(ctx, mfns, idx_end - idx_start + 1);
+
+err:
+    free(mfns);
+    if ( ptes )
+        munmap(ptes, n_pages * PAGE_SIZE);
+
+    return rc;
+}
+
+/*
+ * Map the guest p2m frames.
+ * Depending on guest support this might either be a virtual mapped linear
+ * list (preferred format) or a 3 level tree linked via mfns.
+ */
+static int map_p2m(struct xc_sr_context *ctx)
+{
+    uint64_t p2m_cr3;
+
+    ctx->x86_pv.p2m_generation = ~0ULL;
+    ctx->x86_pv.max_pfn = GET_FIELD(ctx->x86_pv.shinfo, arch.max_pfn,
+                                    ctx->x86_pv.width) - 1;
+    p2m_cr3 = GET_FIELD(ctx->x86_pv.shinfo, arch.p2m_cr3, ctx->x86_pv.width);
+
+    return p2m_cr3 ? map_p2m_list(ctx, p2m_cr3) : map_p2m_tree(ctx);
 }
 
 /*
@@ -633,8 +885,10 @@ static int normalise_pagetable(struct xc_sr_context *ctx, const uint64_t *src,
         /* 64bit guests only have Xen mappings in their L4 tables. */
         if ( type == XEN_DOMCTL_PFINFO_L4TAB )
         {
-            xen_first = 256;
-            xen_last = 271;
+            xen_first = (HYPERVISOR_VIRT_START_X86_64 >>
+                         L4_PAGETABLE_SHIFT_X86_64) & 511;
+            xen_last = (HYPERVISOR_VIRT_END_X86_64 >>
+                        L4_PAGETABLE_SHIFT_X86_64) & 511;
         }
     }
     else
@@ -650,21 +904,19 @@ static int normalise_pagetable(struct xc_sr_context *ctx, const uint64_t *src,
             /* 32bit guests can only use the first 4 entries of their L3 tables.
              * All other are potentially used by Xen. */
             xen_first = 4;
-            xen_last = 512;
+            xen_last = 511;
             break;
 
         case XEN_DOMCTL_PFINFO_L2TAB:
             /* It is hard to spot Xen mappings in a 32bit guest's L2.  Most
              * are normal but only a few will have Xen mappings.
-             *
-             * 428 = (HYPERVISOR_VIRT_START_PAE >> L2_PAGETABLE_SHIFT_PAE)&0x1ff
-             *
-             * ...which is conveniently unavailable to us in a 64bit build.
              */
-            if ( pte_to_frame(src[428]) == ctx->x86_pv.compat_m2p_mfn0 )
+            i = (HYPERVISOR_VIRT_START_X86_32 >> L2_PAGETABLE_SHIFT_PAE) & 511;
+            if ( pte_to_frame(src[i]) == ctx->x86_pv.compat_m2p_mfn0 )
             {
-                xen_first = 428;
-                xen_last = 512;
+                xen_first = i;
+                xen_last = (HYPERVISOR_VIRT_END_X86_32 >>
+                            L2_PAGETABLE_SHIFT_PAE) & 511;
             }
             break;
         }
@@ -853,6 +1105,14 @@ static int x86_pv_end_of_checkpoint(struct xc_sr_context *ctx)
     return 0;
 }
 
+static int x86_pv_check_vm_state(struct xc_sr_context *ctx)
+{
+    if ( ctx->x86_pv.p2m_generation == ~0ULL )
+        return 0;
+
+    return x86_pv_check_vm_state_p2m_list(ctx);
+}
+
 /*
  * save_ops function.  Cleanup.
  */
@@ -880,6 +1140,7 @@ struct xc_sr_save_ops save_ops_x86_pv =
     .start_of_stream     = x86_pv_start_of_stream,
     .start_of_checkpoint = x86_pv_start_of_checkpoint,
     .end_of_checkpoint   = x86_pv_end_of_checkpoint,
+    .check_vm_state      = x86_pv_check_vm_state,
     .cleanup             = x86_pv_cleanup,
 };
 

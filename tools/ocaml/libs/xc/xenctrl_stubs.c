@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
 
 #include "mmap_stubs.h"
@@ -126,13 +127,6 @@ CAMLprim value stub_xc_interface_open(void)
 }
 
 
-CAMLprim value stub_xc_interface_is_fake(void)
-{
-	CAMLparam0();
-	int is_fake = xc_interface_is_fake();
-	CAMLreturn(Val_int(is_fake));
-}
-
 CAMLprim value stub_xc_interface_close(value xch)
 {
 	CAMLparam1(xch);
@@ -175,7 +169,7 @@ CAMLprim value stub_xc_domain_create(value xch, value ssidref,
 	}
 
 	caml_enter_blocking_section();
-	result = xc_domain_create(_H(xch), c_ssidref, h, c_flags, &domid);
+	result = xc_domain_create(_H(xch), c_ssidref, h, c_flags, &domid, NULL);
 	caml_leave_blocking_section();
 
 	if (result < 0)

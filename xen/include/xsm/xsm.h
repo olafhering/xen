@@ -35,6 +35,7 @@ enum xsm_default {
     XSM_DM_PRIV,  /* Device model can perform on its target domain */
     XSM_TARGET,   /* Can perform on self or your target domain */
     XSM_PRIV,     /* Privileged - normally restricted to dom0 */
+    XSM_XS_PRIV,  /* Xenstore domain - can do some privileged operations */
     XSM_OTHER     /* Something more complex */
 };
 typedef enum xsm_default xsm_default_t;
@@ -114,14 +115,14 @@ struct xsm_operations {
     int (*iomem_mapping) (struct domain *d, uint64_t s, uint64_t e, uint8_t allow);
     int (*pci_config_permission) (struct domain *d, uint32_t machine_bdf, uint16_t start, uint16_t end, uint8_t access);
 
-#if defined(HAS_PASSTHROUGH) && defined(HAS_PCI)
+#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_PCI)
     int (*get_device_group) (uint32_t machine_bdf);
     int (*test_assign_device) (uint32_t machine_bdf);
     int (*assign_device) (struct domain *d, uint32_t machine_bdf);
     int (*deassign_device) (struct domain *d, uint32_t machine_bdf);
 #endif
 
-#if defined(HAS_PASSTHROUGH) && defined(HAS_DEVICE_TREE)
+#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
     int (*test_assign_dtdevice) (const char *dtpath);
     int (*assign_dtdevice) (struct domain *d, const char *dtpath);
     int (*deassign_dtdevice) (struct domain *d, const char *dtpath);
@@ -152,17 +153,19 @@ struct xsm_operations {
 
     int (*vm_event_control) (struct domain *d, int mode, int op);
 
-#ifdef HAS_MEM_ACCESS
+#ifdef CONFIG_HAS_MEM_ACCESS
     int (*mem_access) (struct domain *d);
 #endif
 
-#ifdef HAS_MEM_PAGING
+#ifdef CONFIG_HAS_MEM_PAGING
     int (*mem_paging) (struct domain *d);
 #endif
 
-#ifdef HAS_MEM_SHARING
+#ifdef CONFIG_HAS_MEM_SHARING
     int (*mem_sharing) (struct domain *d);
 #endif
+
+    int (*platform_op) (uint32_t cmd);
 
 #ifdef CONFIG_X86
     int (*do_mca) (void);
@@ -175,7 +178,6 @@ struct xsm_operations {
     int (*mem_sharing_op) (struct domain *d, struct domain *cd, int op);
     int (*apic) (struct domain *d, int cmd);
     int (*memtype) (uint32_t access);
-    int (*platform_op) (uint32_t cmd);
     int (*machine_memory_map) (void);
     int (*domain_memory_map) (struct domain *d);
 #define XSM_MMU_UPDATE_READ      1
@@ -193,7 +195,7 @@ struct xsm_operations {
 #endif
 };
 
-#ifdef XSM_ENABLE
+#ifdef CONFIG_XSM
 
 extern struct xsm_operations *xsm_ops;
 
@@ -468,7 +470,7 @@ static inline int xsm_pci_config_permission (xsm_default_t def, struct domain *d
     return xsm_ops->pci_config_permission(d, machine_bdf, start, end, access);
 }
 
-#if defined(HAS_PASSTHROUGH) && defined(HAS_PCI)
+#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_PCI)
 static inline int xsm_get_device_group(xsm_default_t def, uint32_t machine_bdf)
 {
     return xsm_ops->get_device_group(machine_bdf);
@@ -490,7 +492,7 @@ static inline int xsm_deassign_device(xsm_default_t def, struct domain *d, uint3
 }
 #endif /* HAS_PASSTHROUGH && HAS_PCI) */
 
-#if defined(HAS_PASSTHROUGH) && defined(HAS_DEVICE_TREE)
+#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
 static inline int xsm_assign_dtdevice(xsm_default_t def, struct domain *d,
                                       const char *dtpath)
 {
@@ -603,26 +605,31 @@ static inline int xsm_vm_event_control (xsm_default_t def, struct domain *d, int
     return xsm_ops->vm_event_control(d, mode, op);
 }
 
-#ifdef HAS_MEM_ACCESS
+#ifdef CONFIG_HAS_MEM_ACCESS
 static inline int xsm_mem_access (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->mem_access(d);
 }
 #endif
 
-#ifdef HAS_MEM_PAGING
+#ifdef CONFIG_HAS_MEM_PAGING
 static inline int xsm_mem_paging (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->mem_paging(d);
 }
 #endif
 
-#ifdef HAS_MEM_SHARING
+#ifdef CONFIG_HAS_MEM_SHARING
 static inline int xsm_mem_sharing (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->mem_sharing(d);
 }
 #endif
+
+static inline int xsm_platform_op (xsm_default_t def, uint32_t op)
+{
+    return xsm_ops->platform_op(op);
+}
 
 #ifdef CONFIG_X86
 static inline int xsm_do_mca(xsm_default_t def)
@@ -673,11 +680,6 @@ static inline int xsm_apic (xsm_default_t def, struct domain *d, int cmd)
 static inline int xsm_memtype (xsm_default_t def, uint32_t access)
 {
     return xsm_ops->memtype(access);
-}
-
-static inline int xsm_platform_op (xsm_default_t def, uint32_t op)
-{
-    return xsm_ops->platform_op(op);
 }
 
 static inline int xsm_machine_memory_map(xsm_default_t def)
@@ -740,7 +742,7 @@ extern int xsm_multiboot_policy_init(unsigned long *module_map,
                                      void *(*bootstrap_map)(const module_t *));
 #endif
 
-#ifdef HAS_DEVICE_TREE
+#ifdef CONFIG_HAS_DEVICE_TREE
 extern int xsm_dt_init(void);
 extern int xsm_dt_policy_init(void);
 #endif
@@ -751,7 +753,7 @@ extern int unregister_xsm(struct xsm_operations *ops);
 extern struct xsm_operations dummy_xsm_ops;
 extern void xsm_fixup_ops(struct xsm_operations *ops);
 
-#else /* XSM_ENABLE */
+#else /* CONFIG_XSM */
 
 #include <xsm/dummy.h>
 
@@ -764,13 +766,13 @@ static inline int xsm_multiboot_init (unsigned long *module_map,
 }
 #endif
 
-#ifdef HAS_DEVICE_TREE
+#ifdef CONFIG_HAS_DEVICE_TREE
 static inline int xsm_dt_init(void)
 {
     return 0;
 }
 #endif
 
-#endif /* XSM_ENABLE */
+#endif /* CONFIG_XSM */
 
 #endif /* __XSM_H */

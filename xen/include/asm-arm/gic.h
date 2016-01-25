@@ -42,8 +42,12 @@
 #define GICD_IPRIORITYR (0x400)
 #define GICD_IPRIORITYRN (0x7F8)
 #define GICD_ITARGETSR  (0x800)
+#define GICD_ITARGETSR7 (0x81C)
+#define GICD_ITARGETSR8 (0x820)
 #define GICD_ITARGETSRN (0xBF8)
 #define GICD_ICFGR      (0xC00)
+#define GICD_ICFGR1     (0xC04)
+#define GICD_ICFGR2     (0xC08)
 #define GICD_ICFGRN     (0xCFC)
 #define GICD_NSACR      (0xE00)
 #define GICD_NSACRN     (0xEFC)
@@ -163,7 +167,7 @@
 
 #define DT_MATCH_GIC_V3 DT_MATCH_COMPATIBLE("arm,gic-v3")
 
-#ifdef HAS_GICV3
+#ifdef CONFIG_HAS_GICV3
 /*
  * GICv3 registers that needs to be saved/restored
  */
@@ -191,7 +195,7 @@ struct gic_v2 {
  */
 union gic_state_data {
     struct gic_v2 v2;
-#ifdef HAS_GICV3
+#ifdef CONFIG_HAS_GICV3
     struct gic_v3 v3;
 #endif
 };
@@ -233,7 +237,7 @@ extern void gic_inject(void);
 extern void gic_clear_pending_irqs(struct vcpu *v);
 extern int gic_events_need_delivery(void);
 
-extern void __cpuinit init_maintenance_interrupt(void);
+extern void init_maintenance_interrupt(void);
 extern void gic_raise_guest_irq(struct vcpu *v, unsigned int irq,
         unsigned int priority);
 extern void gic_raise_inflight_irq(struct vcpu *v, unsigned int virtual_irq);

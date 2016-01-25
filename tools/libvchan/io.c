@@ -105,7 +105,7 @@ static inline int send_notify(struct libxenvchan *ctrl, uint8_t bit)
 	notify = ctrl->is_server ? &ctrl->ring->srv_notify : &ctrl->ring->cli_notify;
 	prev = __sync_fetch_and_and(notify, ~bit);
 	if (prev & bit)
-		return xc_evtchn_notify(ctrl->event, ctrl->event_port);
+		return xenevtchn_notify(ctrl->event, ctrl->event_port);
 	else
 		return 0;
 }
@@ -117,6 +117,7 @@ static inline int send_notify(struct libxenvchan *ctrl, uint8_t bit)
 static inline int raw_get_data_ready(struct libxenvchan *ctrl)
 {
 	uint32_t ready = rd_prod(ctrl) - rd_cons(ctrl);
+	xen_mb(); /* Ensure 'ready' is read only once. */
 	if (ready > rd_ring_size(ctrl))
 		/* We have no way to return errors.  Locking up the ring is
 		 * better than the alternatives. */
@@ -158,6 +159,7 @@ int libxenvchan_data_ready(struct libxenvchan *ctrl)
 static inline int raw_get_buffer_space(struct libxenvchan *ctrl)
 {
 	uint32_t ready = wr_ring_size(ctrl) - (wr_prod(ctrl) - wr_cons(ctrl));
+	xen_mb(); /* Ensure 'ready' is read only once. */
 	if (ready > wr_ring_size(ctrl))
 		/* We have no way to return errors.  Locking up the ring is
 		 * better than the alternatives. */
@@ -194,10 +196,10 @@ int libxenvchan_buffer_space(struct libxenvchan *ctrl)
 
 int libxenvchan_wait(struct libxenvchan *ctrl)
 {
-	int ret = xc_evtchn_pending(ctrl->event);
+	int ret = xenevtchn_pending(ctrl->event);
 	if (ret < 0)
 		return -1;
-	xc_evtchn_unmask(ctrl->event, ret);
+	xenevtchn_unmask(ctrl->event, ret);
 	return 0;
 }
 
@@ -350,7 +352,7 @@ int libxenvchan_is_open(struct libxenvchan* ctrl)
 
 int libxenvchan_fd_for_select(struct libxenvchan *ctrl)
 {
-	return xc_evtchn_fd(ctrl->event);
+	return xenevtchn_fd(ctrl->event);
 }
 
 void libxenvchan_close(struct libxenvchan *ctrl)
@@ -364,23 +366,23 @@ void libxenvchan_close(struct libxenvchan *ctrl)
 	if (ctrl->ring) {
 		if (ctrl->is_server) {
 			ctrl->ring->srv_live = 0;
-			xc_gntshr_munmap(ctrl->gntshr, ctrl->ring, 1);
+			xengntshr_unshare(ctrl->gntshr, ctrl->ring, 1);
 		} else {
 			ctrl->ring->cli_live = 0;
-			xc_gnttab_munmap(ctrl->gnttab, ctrl->ring, 1);
+			xengnttab_unmap(ctrl->gnttab, ctrl->ring, 1);
 		}
 	}
 	if (ctrl->event) {
 		if (ctrl->ring)
-			xc_evtchn_notify(ctrl->event, ctrl->event_port);
-		xc_evtchn_close(ctrl->event);
+			xenevtchn_notify(ctrl->event, ctrl->event_port);
+		xenevtchn_close(ctrl->event);
 	}
 	if (ctrl->is_server) {
 		if (ctrl->gntshr)
-			xc_gntshr_close(ctrl->gntshr);
+			xengntshr_close(ctrl->gntshr);
 	} else {
 		if (ctrl->gnttab)
-			xc_gnttab_close(ctrl->gnttab);
+			xengnttab_close(ctrl->gnttab);
 	}
 	free(ctrl);
 }

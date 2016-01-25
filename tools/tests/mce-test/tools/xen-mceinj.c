@@ -30,13 +30,12 @@
 #include <signal.h>
 #include <stdarg.h>
 
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
-#include <xg_private.h>
 #include <xenguest.h>
 #include <inttypes.h>
 #include <sys/time.h>
 #include <xen/arch-x86/xen-mca.h>
-#include <xg_save_restore.h>
 #include <xenstore.h>
 
 #define MCi_type_CTL        0x0

@@ -98,6 +98,7 @@ libxl_device_model_version = Enumeration("device_model_version", [
     (0, "UNKNOWN"),
     (1, "QEMU_XEN_TRADITIONAL"), # Historical qemu-xen device model (qemu-dm)
     (2, "QEMU_XEN"),             # Upstream based qemu-xen device model
+    (3, "NONE"),                 # No device model
     ])
 
 libxl_console_type = Enumeration("console_type", [
@@ -219,6 +220,7 @@ libxl_viridian_enlightenment = Enumeration("viridian_enlightenment", [
     (1, "freq"),
     (2, "time_ref_count"),
     (3, "reference_tsc"),
+    (4, "hcall_remote_tlb_flush"),
     ])
 
 libxl_hdtype = Enumeration("hdtype", [
@@ -293,6 +295,7 @@ libxl_dominfo = Struct("dominfo",[
     ("paused",      bool),
     ("shutdown",    bool),
     ("dying",       bool),
+    ("never_stop",  bool),
 
     # Valid iff ->shutdown is true.
     #
@@ -440,6 +443,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("device_model",     string),
     ("device_model_ssidref", uint32),
     ("device_model_ssid_label", string),
+    ("device_model_user", string),
 
     # extra parameters pass directly to qemu, NULL terminated
     ("extra",            libxl_string_list),

@@ -117,6 +117,7 @@ M:	Suravee Suthikulpanit <suravee.suthikulpanit@amd.com>
 M:	Aravind Gopalakrishnan <Aravind.Gopalakrishnan@amd.com>
 S:	Supported
 F:	xen/arch/x86/hvm/svm/
+F:	xen/arch/x86/cpu/vpmu_amd.c
 
 ARINC653 SCHEDULER
 M:	Josh Whitehead <josh.whitehead@dornerworks.com>
@@ -132,16 +133,12 @@ S:	Supported
 L:	xen-devel@lists.xen.org
 F:	xen/arch/arm/
 F:	xen/include/asm-arm/
+F:	xen/drivers/char/cadence-uart.c
 F:	xen/drivers/char/dt-uart.c
 F:	xen/drivers/char/exynos4210-uart.c
 F:	xen/drivers/char/omap-uart.c
 F:	xen/drivers/char/pl011.c
 F:	xen/drivers/passthrough/arm/
-
-HISILICON HIP04 SUPPORT
-M:	Zoltan Kiss <zoltan.kiss@huawei.com>
-S:	Supported
-F:	xen/arch/arm/gic-hip04.c
 
 CPU POOLS
 M:	Juergen Gross <jgross@suse.com>
@@ -180,10 +177,10 @@ S:	Supported
 F:	xen/arch/x86/debug.c
 F:	tools/debugger/gdbsx/
 
-KDD DEBUGGER
-M:	Tim Deegan <tim@xen.org>
-S:	Odd Fixes
-F:	tools/debugger/kdd/
+HISILICON HIP04 SUPPORT
+M:	Zoltan Kiss <zoltan.kiss@huawei.com>
+S:	Supported
+F:	xen/arch/arm/gic-hip04.c
 
 INTEL(R) TRUSTED EXECUTION TECHNOLOGY (TXT)
 M:	Gang Wei <gang.wei@intel.com>
@@ -193,8 +190,8 @@ F:	xen/arch/x86/tboot.c
 F:	xen/include/asm-x86/tboot.h
 
 INTEL(R) VT FOR DIRECTED I/O (VT-D)
-M:	Yang Zhang <yang.z.zhang@intel.com>
 M:	Kevin Tian <kevin.tian@intel.com>
+M:	Feng Wu <feng.wu@intel.com>
 S:	Supported
 F:	xen/drivers/passthrough/vtd/
 
@@ -205,6 +202,7 @@ S:	Supported
 F:	xen/arch/x86/hvm/vmx/
 F:	xen/arch/x86/mm/p2m-ept.c
 F:	xen/include/asm-x86/hvm/vmx/
+F:	xen/arch/x86/cpu/vpmu_intel.c
 
 IOMMU VENDOR INDEPENDENT CODE
 M:	Jan Beulich <jbeulich@suse.com>
@@ -215,6 +213,17 @@ X:	xen/drivers/passthrough/arm/
 X:	xen/drivers/passthrough/vtd/
 X:	xen/drivers/passthrough/device_tree.c
 F:	xen/include/xen/iommu.h
+
+KCONFIG
+M:	Doug Goldstein <cardoe@cardoe.com>
+S:	Supported
+F:	docs/misc/kconfig{,-language}.txt
+F:	xen/tools/kconfig/
+
+KDD DEBUGGER
+M:	Tim Deegan <tim@xen.org>
+S:	Odd Fixes
+F:	tools/debugger/kdd/
 
 KEXEC
 M:      David Vrabel <david.vrabel@citrix.com>
@@ -234,8 +243,9 @@ MINI-OS
 M:	Stefano Stabellini <stefano.stabellini@eu.citrix.com>
 M:	Samuel Thibault <samuel.thibault@ens-lyon.org>
 S:	Supported
+L:	minios-devel@lists.xenproject.org
+T:	git git://xenbits.xen.org/mini-os.git
 F:	config/MiniOS.mk
-F:	extras/mini-os/
 
 OCAML TOOLS
 M:	David Scott <dave@recoil.org>
@@ -261,12 +271,12 @@ F:	xen/include/acpi/cpufreq/
 QEMU-DM
 M:	Ian Jackson <ian.jackson@eu.citrix.com>
 S:	Supported
-T:	git git://xenbits.xen.org/qemu-xen-*.git
+T:	git git://xenbits.xen.org/qemu-xen-traditional.git
 
 QEMU UPSTREAM
 M:	Stefano Stabellini <stefano.stabellini@eu.citrix.com>
 S:	Supported
-T:	git git://xenbits.xen.org/qemu-upstream-*.git
+T:	git git://xenbits.xen.org/qemu-xen.git
 
 REMUS
 M:	Shriram Rajagopalan <rshriram@cs.ubc.ca>
@@ -344,6 +354,17 @@ S:	Supported
 T:	hg http://xenbits.xen.org/linux-2.6.18-xen.hg
 F:	drivers/xen/usb*/
 
+VM EVENT AND MEM ACCESS
+M:	Razvan Cojocaru <rcojocaru@bitdefender.com>
+M:	Tamas K Lengyel <tamas@tklengyel.com>
+S:	Supported
+F:	xen/common/vm_event.c
+F:	xen/common/mem_access.c
+F:	xen/arch/x86/hvm/event.c
+F:	xen/arch/x86/monitor.c
+F:	xen/arch/x86/vm_event.c
+F:	tools/tests/xen-access
+
 VTPM
 M:	Daniel De Graaf <dgdegra@tycho.nsa.gov>
 M:	Quan Xu <quan.xu@intel.com>
@@ -384,17 +405,6 @@ X86 SHADOW PAGETABLES
 M:	Tim Deegan <tim@xen.org>
 S:	Maintained
 F:	xen/arch/x86/mm/shadow/
-
-VM EVENT AND MEM ACCESS
-M:	Razvan Cojocaru <rcojocaru@bitdefender.com>
-M:	Tamas K Lengyel <tamas@tklengyel.com>
-S:	Supported
-F:	xen/common/vm_event.c
-F:	xen/common/mem_access.c
-F:	xen/arch/x86/hvm/event.c
-F:	xen/arch/x86/monitor.c
-F:	xen/arch/x86/vm_event.c
-F:	tools/tests/xen-access
 
 XENTRACE
 M:	George Dunlap <george.dunlap@eu.citrix.com>

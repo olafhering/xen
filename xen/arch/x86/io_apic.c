@@ -1039,7 +1039,7 @@ static void __init setup_IO_APIC_irqs(void)
                 disable_8259A_irq(irq_to_desc(irq));
 
             desc = irq_to_desc(irq);
-            SET_DEST(entry, logical, cpu_mask_to_apicid(desc->arch.cpu_mask));
+            SET_DEST(entry, logical, cpu_mask_to_apicid(TARGET_CPUS));
             spin_lock_irqsave(&ioapic_lock, flags);
             __ioapic_write_entry(apic, pin, 0, entry);
             set_native_irq_info(irq, TARGET_CPUS);
@@ -1843,7 +1843,7 @@ static void __init unlock_ExtINT_logic(void)
 
     entry1.dest_mode = 0;			/* physical delivery */
     entry1.mask = 0;			/* unmask IRQ now */
-    SET_DEST(entry1, physical, hard_smp_processor_id());
+    SET_DEST(entry1, physical, get_apic_id());
     entry1.delivery_mode = dest_ExtINT;
     entry1.polarity = entry0.polarity;
     entry1.trigger = 0;
@@ -2201,6 +2201,7 @@ int io_apic_set_pci_routing (int ioapic, int pin, int irq, int edge_level, int a
 {
     struct irq_desc *desc = irq_to_desc(irq);
     struct IO_APIC_route_entry entry;
+    cpumask_t mask;
     unsigned long flags;
     int vector;
 
@@ -2220,7 +2221,6 @@ int io_apic_set_pci_routing (int ioapic, int pin, int irq, int edge_level, int a
 
     entry.delivery_mode = INT_DELIVERY_MODE;
     entry.dest_mode = INT_DEST_MODE;
-    SET_DEST(entry, logical, cpu_mask_to_apicid(TARGET_CPUS));
     entry.trigger = edge_level;
     entry.polarity = active_high_low;
     entry.mask  = 1;
@@ -2235,6 +2235,12 @@ int io_apic_set_pci_routing (int ioapic, int pin, int irq, int edge_level, int a
     if (vector < 0)
         return vector;
     entry.vector = vector;
+
+    cpumask_copy(&mask, TARGET_CPUS);
+    /* Don't chance ending up with an empty mask. */
+    if (cpumask_intersects(&mask, desc->arch.cpu_mask))
+        cpumask_and(&mask, &mask, desc->arch.cpu_mask);
+    SET_DEST(entry, logical, cpu_mask_to_apicid(&mask));
 
     apic_printk(APIC_DEBUG, KERN_DEBUG "IOAPIC[%d]: Set PCI routing entry "
 		"(%d-%d -> %#x -> IRQ %d Mode:%i Active:%i)\n", ioapic,
@@ -2304,13 +2310,14 @@ int ioapic_guest_read(unsigned long physbase, unsigned int reg, u32 *pval)
     return 0;
 }
 
-#define WARN_BOGUS_WRITE(f, a...)                                       \
-    dprintk(XENLOG_INFO, "\n%s: "                                        \
-            "apic=%d, pin=%d, irq=%d\n"                 \
-            "%s: new_entry=%08x\n"                      \
-            "%s: " f, __FUNCTION__, apic, pin, irq,        \
-            __FUNCTION__, *(u32 *)&rte,           \
-            __FUNCTION__ , ##a )
+#define WARN_BOGUS_WRITE(f, a...)                       \
+    dprintk(XENLOG_INFO, "\n"                           \
+            XENLOG_INFO "%s: apic=%d, pin=%d, irq=%d\n" \
+            XENLOG_INFO "%s: new_entry=%08x\n"          \
+            XENLOG_INFO "%s: " f "\n",                  \
+            __func__, apic, pin, irq,                   \
+            __func__, *(u32 *)&rte,                     \
+            __func__, ##a )
 
 int ioapic_guest_write(unsigned long physbase, unsigned int reg, u32 val)
 {
@@ -2382,7 +2389,7 @@ int ioapic_guest_write(unsigned long physbase, unsigned int reg, u32 val)
         rte.vector = desc->arch.vector;
         if ( *(u32*)&rte != ret )
             WARN_BOGUS_WRITE("old_entry=%08x pirq=%d\n%s: "
-                             "Attempt to modify IO-APIC pin for in-use IRQ!\n",
+                             "Attempt to modify IO-APIC pin for in-use IRQ!",
                              ret, pirq, __FUNCTION__);
         return 0;
     }
