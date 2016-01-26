@@ -512,10 +512,10 @@ out:
 }
 
 int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
-                       const char *str, libxl_device_vscsictrl *vscsi_host)
+                       const char *str, libxl_device_vscsictrl *vscsi_ctrl)
 {
     libxl_device_vscsidev *new_dev = NULL;
-    libxl_device_vscsictrl *new_ctrl, *vscsi_hosts = NULL, *tmp;
+    libxl_device_vscsictrl *new_ctrl, *vscsi_ctrls = NULL, *tmp;
     int rc, found_host = -1, i;
     int num_hosts;
 
@@ -532,11 +532,11 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     if (rc)
         goto out;
 
-    /* Look for existing vscsi_host for given domain */
-    vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
-    if (vscsi_hosts) {
+    /* Look for existing vscsi_ctrl for given domain */
+    vscsi_ctrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
+    if (vscsi_ctrls) {
         for (i = 0; i < num_hosts; ++i) {
-            if (vscsi_hosts[i].devid == new_ctrl->devid) {
+            if (vscsi_ctrls[i].devid == new_ctrl->devid) {
                 found_host = i;
                 break;
             }
@@ -547,7 +547,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         /* Not found, create new host */
         tmp = new_ctrl;
     } else {
-        tmp = vscsi_hosts + found_host;
+        tmp = vscsi_ctrls + found_host;
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
@@ -573,18 +573,18 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         }
     }
 
-    libxl_device_vscsictrl_copy(ctx, vscsi_host, tmp);
-    rc = xlu_vscsi_append_dev(ctx, vscsi_host, new_dev);
+    libxl_device_vscsictrl_copy(ctx, vscsi_ctrl, tmp);
+    rc = xlu_vscsi_append_dev(ctx, vscsi_ctrl, new_dev);
     if (rc)
         goto out;
 
     rc = 0;
 
 out:
-    if (vscsi_hosts) {
+    if (vscsi_ctrls) {
         for (i = 0; i < num_hosts; ++i)
-            libxl_device_vscsictrl_dispose(&vscsi_hosts[i]);
-        free(vscsi_hosts);
+            libxl_device_vscsictrl_dispose(&vscsi_ctrls[i]);
+        free(vscsi_ctrls);
     }
     libxl_device_vscsidev_dispose(new_dev);
     libxl_device_vscsictrl_dispose(new_ctrl);
@@ -596,7 +596,7 @@ out:
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
     libxl_device_vscsidev v_dev = { }, *vd;
-    libxl_device_vscsictrl v_ctrl = { }, *vh, *vscsi_hosts;
+    libxl_device_vscsictrl v_ctrl = { }, *vh, *vscsi_ctrls;
     int num_hosts, h, d, found = 0;
     char *tmp = NULL;
 
@@ -612,12 +612,12 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     if (xlu_vscsi_parse(cfg, ctx, tmp, &v_ctrl, &v_dev))
         goto out;
 
-    vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
-    if (!vscsi_hosts)
+    vscsi_ctrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
+    if (!vscsi_ctrls)
         goto out;
 
     for (h = 0; h < num_hosts; ++h) {
-        vh = vscsi_hosts + h;
+        vh = vscsi_ctrls + h;
         for (d = 0; d < vh->num_vscsi_devs; d++) {
             vd = vh->vscsi_devs + d;
 #define CMP(member) (vd->vdev.member == v_dev.vdev.member)
@@ -632,7 +632,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         }
         libxl_device_vscsictrl_dispose(vh);
     }
-    free(vscsi_hosts);
+    free(vscsi_ctrls);
 
 out:
     free(tmp);
@@ -654,9 +654,9 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
 
     /*
      * #1: parse the devspec and place it in temporary host+dev part
-     * #2: find existing vscsi_host with number v_ctrl
-     *     if found, append the vscsi_dev to this vscsi_host
-     * #3: otherwise, create new vscsi_host and append vscsi_dev
+     * #2: find existing vscsi_ctrl with number v_ctrl
+     *     if found, append the vscsi_dev to this vscsi_ctrl
+     * #3: otherwise, create new vscsi_ctrl and append vscsi_dev
      * Note: v_ctrl does not represent the index named "num_vscsis",
      *       it is a private index used just in the config file
      */
@@ -716,7 +716,7 @@ int xlu_vscsi_get_host(XLU_Config *config,
                        libxl_ctx *ctx,
                        uint32_t domid,
                        const char *str,
-                       libxl_device_vscsictrl *vscsi_host)
+                       libxl_device_vscsictrl *vscsi_ctrl)
 {
     return ERROR_INVAL;
 }

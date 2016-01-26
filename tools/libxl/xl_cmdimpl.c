@@ -6760,7 +6760,7 @@ int main_vscsiattach(int argc, char **argv)
     uint32_t domid;
     int opt, rc;
     XLU_Config *config = NULL;
-    libxl_device_vscsictrl *vscsi_host = NULL;
+    libxl_device_vscsictrl *vscsi_ctrl = NULL;
     char *str = NULL, *feat_buf = NULL;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
@@ -6792,8 +6792,8 @@ int main_vscsiattach(int argc, char **argv)
         goto out;;
     }
 
-    vscsi_host = xmalloc(sizeof(*vscsi_host));
-    libxl_device_vscsictrl_init(vscsi_host);
+    vscsi_ctrl = xmalloc(sizeof(*vscsi_ctrl));
+    libxl_device_vscsictrl_init(vscsi_ctrl);
 
     config = xlu_cfg_init(stderr, "command line");
     if (!config) {
@@ -6803,12 +6803,12 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Parse config string and store result */
-    rc = xlu_vscsi_get_host(config, ctx, domid, str, vscsi_host);
+    rc = xlu_vscsi_get_host(config, ctx, domid, str, vscsi_ctrl);
     if (rc < 0)
         goto out;
 
     if (dryrun_only) {
-        char *json = libxl_device_vscsictrl_to_json(ctx, vscsi_host);
+        char *json = libxl_device_vscsictrl_to_json(ctx, vscsi_ctrl);
         printf("vscsi: %s\n", json);
         free(json);
         if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
@@ -6817,7 +6817,7 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Finally add the device */
-    if (libxl_device_vscsictrl_add(ctx, domid, vscsi_host, NULL)) {
+    if (libxl_device_vscsictrl_add(ctx, domid, vscsi_ctrl, NULL)) {
         fprintf(stderr, "libxl_device_vscsictrl_add failed.\n");
         rc = 1;
         goto out;
@@ -6827,8 +6827,8 @@ int main_vscsiattach(int argc, char **argv)
 out:
     if (config)
         xlu_cfg_destroy(config);
-    libxl_device_vscsictrl_dispose(vscsi_host);
-    free(vscsi_host);
+    libxl_device_vscsictrl_dispose(vscsi_ctrl);
+    free(vscsi_ctrl);
     free(str);
     free(feat_buf);
     return rc;
@@ -6838,7 +6838,7 @@ int main_vscsilist(int argc, char **argv)
 {
     int opt;
     uint32_t domid;
-    libxl_device_vscsictrl *vscsi_hosts;
+    libxl_device_vscsictrl *vscsi_ctrls;
     libxl_vscsiinfo vscsiinfo;
     int num_hosts, h, d;
 
@@ -6858,13 +6858,13 @@ int main_vscsilist(int argc, char **argv)
             fprintf(stderr, "%s is an invalid domain identifier\n", *argv);
             continue;
         }
-        if (!(vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts))) {
+        if (!(vscsi_ctrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts))) {
             continue;
         }
         for (h = 0; h < num_hosts; ++h) {
-            for (d = 0; d < vscsi_hosts[h].num_vscsi_devs; d++) {
-                if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsi_hosts[h],
-                                                &vscsi_hosts[h].vscsi_devs[d],
+            for (d = 0; d < vscsi_ctrls[h].num_vscsi_devs; d++) {
+                if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsi_ctrls[h],
+                                                &vscsi_ctrls[h].vscsi_devs[d],
                                                 &vscsiinfo)) {
                     char pdev[64], vdev[64];
                     switch (vscsiinfo.pdev.type) {
@@ -6900,9 +6900,9 @@ int main_vscsilist(int argc, char **argv)
                 }
                 libxl_vscsiinfo_dispose(&vscsiinfo);
             }
-            libxl_device_vscsictrl_dispose(&vscsi_hosts[h]);
+            libxl_device_vscsictrl_dispose(&vscsi_ctrls[h]);
         }
-        free(vscsi_hosts);
+        free(vscsi_ctrls);
 
     }
 
