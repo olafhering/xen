@@ -127,7 +127,7 @@ int xlu_vscsi_get_host(XLU_Config *config,
 /* Parse config string and fill provided vscsi host and vscsi device */
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                     libxl_device_vscsictrl *new_host,
-                    libxl_vscsi_dev *new_dev);
+                    libxl_device_vscsidev *new_dev);
 /* Detach vscsi device described in config string (pdev,vdev[,options]) */
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str);
 /* Add vscsi device described in config string (pdev,vdev[,options]) to d_config */

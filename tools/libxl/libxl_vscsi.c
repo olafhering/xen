@@ -50,7 +50,7 @@ static bool vscsi_wwn_valid(const char *p)
 }
 
 /* Translate p-dev back into pdev.type */
-static bool vscsi_parse_pdev(libxl__gc *gc, libxl_vscsi_dev *v_dev,
+static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *v_dev,
                              char *c, char *p, char *v)
 {
     libxl_vscsi_hctl hctl;
@@ -91,7 +91,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
                                    unsigned int ndev_dirs,
                                    libxl_device_vscsictrl *v_hst)
 {
-    libxl_vscsi_dev *v_dev;
+    libxl_device_vscsidev *v_dev;
     bool parsed_ok;
     char *c, *p, *v, *s, *dev;
     unsigned int vscsi_dev_id;
@@ -102,7 +102,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
     /* Fill each device connected to the host */
     for (i = 0; i < ndev_dirs; i++, dev_dirs++) {
         v_dev = v_hst->vscsi_devs + i;
-        libxl_vscsi_dev_init(v_dev);
+        libxl_device_vscsidev_init(v_dev);
         parsed_ok = false;
         r = sscanf(*dev_dirs, "dev-%u", &vscsi_dev_id);
         if (r != 1) {
@@ -211,7 +211,7 @@ out:
 
 int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
                                    libxl_device_vscsictrl *vscsi_host,
-                                   libxl_vscsi_dev *vscsi_dev,
+                                   libxl_device_vscsidev *vscsi_dev,
                                    libxl_vscsiinfo *vscsiinfo)
 {
     GC_INIT(ctx);

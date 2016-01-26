@@ -2061,7 +2061,7 @@ static int libxl__resolve_domid(libxl__gc *gc, const char *name,
 /******************************************************************************/
 
 static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
-                                              libxl_vscsi_dev *v,
+                                              libxl_device_vscsidev *v,
                                               xs_transaction_t t,
                                               const char *be_path,
                                               int dev_wait)
@@ -2084,7 +2084,7 @@ static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
 }
 
 static int libxl__device_vscsi_dev_backend_set(libxl__gc *gc,
-                                               libxl_vscsi_dev *v,
+                                               libxl_device_vscsidev *v,
                                                flexarray_t *back)
 {
     int rc;
@@ -2132,7 +2132,7 @@ static int libxl__device_vscsi_new_backend(libxl__egc *egc,
     int rc, i;
     flexarray_t *back;
     flexarray_t *front;
-    libxl_vscsi_dev *v;
+    libxl_device_vscsidev *v;
     xs_transaction_t t = XBT_NULL;
 
     /* Prealloc key+value: 4 toplevel + 4 per device */
@@ -2206,7 +2206,7 @@ static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
     int rc, i, be_state, be_wait;
     char *dev_path, *state_path, *state_val;
     flexarray_t *back;
-    libxl_vscsi_dev *v;
+    libxl_device_vscsidev *v;
     xs_transaction_t t = XBT_NULL;
     bool do_reconfigure = false;
 
@@ -2396,7 +2396,7 @@ static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
     int rc, i, dev_wait;
     libxl_domain_config d_config;
     libxl__domain_userdata_lock *lock = NULL;
-    libxl_vscsi_dev *v;
+    libxl_device_vscsidev *v;
     xs_transaction_t t = XBT_NULL;
 
     libxl_domain_config_init(&d_config);
