@@ -423,6 +423,24 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
     return rc;
 }
 
+/* Generate a predictable devid based on the address on the virtual bus */
+static bool xlu_vscsi_hctl_to_devid(libxl_device_vscsidev *vd)
+{
+    uint32_t chn, tgt, lun, devid;
+
+    chn = vd->vdev.chn;
+    tgt = vd->vdev.tgt;
+    lun = vd->vdev.lun;
+
+    /* Up to 256 for each part of the address */
+    if (chn >> 8 | tgt >> 8 | lun >> 8)
+        return false;
+
+    devid = (chn << 16) | (tgt << 8) | (lun << 0);
+    vd->devid = devid;
+    return true;
+}
+
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                     libxl_device_vscsictrl *new_ctrl,
                     libxl_device_vscsidev *new_dev)
@@ -463,6 +481,12 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
     /* Record group index */
     new_ctrl->devid = new_dev->vdev.hst;
 
+    if (xlu_vscsi_hctl_to_devid(new_dev) == false) {
+        LOG(cfg, "invalid '%s', h:c:t:l out of range\n", str);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
     if (fhost) {
         fhost = xlu__vscsi_trim_string(fhost);
         if (strcmp(fhost, "feature-host") == 0) {
@@ -485,15 +509,8 @@ out:
 static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
                                 libxl_device_vscsidev *dev)
 {
-    int rc, num;
-    libxl_device_vscsidev *devs, *tmp;
-    libxl_devid next_vscsi_dev_id = 0;
-
-    for (num = 0; num < hst->num_vscsi_devs; num++) {
-        tmp = hst->vscsi_devs + num;
-        if (next_vscsi_dev_id <= tmp->devid)
-            next_vscsi_dev_id = tmp->devid + 1;
-    }
+    int rc;
+    libxl_device_vscsidev *devs;
 
     devs = realloc(hst->vscsi_devs, sizeof(*dev) * (hst->num_vscsi_devs + 1));
     if (!devs) {
@@ -503,7 +520,6 @@ static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
 
     hst->vscsi_devs = devs;
     libxl_device_vscsidev_init(hst->vscsi_devs + hst->num_vscsi_devs);
-    dev->devid = next_vscsi_dev_id;
     libxl_device_vscsidev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
     hst->num_vscsi_devs++;
     rc = 0;
@@ -551,8 +567,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
-            if (tmp->vscsi_devs[i].devid != -1 &&
-                tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
+            if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
                 LOG(cfg, "vdev '%u:%u:%u:%u' is already used.\n",
@@ -621,8 +636,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         for (d = 0; d < vh->num_vscsi_devs; d++) {
             vd = vh->vscsi_devs + d;
 #define CMP(member) (vd->vdev.member == v_dev.vdev.member)
-            if (!found && vd->devid != -1 &&
-                CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
+            if (!found && CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 vd->remove = true;
                 libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
                 found = 1;
@@ -693,7 +707,6 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
         tmp = *vscsis + *num_vscsis;
         libxl_device_vscsictrl_init(tmp);
 
-        v_ctrl.devid = *num_vscsis;
         libxl_device_vscsictrl_copy(ctx, tmp, &v_ctrl);
 
         rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
