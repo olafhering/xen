@@ -424,7 +424,7 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
 }
 
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
-                    libxl_device_vscsictrl *new_host,
+                    libxl_device_vscsictrl *new_ctrl,
                     libxl_device_vscsidev *new_dev)
 {
     int rc;
@@ -461,19 +461,19 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
     }
 
     /* Record group index */
-    new_host->devid = new_dev->vdev.hst;
+    new_ctrl->devid = new_dev->vdev.hst;
 
     if (fhost) {
         fhost = xlu__vscsi_trim_string(fhost);
         if (strcmp(fhost, "feature-host") == 0) {
-            libxl_defbool_set(&new_host->scsi_raw_cmds, true);
+            libxl_defbool_set(&new_ctrl->scsi_raw_cmds, true);
         } else {
             LOG(cfg, "invalid option '%s', expecting %s", fhost, "feature-host");
             rc = ERROR_INVAL;
             goto out;
         }
     } else
-        libxl_defbool_set(&new_host->scsi_raw_cmds, false);
+        libxl_defbool_set(&new_ctrl->scsi_raw_cmds, false);
     rc = 0;
 
 out:
@@ -515,20 +515,20 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str, libxl_device_vscsictrl *vscsi_host)
 {
     libxl_device_vscsidev *new_dev = NULL;
-    libxl_device_vscsictrl *new_host, *vscsi_hosts = NULL, *tmp;
+    libxl_device_vscsictrl *new_ctrl, *vscsi_hosts = NULL, *tmp;
     int rc, found_host = -1, i;
     int num_hosts;
 
-    new_host = malloc(sizeof(*new_host));
+    new_ctrl = malloc(sizeof(*new_ctrl));
     new_dev = malloc(sizeof(*new_dev));
-    if (!(new_host && new_dev)) {
+    if (!(new_ctrl && new_dev)) {
         rc = ERROR_NOMEM;
         goto out;
     }
-    libxl_device_vscsictrl_init(new_host);
+    libxl_device_vscsictrl_init(new_ctrl);
     libxl_device_vscsidev_init(new_dev);
 
-    rc = xlu_vscsi_parse(cfg, ctx, str, new_host, new_dev);
+    rc = xlu_vscsi_parse(cfg, ctx, str, new_ctrl, new_dev);
     if (rc)
         goto out;
 
@@ -536,7 +536,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
     if (vscsi_hosts) {
         for (i = 0; i < num_hosts; ++i) {
-            if (vscsi_hosts[i].devid == new_host->devid) {
+            if (vscsi_hosts[i].devid == new_ctrl->devid) {
                 found_host = i;
                 break;
             }
@@ -545,7 +545,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
     if (found_host == -1) {
         /* Not found, create new host */
-        tmp = new_host;
+        tmp = new_ctrl;
     } else {
         tmp = vscsi_hosts + found_host;
 
@@ -562,11 +562,11 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
             }
         }
 
-        if (libxl_defbool_val(new_host->scsi_raw_cmds) !=
+        if (libxl_defbool_val(new_ctrl->scsi_raw_cmds) !=
             libxl_defbool_val(tmp->scsi_raw_cmds)) {
             LOG(cfg, "different feature-host setting: "
                       "existing host has it %s, new host has it %s\n",
-                libxl_defbool_val(new_host->scsi_raw_cmds) ? "set" : "unset",
+                libxl_defbool_val(new_ctrl->scsi_raw_cmds) ? "set" : "unset",
                 libxl_defbool_val(tmp->scsi_raw_cmds) ? "set" : "unset");
             rc = ERROR_INVAL;
             goto out;
@@ -587,9 +587,9 @@ out:
         free(vscsi_hosts);
     }
     libxl_device_vscsidev_dispose(new_dev);
-    libxl_device_vscsictrl_dispose(new_host);
+    libxl_device_vscsictrl_dispose(new_ctrl);
     free(new_dev);
-    free(new_host);
+    free(new_ctrl);
     return rc;
 }
 
@@ -724,7 +724,7 @@ int xlu_vscsi_get_host(XLU_Config *config,
 int xlu_vscsi_parse(XLU_Config *cfg,
                     libxl_ctx *ctx,
                     const char *str,
-                    libxl_device_vscsictrl *new_host,
+                    libxl_device_vscsictrl *new_ctrl,
                     libxl_device_vscsidev *new_dev)
 {
     return ERROR_INVAL;
