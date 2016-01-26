@@ -89,7 +89,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
                                    const char *devs_path,
                                    char **dev_dirs,
                                    unsigned int ndev_dirs,
-                                   libxl_device_vscsictrl *v_hst)
+                                   libxl_device_vscsictrl *v_ctrl)
 {
     libxl_device_vscsidev *v_dev;
     bool parsed_ok;
@@ -97,11 +97,11 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
     unsigned int vscsi_dev_id;
     int i, r;
 
-    v_hst->vscsi_devs = libxl__malloc(NOGC, ndev_dirs * sizeof(*v_dev));
-    v_hst->num_vscsi_devs = ndev_dirs;
+    v_ctrl->vscsi_devs = libxl__malloc(NOGC, ndev_dirs * sizeof(*v_dev));
+    v_ctrl->num_vscsi_devs = ndev_dirs;
     /* Fill each device connected to the host */
     for (i = 0; i < ndev_dirs; i++, dev_dirs++) {
-        v_dev = v_hst->vscsi_devs + i;
+        v_dev = v_ctrl->vscsi_devs + i;
         libxl_device_vscsidev_init(v_dev);
         parsed_ok = false;
         r = sscanf(*dev_dirs, "dev-%u", &vscsi_dev_id);
@@ -153,7 +153,7 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
                                                     int *num)
 {
     GC_INIT(ctx);
-    libxl_device_vscsictrl *v_hst, *vscsi_hosts = NULL;
+    libxl_device_vscsictrl *v_ctrl, *vscsi_hosts = NULL;
     char *fe_path, *tmp;
     char **dir, **dev_dirs;
     const char *devs_path, *be_path;
@@ -170,22 +170,22 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
     vscsi_hosts = libxl__malloc(NOGC, ndirs * sizeof(*vscsi_hosts));
 
     /* Fill each host */
-    for (v_hst = vscsi_hosts; v_hst < vscsi_hosts + ndirs; ++v_hst, ++dir) {
-        libxl_device_vscsictrl_init(v_hst);
+    for (v_ctrl = vscsi_hosts; v_ctrl < vscsi_hosts + ndirs; ++v_ctrl, ++dir) {
+        libxl_device_vscsictrl_init(v_ctrl);
 
-        v_hst->devid = atoi(*dir);
+        v_ctrl->devid = atoi(*dir);
 
         tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/%s/backend-id",
                              fe_path, *dir));
         /* FIXME what if xenstore is broken? */
         if (tmp)
-            v_hst->backend_domid = atoi(tmp);
+            v_ctrl->backend_domid = atoi(tmp);
 
         be_path = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/%s/backend",
                                  fe_path, *dir));
         /* FIXME what if xenstore is broken? */
         if (!be_path) {
-            libxl_defbool_set(&v_hst->scsi_raw_cmds, false);
+            libxl_defbool_set(&v_ctrl->scsi_raw_cmds, false);
             continue;
         }
 
@@ -193,12 +193,12 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
         tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/feature-host", be_path));
         if (tmp)
             parsed_ok = atoi(tmp) != 0;
-        libxl_defbool_set(&v_hst->scsi_raw_cmds, parsed_ok);
+        libxl_defbool_set(&v_ctrl->scsi_raw_cmds, parsed_ok);
 
         devs_path = GCSPRINTF("%s/vscsi-devs", be_path);
         dev_dirs = libxl__xs_directory(gc, XBT_NULL, devs_path, &ndev_dirs);
         if (dev_dirs && ndev_dirs)
-            libxl__vscsi_fill_host(gc, devs_path, dev_dirs, ndev_dirs, v_hst);
+            libxl__vscsi_fill_host(gc, devs_path, dev_dirs, ndev_dirs, v_ctrl);
     }
 
 out:

@@ -2474,7 +2474,7 @@ int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
             remaining--;
     }
 
-    LOG(DEBUG, "%u: v_hst %u, %u of %u remaining", domid, vscsi->devid, remaining, vscsi->num_vscsi_devs);
+    LOG(DEBUG, "%u: ctrl %u, %u of %u remaining", domid, vscsi->devid, remaining, vscsi->num_vscsi_devs);
     if (remaining)
         libxl__device_vscsi_dev_rm(egc, vscsi, aodev);
     else
