@@ -461,7 +461,7 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
     }
 
     /* Record group index */
-    new_host->v_hst = new_dev->vdev.hst;
+    new_host->devid = new_dev->vdev.hst;
 
     if (fhost) {
         fhost = xlu__vscsi_trim_string(fhost);
@@ -536,7 +536,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     vscsi_hosts = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
     if (vscsi_hosts) {
         for (i = 0; i < num_hosts; ++i) {
-            if (vscsi_hosts[i].v_hst == new_host->v_hst) {
+            if (vscsi_hosts[i].devid == new_host->devid) {
                 found_host = i;
                 break;
             }
@@ -670,7 +670,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
     if (*num_vscsis) {
         for (i = 0; i < *num_vscsis; i++) {
             tmp = *vscsis + i;
-            if (tmp->v_hst == v_hst.v_hst) {
+            if (tmp->devid == v_hst.devid) {
                 rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
                 if (rc) {
                     LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);

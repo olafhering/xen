@@ -140,7 +140,6 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
         /* Indication for caller that this v_dev is usable */
         if (parsed_ok) {
             v_dev->vscsi_dev_id = vscsi_dev_id;
-            v_hst->v_hst = v_dev->vdev.hst;
         }
 
         /* FIXME what if xenstore is broken? */
