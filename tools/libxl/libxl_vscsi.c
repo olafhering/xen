@@ -94,7 +94,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
     libxl_device_vscsidev *v_dev;
     bool parsed_ok;
     char *c, *p, *v, *s, *dev;
-    unsigned int vscsi_dev_id;
+    unsigned int devid;
     int i, r;
 
     v_ctrl->vscsi_devs = libxl__malloc(NOGC, ndev_dirs * sizeof(*v_dev));
@@ -104,7 +104,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
         v_dev = v_ctrl->vscsi_devs + i;
         libxl_device_vscsidev_init(v_dev);
         parsed_ok = false;
-        r = sscanf(*dev_dirs, "dev-%u", &vscsi_dev_id);
+        r = sscanf(*dev_dirs, "dev-%u", &devid);
         if (r != 1) {
             LOG(ERROR, "expected dev-N, got '%s'", *dev_dirs);
             continue;
@@ -139,7 +139,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
 
         /* Indication for caller that this v_dev is usable */
         if (parsed_ok) {
-            v_dev->vscsi_dev_id = vscsi_dev_id;
+            v_dev->devid = devid;
         }
 
         /* FIXME what if xenstore is broken? */
@@ -253,7 +253,7 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
 
     val = libxl__xs_read(gc, XBT_NULL,
                          GCSPRINTF("%s/vscsi-devs/dev-%u/state",
-                         vscsiinfo->backend, vscsi_dev->vscsi_dev_id));
+                         vscsiinfo->backend, vscsi_dev->devid));
     vscsiinfo->vscsi_dev_state = val ? strtoul(val, NULL, 10) : -1;
 
     rc = 0;

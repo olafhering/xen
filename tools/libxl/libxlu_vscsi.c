@@ -491,8 +491,8 @@ static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
 
     for (num = 0; num < hst->num_vscsi_devs; num++) {
         tmp = hst->vscsi_devs + num;
-        if (next_vscsi_dev_id <= tmp->vscsi_dev_id)
-            next_vscsi_dev_id = tmp->vscsi_dev_id + 1;
+        if (next_vscsi_dev_id <= tmp->devid)
+            next_vscsi_dev_id = tmp->devid + 1;
     }
 
     devs = realloc(hst->vscsi_devs, sizeof(*dev) * (hst->num_vscsi_devs + 1));
@@ -503,7 +503,7 @@ static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
 
     hst->vscsi_devs = devs;
     libxl_device_vscsidev_init(hst->vscsi_devs + hst->num_vscsi_devs);
-    dev->vscsi_dev_id = next_vscsi_dev_id;
+    dev->devid = next_vscsi_dev_id;
     libxl_device_vscsidev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
     hst->num_vscsi_devs++;
     rc = 0;
@@ -551,7 +551,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsi_devs; ++i) {
-            if (tmp->vscsi_devs[i].vscsi_dev_id != -1 &&
+            if (tmp->vscsi_devs[i].devid != -1 &&
                 tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
@@ -621,7 +621,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         for (d = 0; d < vh->num_vscsi_devs; d++) {
             vd = vh->vscsi_devs + d;
 #define CMP(member) (vd->vdev.member == v_dev.vdev.member)
-            if (!found && vd->vscsi_dev_id != -1 &&
+            if (!found && vd->devid != -1 &&
                 CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 vd->remove = true;
                 libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);

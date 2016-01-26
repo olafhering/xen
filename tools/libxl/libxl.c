@@ -2068,7 +2068,7 @@ static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
 {
     char *dir, *path, *val;
 
-    dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
+    dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
     path = GCSPRINTF("%s/state", dir);
     val = libxl__xs_read(gc, t, path);
     LOG(DEBUG, "%s is %s", path, val);
@@ -2091,7 +2091,7 @@ static int libxl__device_vscsi_dev_backend_set(libxl__gc *gc,
     char *dir;
     libxl_vscsi_hctl *hctl;
 
-    dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsi_dev_id);
+    dir = GCSPRINTF("vscsi-devs/dev-%u", v->devid);
     switch (v->pdev.type) {
         case LIBXL_VSCSI_PDEV_TYPE_WWN:
             flexarray_append_pair(back,
@@ -2264,13 +2264,13 @@ static int libxl__device_vscsi_reconfigure(libxl__egc *egc,
         for (i = 0; i < vscsi->num_vscsi_devs; i++) {
             unsigned int nb = 0;
             v = vscsi->vscsi_devs + i;
-            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsi_dev_id);
+            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
             /* Preserve existing device */
             if (libxl__xs_directory(gc, XBT_NULL, dev_path, &nb) && nb) {
                 /* Trigger device removal by forwarding state to XenbusStateClosing */
                 if (do_reconfigure && v->remove)
                     flexarray_append_pair(back,
-                                          GCSPRINTF("vscsi-devs/dev-%u/state", v->vscsi_dev_id),
+                                          GCSPRINTF("vscsi-devs/dev-%u/state", v->devid),
                                           GCSPRINTF("%d", XenbusStateClosing));
                 continue;
             }

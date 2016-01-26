@@ -654,7 +654,7 @@ libxl_vscsi_pdev = Struct("vscsi_pdev", [
     ])
 
 libxl_device_vscsidev = Struct("device_vscsidev", [
-    ("vscsi_dev_id",     libxl_devid),
+    ("devid",            libxl_devid),
     ("remove",           bool),
     ("pdev",             libxl_vscsi_pdev),
     ("vdev",             libxl_vscsi_hctl),
