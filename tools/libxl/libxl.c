@@ -2478,7 +2478,7 @@ int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
     if (remaining)
         libxl__device_vscsi_dev_rm(egc, vscsi, aodev);
     else
-        libxl__initiate_device_remove(egc, aodev);
+        libxl__initiate_device_generic_remove(egc, aodev);
 
 out:
     if (rc) return AO_CREATE_FAIL(rc);
@@ -3626,7 +3626,7 @@ void libxl__device_disk_local_initiate_detach(libxl__egc *egc,
         aodev->dev = device;
         aodev->callback = local_device_detach_cb;
         aodev->force = 0;
-        libxl__initiate_device_remove(egc, aodev);
+        libxl__initiate_device_generic_remove(egc, aodev);
         return;
     }
 
@@ -4596,7 +4596,7 @@ out:
  * libxl_device_vfb_remove
  * libxl_device_vfb_destroy
  */
-#define DEFINE_DEVICE_REMOVE(type, removedestroy, f)                    \
+#define DEFINE_DEVICE_REMOVE_EXT(type, remtype, removedestroy, f)       \
     int libxl_device_##type##_##removedestroy(libxl_ctx *ctx,           \
         uint32_t domid, libxl_device_##type *type,                      \
         const libxl_asyncop_how *ao_how)                                \
@@ -4616,12 +4616,18 @@ out:
         aodev->dev = device;                                            \
         aodev->callback = device_addrm_aocomplete;                      \
         aodev->force = f;                                               \
-        libxl__initiate_device_remove(egc, aodev);                      \
+        libxl__initiate_device_##remtype##_remove(egc, aodev);          \
                                                                         \
     out:                                                                \
         if (rc) return AO_CREATE_FAIL(rc);                                    \
         return AO_INPROGRESS;                                           \
     }
+
+#define DEFINE_DEVICE_REMOVE(type, removedestroy, f) \
+    DEFINE_DEVICE_REMOVE_EXT(type, generic, removedestroy, f)
+
+#define DEFINE_DEVICE_REMOVE_CUSTOM(type, removedestroy, f)  \
+    DEFINE_DEVICE_REMOVE_EXT(type, type, removedestroy, f)
 
 /* Define all remove/destroy functions and undef the macro */
 
@@ -4654,6 +4660,8 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
  * 2. dynamically add/remove qemu chardevs via qmp messages. */
 
 #undef DEFINE_DEVICE_REMOVE
+#undef DEFINE_DEVICE_REMOVE_EXT
+#undef DEFINE_DEVICE_REMOVE_CUSTOM
 
 /******************************************************************************/
 
@@ -4862,7 +4870,7 @@ static int remove_device(libxl__egc *egc, libxl__ao *ao,
         aodev->dev = dev;
         aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
         aodev->callback = device_complete;
-        libxl__initiate_device_remove(egc, aodev);
+        libxl__initiate_device_generic_remove(egc, aodev);
         break;
     case LIBXL__DEVICE_KIND_QDISK:
         if (--dguest->num_qdisks == 0) {
