@@ -2060,7 +2060,7 @@ static int libxl__resolve_domid(libxl__gc *gc, const char *name,
 
 /******************************************************************************/
 
-static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
+static void libxl__device_vscsidev_backend_rm(libxl__gc *gc,
                                               libxl_device_vscsidev *v,
                                               xs_transaction_t t,
                                               const char *be_path,
@@ -2083,7 +2083,7 @@ static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
     }
 }
 
-static int libxl__device_vscsi_dev_backend_set_add(libxl__gc *gc,
+static int libxl__device_vscsidev_backend_set_add(libxl__gc *gc,
                                                libxl_device_vscsidev *v,
                                                flexarray_t *back)
 {
@@ -2123,7 +2123,7 @@ out:
     return rc;
 }
 
-static int libxl__device_vscsi_dev_backend_set_rm(libxl__gc *gc,
+static int libxl__device_vscsidev_backend_set_rm(libxl__gc *gc,
                                                   libxl_device_vscsidev *v,
                                                   flexarray_t *back)
 {
@@ -2166,7 +2166,7 @@ static int libxl__device_vscsi_new_backend(libxl__egc *egc,
 
     for (i = 0; i < vscsi->num_vscsidevs; i++) {
         v = vscsi->vscsidevs + i;
-        rc = libxl__device_vscsi_dev_backend_set_add(gc, v, back);
+        rc = libxl__device_vscsidev_backend_set_add(gc, v, back);
         if (rc) return rc;
     }
 
@@ -2277,7 +2277,7 @@ static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
                 LOG(DEBUG, "%s exists already with %u entries", dev_path, nb);
                 continue;
             }
-            rc = libxl__device_vscsi_dev_backend_set_add(gc, v, back);
+            rc = libxl__device_vscsidev_backend_set_add(gc, v, back);
             if (rc) goto out;
         }
 
@@ -2378,7 +2378,7 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__egc *egc,
                 LOG(DEBUG, "%s does not exist anymore", dev_path);
                 continue;
             }
-            rc = libxl__device_vscsi_dev_backend_set_rm(gc, v, back);
+            rc = libxl__device_vscsidev_backend_set_rm(gc, v, back);
             if (rc) goto out;
         }
 
@@ -2482,7 +2482,7 @@ out:
     return;
 }
 
-static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
+static void libxl__device_vscsidev_rm(libxl__egc *egc,
                                        libxl_device_vscsictrl *vscsi,
                                        libxl__ao_device *aodev)
 {
@@ -2502,7 +2502,7 @@ static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
 
         for (i = 0; i < vscsi->num_vscsidevs; i++) {
             v = vscsi->vscsidevs + i;
-            libxl__device_vscsi_dev_backend_rm(gc, v, t, be_path, dev_wait);
+            libxl__device_vscsidev_backend_rm(gc, v, t, be_path, dev_wait);
         }
 
         rc = libxl__xs_transaction_commit(gc, &t);
@@ -2542,7 +2542,7 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
     aodev->update_json = true;
 
 
-    libxl__device_vscsi_dev_rm(egc, vscsi, aodev);
+    libxl__device_vscsidev_rm(egc, vscsi, aodev);
 
 out:
     if (rc) return AO_CREATE_FAIL(rc);

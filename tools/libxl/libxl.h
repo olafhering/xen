@@ -1563,7 +1563,7 @@ int libxl_device_vscsictrl_destroy(libxl_ctx *ctx, uint32_t domid,
 libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx, uint32_t domid, int *num);
 int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
                                    libxl_device_vscsictrl *vscsictrl,
-                                   libxl_device_vscsidev *vscsi_dev,
+                                   libxl_device_vscsidev *vscsidev,
                                    libxl_vscsiinfo *vscsiinfo);
 /* Remove vscsidev connected to vscsictrl */
 int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
