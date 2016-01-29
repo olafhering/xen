@@ -506,22 +506,22 @@ out:
 }
 
 
-static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
+static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *ctrl,
                                 libxl_device_vscsidev *dev)
 {
     int rc;
     libxl_device_vscsidev *devs;
 
-    devs = realloc(hst->vscsidevs, sizeof(*dev) * (hst->num_vscsidevs + 1));
+    devs = realloc(ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
     if (!devs) {
         rc = ERROR_NOMEM;
         goto out;
     }
 
-    hst->vscsidevs = devs;
-    libxl_device_vscsidev_init(hst->vscsidevs + hst->num_vscsidevs);
-    libxl_device_vscsidev_copy(ctx, hst->vscsidevs + hst->num_vscsidevs, dev);
-    hst->num_vscsidevs++;
+    ctrl->vscsidevs = devs;
+    libxl_device_vscsidev_init(ctrl->vscsidevs + ctrl->num_vscsidevs);
+    libxl_device_vscsidev_copy(ctx, ctrl->vscsidevs + ctrl->num_vscsidevs, dev);
+    ctrl->num_vscsidevs++;
     rc = 0;
 out:
     return rc;
@@ -610,13 +610,13 @@ out:
 
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
-    libxl_device_vscsidev v_dev = { }, *vd;
-    libxl_device_vscsictrl v_ctrl = { }, *vh, *vscsictrls;
+    libxl_device_vscsidev dev = { }, *vd;
+    libxl_device_vscsictrl ctrl = { }, *vh, *vscsictrls;
     int num_ctrls, h, d, found = 0;
     char *tmp = NULL;
 
-    libxl_device_vscsictrl_init(&v_ctrl);
-    libxl_device_vscsidev_init(&v_dev);
+    libxl_device_vscsictrl_init(&ctrl);
+    libxl_device_vscsidev_init(&dev);
 
     /* Create a dummy cfg */
     if (asprintf(&tmp, "0:0:0:0,%s", str) < 0) {
@@ -624,10 +624,10 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         goto out;
     }
 
-    if (xlu_vscsi_parse(cfg, ctx, tmp, &v_ctrl, &v_dev))
+    if (xlu_vscsi_parse(cfg, ctx, tmp, &ctrl, &dev))
         goto out;
 
-    if (xlu_vscsi_append_dev(ctx, &v_ctrl, &v_dev))
+    if (xlu_vscsi_append_dev(ctx, &ctrl, &dev))
         goto out;
 
     vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
@@ -638,10 +638,10 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         vh = vscsictrls + h;
         for (d = 0; d < vh->num_vscsidevs; d++) {
             vd = vh->vscsidevs + d;
-            if (vh->devid == v_ctrl.devid && vd->devid == v_dev.devid) {
+            if (vh->devid == ctrl.devid && vd->devid == dev.devid) {
                 if (vh->num_vscsidevs > 1) {
                     /* Remove single vscsidev connected to this vscsictrl */;
-                    libxl_device_vscsidev_remove(ctx, domid, &v_ctrl, NULL);
+                    libxl_device_vscsidev_remove(ctx, domid, &ctrl, NULL);
                 } else {
                     /* Wipe entire vscsictrl */;
                     libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
@@ -656,8 +656,8 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 
 out:
     free(tmp);
-    libxl_device_vscsidev_dispose(&v_dev);
-    libxl_device_vscsictrl_dispose(&v_ctrl);
+    libxl_device_vscsidev_dispose(&dev);
+    libxl_device_vscsictrl_dispose(&ctrl);
     return found;
 }
 
@@ -668,54 +668,54 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
                          libxl_device_vscsictrl **vscsis)
 {
     int rc, i;
-    libxl_device_vscsidev v_dev = { };
-    libxl_device_vscsictrl *tmp, v_ctrl = { };
-    bool hst_found = false;
+    libxl_device_vscsidev dev = { };
+    libxl_device_vscsictrl *tmp_ctrl, ctrl = { };
+    bool ctrl_found = false;
 
     /*
      * #1: parse the devspec and place it in temporary ctrl+dev part
-     * #2: find existing vscsictrl with number v_ctrl
-     *     if found, append the vscsi_dev to this vscsictrl
-     * #3: otherwise, create new vscsictrl and append vscsi_dev
-     * Note: v_ctrl does not represent the index named "num_vscsis",
+     * #2: find existing vscsictrl with number vdev.hst
+     *     if found, append the vscsidev to this vscsictrl
+     * #3: otherwise, create new vscsictrl and append vscsidev
+     * Note: vdev.hst does not represent the index named "num_vscsis",
      *       it is a private index used just in the config file
      */
-    libxl_device_vscsictrl_init(&v_ctrl);
-    libxl_device_vscsidev_init(&v_dev);
+    libxl_device_vscsictrl_init(&ctrl);
+    libxl_device_vscsidev_init(&dev);
 
-    rc = xlu_vscsi_parse(cfg, ctx, str, &v_ctrl, &v_dev);
+    rc = xlu_vscsi_parse(cfg, ctx, str, &ctrl, &dev);
     if (rc)
         goto out;
 
     if (*num_vscsis) {
         for (i = 0; i < *num_vscsis; i++) {
-            tmp = *vscsis + i;
-            if (tmp->devid == v_ctrl.devid) {
-                rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
+            tmp_ctrl = *vscsis + i;
+            if (tmp_ctrl->devid == ctrl.devid) {
+                rc = xlu_vscsi_append_dev(ctx, tmp_ctrl, &dev);
                 if (rc) {
                     LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);
                     goto out;
                 }
-                hst_found = true;
+                ctrl_found = true;
                 break;
 	           }
         }
     }
 
-    if (!hst_found || !*num_vscsis) {
-        tmp = realloc(*vscsis, sizeof(v_ctrl) * (*num_vscsis + 1));
-        if (!tmp) {
+    if (!ctrl_found || !*num_vscsis) {
+        tmp_ctrl = realloc(*vscsis, sizeof(ctrl) * (*num_vscsis + 1));
+        if (!tmp_ctrl) {
             LOG(cfg, "realloc #%d failed", *num_vscsis + 1);
             rc = ERROR_NOMEM;
             goto out;
         }
-        *vscsis = tmp;
-        tmp = *vscsis + *num_vscsis;
-        libxl_device_vscsictrl_init(tmp);
+        *vscsis = tmp_ctrl;
+        tmp_ctrl = *vscsis + *num_vscsis;
+        libxl_device_vscsictrl_init(tmp_ctrl);
 
-        libxl_device_vscsictrl_copy(ctx, tmp, &v_ctrl);
+        libxl_device_vscsictrl_copy(ctx, tmp_ctrl, &ctrl);
 
-        rc = xlu_vscsi_append_dev(ctx, tmp, &v_dev);
+        rc = xlu_vscsi_append_dev(ctx, tmp_ctrl, &dev);
         if (rc) {
             LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);
             goto out;
@@ -726,8 +726,8 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
 
     rc = 0;
 out:
-    libxl_device_vscsidev_dispose(&v_dev);
-    libxl_device_vscsictrl_dispose(&v_ctrl);
+    libxl_device_vscsidev_dispose(&dev);
+    libxl_device_vscsictrl_dispose(&ctrl);
     return rc;
 }
 #else /* ! __linux__ */

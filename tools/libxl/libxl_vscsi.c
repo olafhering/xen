@@ -50,7 +50,7 @@ static bool vscsi_wwn_valid(const char *p)
 }
 
 /* Translate p-dev back into pdev.type */
-static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *v_dev,
+static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
                              char *c, char *p, char *v)
 {
     libxl_vscsi_hctl hctl;
@@ -60,24 +60,24 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *v_dev,
 
     libxl_vscsi_hctl_init(&hctl);
 
-    v_dev->pdev.p_devname = libxl__strdup(NOGC, c);
+    dev->pdev.p_devname = libxl__strdup(NOGC, c);
 
     if (strncmp(p, "naa.", 4) == 0) {
         /* WWN as understood by pvops */
         memset(wwn, 0, sizeof(wwn));
         if (sscanf(p, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
-            libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
-            v_dev->pdev.u.wwn.m = libxl__strdup(NOGC, p);
+            libxl_vscsi_pdev_init_type(&dev->pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
+            dev->pdev.u.wwn.m = libxl__strdup(NOGC, p);
             parsed_ok = true;
         }
     } else if (vscsi_parse_hctl(p, &hctl) == 0) {
         /* Either xenlinux, or pvops with properly configured alias in sysfs */
-        libxl_vscsi_pdev_init_type(&v_dev->pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
-        libxl_vscsi_hctl_copy(CTX, &v_dev->pdev.u.hctl.m, &hctl);
+        libxl_vscsi_pdev_init_type(&dev->pdev, LIBXL_VSCSI_PDEV_TYPE_HCTL);
+        libxl_vscsi_hctl_copy(CTX, &dev->pdev.u.hctl.m, &hctl);
         parsed_ok = true;
     }
 
-    if (parsed_ok && vscsi_parse_hctl(v, &v_dev->vdev) != 0)
+    if (parsed_ok && vscsi_parse_hctl(v, &dev->vdev) != 0)
         parsed_ok = false;
 
     libxl_vscsi_hctl_dispose(&hctl);
@@ -111,41 +111,41 @@ static void libxl__vscsi_fill_ctrl(libxl__gc *gc,
                                    const char *devs_path,
                                    char **dev_dirs,
                                    unsigned int ndev_dirs,
-                                   libxl_device_vscsictrl *v_ctrl)
+                                   libxl_device_vscsictrl *ctrl)
 {
-    libxl_device_vscsidev v_dev;
+    libxl_device_vscsidev dev;
     bool parsed_ok;
-    char *c, *p, *v, *s, *dev;
+    char *c, *p, *v, *s, *path;
     unsigned int devid;
     int i, r;
 
     /* Fill each device connected to the ctrl */
     for (i = 0; i < ndev_dirs; i++, dev_dirs++) {
-        libxl_device_vscsidev_init(&v_dev);
+        libxl_device_vscsidev_init(&dev);
         parsed_ok = false;
         r = sscanf(*dev_dirs, "dev-%u", &devid);
         if (r != 1) {
             LOG(ERROR, "expected dev-N, got '%s'", *dev_dirs);
-            libxl_device_vscsidev_dispose(&v_dev);
+            libxl_device_vscsidev_dispose(&dev);
             continue;
         }
-        v_dev.devid = devid;
+        dev.devid = devid;
 
-        dev = GCSPRINTF("%s/%s", devs_path, *dev_dirs);
-        c = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/p-devname", dev));
-        p = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/p-dev", dev));
-        v = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/v-dev", dev));
-        s = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", dev));
-        LOG(DEBUG, "%s/state is %s", dev, s);
+        path = GCSPRINTF("%s/%s", devs_path, *dev_dirs);
+        c = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/p-devname", path));
+        p = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/p-dev", path));
+        v = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/v-dev", path));
+        s = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", path));
+        LOG(DEBUG, "%s/state is %s", path, s);
         if (!(c && p && v && s)) {
             LOG(ERROR, "p-devname '%s' p-dev '%s' v-dev '%s'", c, p, v);
             continue;
         }
 
-        parsed_ok = vscsi_parse_pdev(gc, &v_dev, c, p, v);
+        parsed_ok = vscsi_parse_pdev(gc, &dev, c, p, v);
         if (!parsed_ok) {
-            LOG(ERROR, "failed to parse %s: %s %s %s %s", dev, c, p, v, s);
-            libxl_device_vscsidev_dispose(&v_dev);
+            LOG(ERROR, "failed to parse %s: %s %s %s %s", path, c, p, v, s);
+            libxl_device_vscsidev_dispose(&dev);
             continue;
         }
         switch (atoi(s)) {
@@ -165,13 +165,13 @@ static void libxl__vscsi_fill_ctrl(libxl__gc *gc,
         }
 
         if (!parsed_ok) {
-            LOG(ERROR, "unexpected state in %s: %s", dev, s);
-            libxl_device_vscsidev_dispose(&v_dev);
+            LOG(ERROR, "unexpected state in %s: %s", path, s);
+            libxl_device_vscsidev_dispose(&dev);
             continue;
         }
 
-        vscsi_append_dev(gc, v_ctrl, &v_dev);
-        libxl_device_vscsidev_dispose(&v_dev);
+        vscsi_append_dev(gc, ctrl, &dev);
+        libxl_device_vscsidev_dispose(&dev);
     }
 }
 
@@ -180,7 +180,7 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
                                                     int *num)
 {
     GC_INIT(ctx);
-    libxl_device_vscsictrl *v_ctrl, *vscsictrls = NULL;
+    libxl_device_vscsictrl *ctrl, *vscsictrls = NULL;
     char *fe_path, *tmp;
     char **dir, **dev_dirs;
     const char *devs_path, *be_path;
@@ -197,22 +197,22 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
     vscsictrls = libxl__malloc(NOGC, ndirs * sizeof(*vscsictrls));
 
     /* Fill each ctrl */
-    for (v_ctrl = vscsictrls; v_ctrl < vscsictrls + ndirs; ++v_ctrl, ++dir) {
-        libxl_device_vscsictrl_init(v_ctrl);
+    for (ctrl = vscsictrls; ctrl < vscsictrls + ndirs; ++ctrl, ++dir) {
+        libxl_device_vscsictrl_init(ctrl);
 
-        v_ctrl->devid = atoi(*dir);
+        ctrl->devid = atoi(*dir);
 
         tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/%s/backend-id",
                              fe_path, *dir));
         /* FIXME what if xenstore is broken? */
         if (tmp)
-            v_ctrl->backend_domid = atoi(tmp);
+            ctrl->backend_domid = atoi(tmp);
 
         be_path = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/%s/backend",
                                  fe_path, *dir));
         /* FIXME what if xenstore is broken? */
         if (!be_path) {
-            libxl_defbool_set(&v_ctrl->scsi_raw_cmds, false);
+            libxl_defbool_set(&ctrl->scsi_raw_cmds, false);
             continue;
         }
 
@@ -220,12 +220,12 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
         tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/feature-host", be_path));
         if (tmp)
             parsed_ok = atoi(tmp) != 0;
-        libxl_defbool_set(&v_ctrl->scsi_raw_cmds, parsed_ok);
+        libxl_defbool_set(&ctrl->scsi_raw_cmds, parsed_ok);
 
         devs_path = GCSPRINTF("%s/vscsi-devs", be_path);
         dev_dirs = libxl__xs_directory(gc, XBT_NULL, devs_path, &ndev_dirs);
         if (dev_dirs && ndev_dirs)
-            libxl__vscsi_fill_ctrl(gc, devs_path, dev_dirs, ndev_dirs, v_ctrl);
+            libxl__vscsi_fill_ctrl(gc, devs_path, dev_dirs, ndev_dirs, ctrl);
     }
 
 out:
