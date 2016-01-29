@@ -2068,7 +2068,7 @@ static void libxl__device_vscsi_dev_backend_rm(libxl__gc *gc,
 {
     char *dir, *path, *val;
 
-    dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
+    dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
     path = GCSPRINTF("%s/state", dir);
     val = libxl__xs_read(gc, t, path);
     LOG(DEBUG, "%s is %s", path, val);
@@ -2091,7 +2091,7 @@ static int libxl__device_vscsi_dev_backend_set_add(libxl__gc *gc,
     char *dir;
     libxl_vscsi_hctl *hctl;
 
-    dir = GCSPRINTF("vscsi-devs/dev-%u", v->devid);
+    dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsidev_id);
     switch (v->pdev.type) {
         case LIBXL_VSCSI_PDEV_TYPE_WWN:
             flexarray_append_pair(back,
@@ -2130,7 +2130,7 @@ static int libxl__device_vscsi_dev_backend_set_rm(libxl__gc *gc,
     int rc;
     char *dir;
 
-    dir = GCSPRINTF("vscsi-devs/dev-%u", v->devid);
+    dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsidev_id);
     rc = flexarray_append_pair(back,
                                GCSPRINTF("%s/state", dir),
                                GCSPRINTF("%d", XenbusStateClosing));
@@ -2271,7 +2271,7 @@ static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
         for (i = 0; i < vscsi->num_vscsidevs; i++) {
             unsigned int nb = 0;
             v = vscsi->vscsidevs + i;
-            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
+            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
             if (libxl__xs_directory(gc, XBT_NULL, dev_path, &nb)) {
                 /* FIXME Sanity check */
                 LOG(DEBUG, "%s exists already with %u entries", dev_path, nb);
@@ -2372,7 +2372,7 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__egc *egc,
         for (i = 0; i < vscsi->num_vscsidevs; i++) {
             unsigned int nb = 0;
             v = vscsi->vscsidevs + i;
-            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
+            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
             if (!libxl__xs_directory(gc, XBT_NULL, dev_path, &nb)) {
                 /* FIXME Sanity check */
                 LOG(DEBUG, "%s does not exist anymore", dev_path);

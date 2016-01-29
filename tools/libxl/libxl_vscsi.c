@@ -129,7 +129,7 @@ static void libxl__vscsi_fill_ctrl(libxl__gc *gc,
             libxl_device_vscsidev_dispose(&dev);
             continue;
         }
-        dev.devid = devid;
+        dev.vscsidev_id = devid;
 
         path = GCSPRINTF("%s/%s", devs_path, *dev_dirs);
         c = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/p-devname", path));
@@ -280,7 +280,7 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
 
     val = libxl__xs_read(gc, XBT_NULL,
                          GCSPRINTF("%s/vscsi-devs/dev-%u/state",
-                         vscsiinfo->backend, vscsi_dev->devid));
+                         vscsiinfo->backend, vscsi_dev->vscsidev_id));
     vscsiinfo->vscsi_dev_state = val ? strtoul(val, NULL, 10) : -1;
 
     rc = 0;

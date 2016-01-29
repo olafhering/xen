@@ -437,7 +437,7 @@ static bool xlu_vscsi_hctl_to_devid(libxl_device_vscsidev *vd)
         return false;
 
     devid = (chn << 16) | (tgt << 8) | (lun << 0);
-    vd->devid = devid;
+    vd->vscsidev_id = devid;
     return true;
 }
 
@@ -638,7 +638,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         vh = vscsictrls + h;
         for (d = 0; d < vh->num_vscsidevs; d++) {
             vd = vh->vscsidevs + d;
-            if (vh->devid == ctrl.devid && vd->devid == dev.devid) {
+            if (vh->devid == ctrl.devid && vd->vscsidev_id == dev.vscsidev_id) {
                 if (vh->num_vscsidevs > 1) {
                     /* Remove single vscsidev connected to this vscsictrl */;
                     libxl_device_vscsidev_remove(ctx, domid, &ctrl, NULL);
