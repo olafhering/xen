@@ -6892,10 +6892,10 @@ int main_vscsilist(int argc, char **argv)
                     printf("%-3d %-3d %-5d %-5d %-10s %-10s %d\n",
                            vscsiinfo.devid,
                            vscsiinfo.backend_id,
-                           vscsiinfo.vscsi_host_state,
+                           vscsiinfo.vscsictrl_state,
                            vscsiinfo.backend_id,
                            pdev, vdev,
-                           vscsiinfo.vscsi_dev_state);
+                           vscsiinfo.vscsidev_state);
 
                 }
                 libxl_vscsiinfo_dispose(&vscsiinfo);

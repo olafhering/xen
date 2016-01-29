@@ -237,7 +237,7 @@ out:
 
 int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
                                    libxl_device_vscsictrl *vscsictrl,
-                                   libxl_device_vscsidev *vscsi_dev,
+                                   libxl_device_vscsidev *vscsidev,
                                    libxl_vscsiinfo *vscsiinfo)
 {
     GC_INIT(ctx);
@@ -248,8 +248,9 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
     libxl_vscsiinfo_init(vscsiinfo);
     dompath = libxl__xs_get_dompath(gc, domid);
     vscsiinfo->devid = vscsictrl->devid;
-    libxl_vscsi_pdev_copy(ctx, &vscsiinfo->pdev, &vscsi_dev->pdev);
-    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->vdev, &vscsi_dev->vdev);
+    vscsiinfo->vscsidev_id = vscsidev->vscsidev_id;
+    libxl_vscsi_pdev_copy(ctx, &vscsiinfo->pdev, &vscsidev->pdev);
+    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->vdev, &vscsidev->vdev);
 
     vscsipath = GCSPRINTF("%s/device/vscsi/%d", dompath, vscsiinfo->devid);
     vscsiinfo->backend = xs_read(ctx->xsh, XBT_NULL,
@@ -263,7 +264,7 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
     vscsiinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
 
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", vscsipath));
-    vscsiinfo->vscsi_host_state = val ? strtoul(val, NULL, 10) : -1;
+    vscsiinfo->vscsictrl_state = val ? strtoul(val, NULL, 10) : -1;
 
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", vscsipath));
     vscsiinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
@@ -280,8 +281,8 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
 
     val = libxl__xs_read(gc, XBT_NULL,
                          GCSPRINTF("%s/vscsi-devs/dev-%u/state",
-                         vscsiinfo->backend, vscsi_dev->vscsidev_id));
-    vscsiinfo->vscsi_dev_state = val ? strtoul(val, NULL, 10) : -1;
+                         vscsiinfo->backend, vscsidev->vscsidev_id));
+    vscsiinfo->vscsidev_state = val ? strtoul(val, NULL, 10) : -1;
 
     rc = 0;
 out:

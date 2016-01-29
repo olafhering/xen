@@ -721,10 +721,10 @@ libxl_vscsiinfo = Struct("vscsiinfo", [
     ("devid", libxl_devid),
     ("pdev", libxl_vscsi_pdev),
     ("vdev", libxl_vscsi_hctl),
-    ("vscsi_dev_id", libxl_devid),
+    ("vscsidev_id", libxl_devid),
     ("scsi_raw_cmds", bool),
-    ("vscsi_host_state", integer),
-    ("vscsi_dev_state", integer),
+    ("vscsictrl_state", integer),
+    ("vscsidev_state", integer),
     ("evtch", integer),
     ("rref", integer),
     ], dir=DIR_OUT)
