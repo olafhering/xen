@@ -627,6 +627,9 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     if (xlu_vscsi_parse(cfg, ctx, tmp, &v_ctrl, &v_dev))
         goto out;
 
+    if (xlu_vscsi_append_dev(ctx, &v_ctrl, &v_dev))
+        goto out;
+
     vscsi_ctrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
     if (!vscsi_ctrls)
         goto out;
@@ -635,13 +638,16 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         vh = vscsi_ctrls + h;
         for (d = 0; d < vh->num_vscsi_devs; d++) {
             vd = vh->vscsi_devs + d;
-#define CMP(member) (vd->vdev.member == v_dev.vdev.member)
-            if (!found && CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
-                vd->remove = true;
-                libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
-                found = 1;
+            if (vh->devid == v_ctrl.devid && vd->devid == v_dev.devid) {
+                if (vh->num_vscsi_devs > 1) {
+                    /* Remove single vscsidev connected to this vscsictrl */;
+                    libxl_device_vscsidev_remove(ctx, domid, &v_ctrl, NULL);
+                } else {
+                    /* Wipe entire vscsictrl */;
+                    libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
+                    found = 1;
+                }
             }
-#undef CMP
             libxl_device_vscsidev_dispose(vd);
         }
         libxl_device_vscsictrl_dispose(vh);

@@ -85,30 +85,51 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *v_dev,
     return parsed_ok;
 }
 
+/* FIXME export to xlu? */
+static int vscsi_append_dev(libxl__gc *gc, libxl_device_vscsictrl *ctrl,
+                            libxl_device_vscsidev *dev)
+{
+    int rc;
+    libxl_device_vscsidev *devs;
+
+    devs = libxl__realloc(gc, ctrl->vscsi_devs, sizeof(*dev) * (ctrl->num_vscsi_devs + 1));
+    if (!devs) {
+        rc = ERROR_NOMEM;
+        goto out;
+    }
+
+    ctrl->vscsi_devs = devs;
+    libxl_device_vscsidev_init(ctrl->vscsi_devs + ctrl->num_vscsi_devs);
+    libxl_device_vscsidev_copy(CTX, ctrl->vscsi_devs + ctrl->num_vscsi_devs, dev);
+    ctrl->num_vscsi_devs++;
+    rc = 0;
+out:
+    return rc;
+}
+
 static void libxl__vscsi_fill_host(libxl__gc *gc,
                                    const char *devs_path,
                                    char **dev_dirs,
                                    unsigned int ndev_dirs,
                                    libxl_device_vscsictrl *v_ctrl)
 {
-    libxl_device_vscsidev *v_dev;
+    libxl_device_vscsidev v_dev;
     bool parsed_ok;
     char *c, *p, *v, *s, *dev;
     unsigned int devid;
     int i, r;
 
-    v_ctrl->vscsi_devs = libxl__malloc(NOGC, ndev_dirs * sizeof(*v_dev));
-    v_ctrl->num_vscsi_devs = ndev_dirs;
     /* Fill each device connected to the host */
     for (i = 0; i < ndev_dirs; i++, dev_dirs++) {
-        v_dev = v_ctrl->vscsi_devs + i;
-        libxl_device_vscsidev_init(v_dev);
+        libxl_device_vscsidev_init(&v_dev);
         parsed_ok = false;
         r = sscanf(*dev_dirs, "dev-%u", &devid);
         if (r != 1) {
             LOG(ERROR, "expected dev-N, got '%s'", *dev_dirs);
+            libxl_device_vscsidev_dispose(&v_dev);
             continue;
         }
+        v_dev.devid = devid;
 
         dev = GCSPRINTF("%s/%s", devs_path, *dev_dirs);
         c = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/p-devname", dev));
@@ -121,7 +142,12 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
             continue;
         }
 
-        parsed_ok = vscsi_parse_pdev(gc, v_dev, c, p, v);
+        parsed_ok = vscsi_parse_pdev(gc, &v_dev, c, p, v);
+        if (!parsed_ok) {
+            LOG(ERROR, "failed to parse %s: %s %s %s %s", dev, c, p, v, s);
+            libxl_device_vscsidev_dispose(&v_dev);
+            continue;
+        }
         switch (atoi(s)) {
             case XenbusStateUnknown:
             case XenbusStateInitialising:
@@ -130,21 +156,22 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
             case XenbusStateConnected:
             case XenbusStateReconfiguring:
             case XenbusStateReconfigured:
+                parsed_ok = true;
                 break;
             case XenbusStateClosing:
             case XenbusStateClosed:
-                v_dev->remove = true;
+                parsed_ok = false;
                 break;
         }
 
-        /* Indication for caller that this v_dev is usable */
-        if (parsed_ok) {
-            v_dev->devid = devid;
+        if (!parsed_ok) {
+            LOG(ERROR, "unexpected state in %s: %s", dev, s);
+            libxl_device_vscsidev_dispose(&v_dev);
+            continue;
         }
 
-        /* FIXME what if xenstore is broken? */
-        if (!parsed_ok)
-            LOG(ERROR, "%s failed to parse", dev);
+        vscsi_append_dev(gc, v_ctrl, &v_dev);
+        libxl_device_vscsidev_dispose(&v_dev);
     }
 }
 
