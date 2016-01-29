@@ -92,16 +92,16 @@ static int vscsi_append_dev(libxl__gc *gc, libxl_device_vscsictrl *ctrl,
     int rc;
     libxl_device_vscsidev *devs;
 
-    devs = libxl__realloc(gc, ctrl->vscsi_devs, sizeof(*dev) * (ctrl->num_vscsi_devs + 1));
+    devs = libxl__realloc(gc, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
     if (!devs) {
         rc = ERROR_NOMEM;
         goto out;
     }
 
-    ctrl->vscsi_devs = devs;
-    libxl_device_vscsidev_init(ctrl->vscsi_devs + ctrl->num_vscsi_devs);
-    libxl_device_vscsidev_copy(CTX, ctrl->vscsi_devs + ctrl->num_vscsi_devs, dev);
-    ctrl->num_vscsi_devs++;
+    ctrl->vscsidevs = devs;
+    libxl_device_vscsidev_init(ctrl->vscsidevs + ctrl->num_vscsidevs);
+    libxl_device_vscsidev_copy(CTX, ctrl->vscsidevs + ctrl->num_vscsidevs, dev);
+    ctrl->num_vscsidevs++;
     rc = 0;
 out:
     return rc;

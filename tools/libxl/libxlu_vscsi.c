@@ -512,16 +512,16 @@ static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *hst,
     int rc;
     libxl_device_vscsidev *devs;
 
-    devs = realloc(hst->vscsi_devs, sizeof(*dev) * (hst->num_vscsi_devs + 1));
+    devs = realloc(hst->vscsidevs, sizeof(*dev) * (hst->num_vscsidevs + 1));
     if (!devs) {
         rc = ERROR_NOMEM;
         goto out;
     }
 
-    hst->vscsi_devs = devs;
-    libxl_device_vscsidev_init(hst->vscsi_devs + hst->num_vscsi_devs);
-    libxl_device_vscsidev_copy(ctx, hst->vscsi_devs + hst->num_vscsi_devs, dev);
-    hst->num_vscsi_devs++;
+    hst->vscsidevs = devs;
+    libxl_device_vscsidev_init(hst->vscsidevs + hst->num_vscsidevs);
+    libxl_device_vscsidev_copy(ctx, hst->vscsidevs + hst->num_vscsidevs, dev);
+    hst->num_vscsidevs++;
     rc = 0;
 out:
     return rc;
@@ -566,10 +566,10 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         tmp = vscsi_ctrls + found_host;
 
         /* Check if the vdev address is already taken */
-        for (i = 0; i < tmp->num_vscsi_devs; ++i) {
-            if (tmp->vscsi_devs[i].vdev.chn == new_dev->vdev.chn &&
-                tmp->vscsi_devs[i].vdev.tgt == new_dev->vdev.tgt &&
-                tmp->vscsi_devs[i].vdev.lun == new_dev->vdev.lun) {
+        for (i = 0; i < tmp->num_vscsidevs; ++i) {
+            if (tmp->vscsidevs[i].vdev.chn == new_dev->vdev.chn &&
+                tmp->vscsidevs[i].vdev.tgt == new_dev->vdev.tgt &&
+                tmp->vscsidevs[i].vdev.lun == new_dev->vdev.lun) {
                 LOG(cfg, "vdev '%u:%u:%u:%u' is already used.\n",
                     new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
                 rc = ERROR_INVAL;
@@ -636,10 +636,10 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 
     for (h = 0; h < num_hosts; ++h) {
         vh = vscsi_ctrls + h;
-        for (d = 0; d < vh->num_vscsi_devs; d++) {
-            vd = vh->vscsi_devs + d;
+        for (d = 0; d < vh->num_vscsidevs; d++) {
+            vd = vh->vscsidevs + d;
             if (vh->devid == v_ctrl.devid && vd->devid == v_dev.devid) {
-                if (vh->num_vscsi_devs > 1) {
+                if (vh->num_vscsidevs > 1) {
                     /* Remove single vscsidev connected to this vscsictrl */;
                     libxl_device_vscsidev_remove(ctx, domid, &v_ctrl, NULL);
                 } else {

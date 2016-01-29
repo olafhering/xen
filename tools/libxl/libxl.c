@@ -2150,7 +2150,7 @@ static int libxl__device_vscsi_new_backend(libxl__egc *egc,
     xs_transaction_t t = XBT_NULL;
 
     /* Prealloc key+value: 4 toplevel + 4 per device */
-    i = 2 * (4 + (4 * vscsi->num_vscsi_devs));
+    i = 2 * (4 + (4 * vscsi->num_vscsidevs));
     back = flexarray_make(gc, i, 1);
     front = flexarray_make(gc, 2 * 2, 1);
 
@@ -2164,8 +2164,8 @@ static int libxl__device_vscsi_new_backend(libxl__egc *egc,
     flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
     flexarray_append_pair(front, "state", GCSPRINTF("%d", XenbusStateInitialising));
 
-    for (i = 0; i < vscsi->num_vscsi_devs; i++) {
-        v = vscsi->vscsi_devs + i;
+    for (i = 0; i < vscsi->num_vscsidevs; i++) {
+        v = vscsi->vscsidevs + i;
         rc = libxl__device_vscsi_dev_backend_set_add(gc, v, back);
         if (rc) return rc;
     }
@@ -2222,7 +2222,7 @@ static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
     bool do_reconfigure = false;
 
     /* Prealloc key+value: 1 toplevel + 4 per device */
-    i = 2 * (1 + (4 * vscsi->num_vscsi_devs));
+    i = 2 * (1 + (4 * vscsi->num_vscsidevs));
     back = flexarray_make(gc, i, 1);
 
     state_path = GCSPRINTF("%s/state", be_path);
@@ -2268,9 +2268,9 @@ static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
         }
 
         /* Append new vscsidev or skip existing  */
-        for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+        for (i = 0; i < vscsi->num_vscsidevs; i++) {
             unsigned int nb = 0;
-            v = vscsi->vscsi_devs + i;
+            v = vscsi->vscsidevs + i;
             dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
             if (libxl__xs_directory(gc, XBT_NULL, dev_path, &nb)) {
                 /* FIXME Sanity check */
@@ -2321,7 +2321,7 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__egc *egc,
     bool do_reconfigure = false;
 
     /* Prealloc key+value: 1 toplevel + 4 per device */
-    i = 2 * (1 + (4 * vscsi->num_vscsi_devs));
+    i = 2 * (1 + (4 * vscsi->num_vscsidevs));
     back = flexarray_make(gc, i, 1);
 
     state_path = GCSPRINTF("%s/state", be_path);
@@ -2369,9 +2369,9 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__egc *egc,
         }
 
         /* Append new vscsidev or skip existing  */
-        for (i = 0; i < vscsi->num_vscsi_devs; i++) {
+        for (i = 0; i < vscsi->num_vscsidevs; i++) {
             unsigned int nb = 0;
-            v = vscsi->vscsi_devs + i;
+            v = vscsi->vscsidevs + i;
             dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->devid);
             if (!libxl__xs_directory(gc, XBT_NULL, dev_path, &nb)) {
                 /* FIXME Sanity check */
@@ -2500,8 +2500,8 @@ static void libxl__device_vscsi_dev_rm(libxl__egc *egc,
         rc = libxl__xs_transaction_start(gc, &t);
         if (rc) goto out;
 
-        for (i = 0; i < vscsi->num_vscsi_devs; i++) {
-            v = vscsi->vscsi_devs + i;
+        for (i = 0; i < vscsi->num_vscsidevs; i++) {
+            v = vscsi->vscsidevs + i;
             libxl__device_vscsi_dev_backend_rm(gc, v, t, be_path, dev_wait);
         }
 

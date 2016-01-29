@@ -6862,9 +6862,9 @@ int main_vscsilist(int argc, char **argv)
             continue;
         }
         for (h = 0; h < num_hosts; ++h) {
-            for (d = 0; d < vscsi_ctrls[h].num_vscsi_devs; d++) {
+            for (d = 0; d < vscsi_ctrls[h].num_vscsidevs; d++) {
                 if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsi_ctrls[h],
-                                                &vscsi_ctrls[h].vscsi_devs[d],
+                                                &vscsi_ctrls[h].vscsidevs[d],
                                                 &vscsiinfo)) {
                     char pdev[64], vdev[64];
                     switch (vscsiinfo.pdev.type) {
