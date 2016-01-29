@@ -107,7 +107,7 @@ out:
     return rc;
 }
 
-static void libxl__vscsi_fill_host(libxl__gc *gc,
+static void libxl__vscsi_fill_ctrl(libxl__gc *gc,
                                    const char *devs_path,
                                    char **dev_dirs,
                                    unsigned int ndev_dirs,
@@ -119,7 +119,7 @@ static void libxl__vscsi_fill_host(libxl__gc *gc,
     unsigned int devid;
     int i, r;
 
-    /* Fill each device connected to the host */
+    /* Fill each device connected to the ctrl */
     for (i = 0; i < ndev_dirs; i++, dev_dirs++) {
         libxl_device_vscsidev_init(&v_dev);
         parsed_ok = false;
@@ -193,10 +193,10 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
     if (!(dir && ndirs))
         goto out;
 
-    /* List of hosts to be returned to the caller */
+    /* List of ctrls to be returned to the caller */
     vscsictrls = libxl__malloc(NOGC, ndirs * sizeof(*vscsictrls));
 
-    /* Fill each host */
+    /* Fill each ctrl */
     for (v_ctrl = vscsictrls; v_ctrl < vscsictrls + ndirs; ++v_ctrl, ++dir) {
         libxl_device_vscsictrl_init(v_ctrl);
 
@@ -225,7 +225,7 @@ libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
         devs_path = GCSPRINTF("%s/vscsi-devs", be_path);
         dev_dirs = libxl__xs_directory(gc, XBT_NULL, devs_path, &ndev_dirs);
         if (dev_dirs && ndev_dirs)
-            libxl__vscsi_fill_host(gc, devs_path, dev_dirs, ndev_dirs, v_ctrl);
+            libxl__vscsi_fill_ctrl(gc, devs_path, dev_dirs, ndev_dirs, v_ctrl);
     }
 
 out:

@@ -119,12 +119,12 @@ int xlu_vif_parse_rate(XLU_Config *cfg, const char *rate,
                        libxl_device_nic *nic);
 
 /* Fill vscsictrl with device described in str (pdev,vdev[,options]) */
-int xlu_vscsi_get_host(XLU_Config *config,
+int xlu_vscsi_get_ctrl(XLU_Config *config,
                        libxl_ctx *ctx,
                        uint32_t domid,
                        const char *str,
                        libxl_device_vscsictrl *vscsictrl);
-/* Parse config string and fill provided vscsi host and vscsi device */
+/* Parse config string and fill provided vscsi ctrl and vscsi device */
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                     libxl_device_vscsictrl *new_ctrl,
                     libxl_device_vscsidev *new_dev);

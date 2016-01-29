@@ -527,13 +527,13 @@ out:
     return rc;
 }
 
-int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
+int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str, libxl_device_vscsictrl *vscsictrl)
 {
     libxl_device_vscsidev *new_dev = NULL;
     libxl_device_vscsictrl *new_ctrl, *vscsictrls = NULL, *tmp;
-    int rc, found_host = -1, i;
-    int num_hosts;
+    int rc, found_ctrl = -1, i;
+    int num_ctrls;
 
     new_ctrl = malloc(sizeof(*new_ctrl));
     new_dev = malloc(sizeof(*new_dev));
@@ -549,21 +549,21 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         goto out;
 
     /* Look for existing vscsictrl for given domain */
-    vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
+    vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
     if (vscsictrls) {
-        for (i = 0; i < num_hosts; ++i) {
+        for (i = 0; i < num_ctrls; ++i) {
             if (vscsictrls[i].devid == new_ctrl->devid) {
-                found_host = i;
+                found_ctrl = i;
                 break;
             }
         }
     }
 
-    if (found_host == -1) {
-        /* Not found, create new host */
+    if (found_ctrl == -1) {
+        /* Not found, create new ctrl */
         tmp = new_ctrl;
     } else {
-        tmp = vscsictrls + found_host;
+        tmp = vscsictrls + found_ctrl;
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsidevs; ++i) {
@@ -580,7 +580,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         if (libxl_defbool_val(new_ctrl->scsi_raw_cmds) !=
             libxl_defbool_val(tmp->scsi_raw_cmds)) {
             LOG(cfg, "different feature-host setting: "
-                      "existing host has it %s, new host has it %s\n",
+                      "existing ctrl has it %s, new ctrl has it %s\n",
                 libxl_defbool_val(new_ctrl->scsi_raw_cmds) ? "set" : "unset",
                 libxl_defbool_val(tmp->scsi_raw_cmds) ? "set" : "unset");
             rc = ERROR_INVAL;
@@ -597,7 +597,7 @@ int xlu_vscsi_get_host(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
 out:
     if (vscsictrls) {
-        for (i = 0; i < num_hosts; ++i)
+        for (i = 0; i < num_ctrls; ++i)
             libxl_device_vscsictrl_dispose(&vscsictrls[i]);
         free(vscsictrls);
     }
@@ -612,7 +612,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
     libxl_device_vscsidev v_dev = { }, *vd;
     libxl_device_vscsictrl v_ctrl = { }, *vh, *vscsictrls;
-    int num_hosts, h, d, found = 0;
+    int num_ctrls, h, d, found = 0;
     char *tmp = NULL;
 
     libxl_device_vscsictrl_init(&v_ctrl);
@@ -630,11 +630,11 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     if (xlu_vscsi_append_dev(ctx, &v_ctrl, &v_dev))
         goto out;
 
-    vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts);
+    vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
     if (!vscsictrls)
         goto out;
 
-    for (h = 0; h < num_hosts; ++h) {
+    for (h = 0; h < num_ctrls; ++h) {
         vh = vscsictrls + h;
         for (d = 0; d < vh->num_vscsidevs; d++) {
             vd = vh->vscsidevs + d;
@@ -673,7 +673,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
     bool hst_found = false;
 
     /*
-     * #1: parse the devspec and place it in temporary host+dev part
+     * #1: parse the devspec and place it in temporary ctrl+dev part
      * #2: find existing vscsictrl with number v_ctrl
      *     if found, append the vscsi_dev to this vscsictrl
      * #3: otherwise, create new vscsictrl and append vscsi_dev
@@ -731,7 +731,7 @@ out:
     return rc;
 }
 #else /* ! __linux__ */
-int xlu_vscsi_get_host(XLU_Config *config,
+int xlu_vscsi_get_ctrl(XLU_Config *config,
                        libxl_ctx *ctx,
                        uint32_t domid,
                        const char *str,

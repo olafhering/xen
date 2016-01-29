@@ -6803,7 +6803,7 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Parse config string and store result */
-    rc = xlu_vscsi_get_host(config, ctx, domid, str, vscsictrl);
+    rc = xlu_vscsi_get_ctrl(config, ctx, domid, str, vscsictrl);
     if (rc < 0)
         goto out;
 
@@ -6840,7 +6840,7 @@ int main_vscsilist(int argc, char **argv)
     uint32_t domid;
     libxl_device_vscsictrl *vscsictrls;
     libxl_vscsiinfo vscsiinfo;
-    int num_hosts, h, d;
+    int num_ctrls, h, d;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-list", 1) {
         /* No options */
@@ -6850,18 +6850,18 @@ int main_vscsilist(int argc, char **argv)
         return 1;
     }
 
-    /*      Idx  BE  state host p_hst v_hst state */
+    /*      Idx  BE  state ctrl p_hst v_hst state */
     printf("%-3s %-3s %-5s %-5s %-10s %-10s %-5s\n",
-           "Idx", "BE", "state", "host", "phy-hctl", "vir-hctl", "devstate");
+           "Idx", "BE", "state", "ctrl", "phy-hctl", "vir-hctl", "devstate");
     for (argv += optind, argc -= optind; argc > 0; --argc, ++argv) {
         if (libxl_domain_qualifier_to_domid(ctx, *argv, &domid) < 0) {
             fprintf(stderr, "%s is an invalid domain identifier\n", *argv);
             continue;
         }
-        if (!(vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_hosts))) {
+        if (!(vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls))) {
             continue;
         }
-        for (h = 0; h < num_hosts; ++h) {
+        for (h = 0; h < num_ctrls; ++h) {
             for (d = 0; d < vscsictrls[h].num_vscsidevs; d++) {
                 if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsictrls[h],
                                                 &vscsictrls[h].vscsidevs[d],
