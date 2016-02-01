@@ -92,7 +92,7 @@ static int vscsi_append_dev(libxl__gc *gc, libxl_device_vscsictrl *ctrl,
     int rc;
     libxl_device_vscsidev *devs;
 
-    devs = libxl__realloc(gc, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
+    devs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
     if (!devs) {
         rc = ERROR_NOMEM;
         goto out;
