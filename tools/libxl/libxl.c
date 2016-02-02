@@ -2448,7 +2448,7 @@ static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc, uint32_t domid,
     libxl_devid vscsidev_id;
     int rc, i;
 
-    for (i = 0; vscsi->num_vscsidevs; i++) {
+    for (i = 0; i < vscsi->num_vscsidevs; i++) {
         dev = &vscsi->vscsidevs[i];
         if (dev->vscsidev_id >= 0)
             continue;
