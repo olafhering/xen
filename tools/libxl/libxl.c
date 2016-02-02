@@ -2402,6 +2402,70 @@ out:
     return rc;
 }
 
+static int libxl__vscsi_next_vscsidev_id(libxl__gc *gc, uint32_t domid,
+                                         libxl_device_vscsictrl *vscsi,
+                                         libxl_devid *vscsidev_id)
+{
+    char *path, *val;
+    xs_transaction_t t = XBT_NULL;
+    unsigned int id;
+    int rc;
+
+    path = GCSPRINTF("%s/vscsi/%u/next_vscsidev_id",
+                     libxl__xs_libxl_path(gc, domid),
+                     vscsi->devid);
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        val = libxl__xs_read(gc, t, path);
+        id = val ? strtoul(val, NULL, 10) : 0;
+
+        LOG(DEBUG, "%s = %s vscsidev_id %u", path, val, id);
+
+        val = GCSPRINTF("%u", id + 1);
+        rc = libxl__xs_write_checked(gc, t, path, val);
+        if (rc) goto out;
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    *vscsidev_id = id;
+    rc = 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
+static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc, uint32_t domid,
+                                            libxl_device_vscsictrl *vscsi)
+{
+    libxl_device_vscsidev *dev;
+    libxl_devid vscsidev_id;
+    int rc, i;
+
+    for (i = 0; vscsi->num_vscsidevs; i++) {
+        dev = &vscsi->vscsidevs[i];
+        if (dev->vscsidev_id >= 0)
+            continue;
+        rc = libxl__vscsi_next_vscsidev_id(gc, domid, vscsi, &vscsidev_id);
+        if (rc) {
+            LOG(ERROR, "domid %u, failed to assign vscsidev_id to %s",
+                domid, dev->pdev.p_devname);
+            goto out;
+        }
+        dev->vscsidev_id = vscsidev_id;
+    }
+
+    rc = 0;
+out:
+    return rc;
+}
+
 static int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
                                         libxl_device_vscsictrl *vscsi,
                                         libxl__device *device)
@@ -2438,6 +2502,9 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
         rc = ERROR_FAIL;
         goto out;
     }
+
+    rc = libxl__vscsi_assign_vscsidev_ids(gc, domid, &vscsi_saved);
+    if (rc) goto out;
 
     GCNEW(device);
     rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);

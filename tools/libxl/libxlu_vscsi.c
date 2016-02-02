@@ -423,24 +423,6 @@ static int xlu__vscsi_parse_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
     return rc;
 }
 
-/* Generate a predictable devid based on the address on the virtual bus */
-static bool xlu_vscsi_hctl_to_devid(libxl_device_vscsidev *vd)
-{
-    uint32_t chn, tgt, lun, devid;
-
-    chn = vd->vdev.chn;
-    tgt = vd->vdev.tgt;
-    lun = vd->vdev.lun;
-
-    /* Up to 256 for each part of the address */
-    if (chn >> 8 | tgt >> 8 | lun >> 8)
-        return false;
-
-    devid = (chn << 16) | (tgt << 8) | (lun << 0);
-    vd->vscsidev_id = devid;
-    return true;
-}
-
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                     libxl_device_vscsictrl *new_ctrl,
                     libxl_device_vscsidev *new_dev)
@@ -480,12 +462,6 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
 
     /* Record group index */
     new_ctrl->devid = new_dev->vdev.hst;
-
-    if (xlu_vscsi_hctl_to_devid(new_dev) == false) {
-        LOG(cfg, "invalid '%s', h:c:t:l out of range\n", str);
-        rc = ERROR_INVAL;
-        goto out;
-    }
 
     if (fhost) {
         fhost = xlu__vscsi_trim_string(fhost);
@@ -638,7 +614,9 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         vh = vscsictrls + h;
         for (d = 0; d < vh->num_vscsidevs; d++) {
             vd = vh->vscsidevs + d;
-            if (vh->devid == ctrl.devid && vd->vscsidev_id == dev.vscsidev_id) {
+#define CMP(member) (vd->vdev.member == dev.vdev.member)
+            if (vh->devid == ctrl.devid &&
+                CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 if (vh->num_vscsidevs > 1) {
                     /* Remove single vscsidev connected to this vscsictrl */;
                     libxl_device_vscsidev_remove(ctx, domid, &ctrl, NULL);
@@ -648,6 +626,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
                     found = 1;
                 }
             }
+#undef CMP
             libxl_device_vscsidev_dispose(vd);
         }
         libxl_device_vscsictrl_dispose(vh);
