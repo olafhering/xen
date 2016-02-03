@@ -19,9 +19,10 @@
 
 static int vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
-    unsigned int hst, chn, tgt, lun;
+    unsigned int hst, chn, tgt;
+    unsigned long long lun;
 
-    if (sscanf(str, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4)
+    if (sscanf(str, "%u:%u:%u:%llu", &hst, &chn, &tgt, &lun) != 4)
         return ERROR_INVAL;
 
     hctl->hst = hst;
@@ -54,7 +55,7 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
                              char *c, char *p, char *v)
 {
     libxl_vscsi_hctl hctl;
-    unsigned int lun;
+    unsigned long long lun;
     char wwn[XLU_WWN_LEN + 1];
     bool parsed_ok = false;
 
@@ -65,7 +66,7 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
     if (strncmp(p, "naa.", 4) == 0) {
         /* WWN as understood by pvops */
         memset(wwn, 0, sizeof(wwn));
-        if (sscanf(p, "naa.%16c:%u", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
+        if (sscanf(p, "naa.%16c:%llu", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
             libxl_vscsi_pdev_init_type(&dev->pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
             dev->pdev.u.wwn.m = libxl__strdup(NOGC, p);
             parsed_ok = true;

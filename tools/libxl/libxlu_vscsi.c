@@ -36,14 +36,15 @@ struct xlu__vscsi_target {
     char path[PATH_MAX];
     char udev_path[PATH_MAX];
     char wwn[XLU_WWN_LEN + 1];
-    unsigned int lun;
+    unsigned long long lun;
 };
 
 static int xlu__vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
 {
-    unsigned int hst, chn, tgt, lun;
+    unsigned int hst, chn, tgt;
+    unsigned long long lun;
 
-    if (sscanf(str, "%u:%u:%u:%u", &hst, &chn, &tgt, &lun) != 4)
+    if (sscanf(str, "%u:%u:%u:%llu", &hst, &chn, &tgt, &lun) != 4)
         return ERROR_INVAL;
 
     hctl->hst = hst;
@@ -247,7 +248,7 @@ static bool xlu__vscsi_walk_dir_luns(struct xlu__vscsi_target *tgt)
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
             continue;
 
-        if (sscanf(de->d_name, "lun_%u", &tgt->lun) != 1)
+        if (sscanf(de->d_name, "lun_%llu", &tgt->lun) != 1)
             continue;
 
 
@@ -362,7 +363,7 @@ static int xlu__vscsi_dev_to_pdev(XLU_Config *cfg, libxl_ctx *ctx, char *str,
         if (xlu__vscsi_find_target_wwn(tgt) == true) {
             LOG(cfg, "'%s' maps to '%s(%s)'", str, tgt->path, tgt->udev_path);
             libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
-            if (asprintf(&pdev->u.wwn.m, "naa.%s:%u", tgt->wwn, tgt->lun) < 0) {
+            if (asprintf(&pdev->u.wwn.m, "naa.%s:%llu", tgt->wwn, tgt->lun) < 0) {
                 rc = ERROR_NOMEM;
                 goto out;
             }
@@ -383,11 +384,11 @@ out:
 static int xlu__vscsi_wwn_to_pdev(XLU_Config *cfg, char *str, libxl_vscsi_pdev *pdev)
 {
     int rc = ERROR_INVAL;
-    unsigned int lun;
+    unsigned long long lun;
     char wwn[XLU_WWN_LEN + 1];
 
     memset(wwn, 0, sizeof(wwn));
-    if (sscanf(str, "naa.%16c:%u", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
+    if (sscanf(str, "naa.%16c:%llu", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
         libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
         pdev->u.wwn.m = strdup(str);
         rc = pdev->u.wwn.m ? 0 : ERROR_NOMEM;
@@ -546,8 +547,9 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
             if (tmp->vscsidevs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsidevs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsidevs[i].vdev.lun == new_dev->vdev.lun) {
-                LOG(cfg, "vdev '%u:%u:%u:%u' is already used.\n",
-                    new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, new_dev->vdev.lun);
+                unsigned long long lun = new_dev->vdev.lun;
+                LOG(cfg, "vdev '%u:%u:%u:%llu' is already used.\n",
+                    new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, lun);
                 rc = ERROR_INVAL;
                 goto out;
             }

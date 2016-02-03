@@ -6867,13 +6867,15 @@ int main_vscsilist(int argc, char **argv)
                                                 &vscsictrls[h].vscsidevs[d],
                                                 &vscsiinfo)) {
                     char pdev[64], vdev[64];
+                    unsigned long long lun;
                     switch (vscsiinfo.pdev.type) {
                         case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-                            snprintf(pdev, sizeof(pdev), "%u:%u:%u:%u",
+                            lun = vscsiinfo.pdev.u.hctl.m.lun;
+                            snprintf(pdev, sizeof(pdev), "%u:%u:%u:%llu",
                                      vscsiinfo.pdev.u.hctl.m.hst,
                                      vscsiinfo.pdev.u.hctl.m.chn,
                                      vscsiinfo.pdev.u.hctl.m.tgt,
-                                     vscsiinfo.pdev.u.hctl.m.lun);
+                                     lun);
                             break;
                         case LIBXL_VSCSI_PDEV_TYPE_WWN:
                             snprintf(pdev, sizeof(pdev), "%s",
@@ -6883,11 +6885,12 @@ int main_vscsilist(int argc, char **argv)
                             pdev[0] = '\0';
                             break;
                     }
-                    snprintf(vdev, sizeof(vdev), "%u:%u:%u:%u",
+                    lun = vscsiinfo.vdev.lun;
+                    snprintf(vdev, sizeof(vdev), "%u:%u:%u:%llu",
                              vscsiinfo.vdev.hst,
                              vscsiinfo.vdev.chn,
                              vscsiinfo.vdev.tgt,
-                             vscsiinfo.vdev.lun);
+                             lun);
                     /*      Idx  BE  state Sta */
                     printf("%-3d %-3d %-5d %-5d %-10s %-10s %d\n",
                            vscsiinfo.devid,

@@ -640,7 +640,7 @@ libxl_vscsi_hctl = Struct("vscsi_hctl", [
     ("hst", uint32),
     ("chn", uint32),
     ("tgt", uint32),
-    ("lun", uint32),
+    ("lun", uint64),
     ])
 
 libxl_vscsi_pdev = Struct("vscsi_pdev", [
