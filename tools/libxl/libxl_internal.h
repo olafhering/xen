@@ -3514,6 +3514,11 @@ _hidden void libxl__domain_suspend(libxl__egc *egc,
 /* used by libxc to suspend the guest during migration */
 _hidden void libxl__domain_suspend_callback(void *data);
 
+/* return an array of vscsictrls with num elements */
+_hidden int libxl__vscsi_collect_ctrls(libxl__gc *gc,
+                                       uint32_t domid,
+                                       libxl_device_vscsictrl **ctrls,
+                                       int *num);
 
 /*
  * Convenience macros.
