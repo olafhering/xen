@@ -2411,9 +2411,9 @@ out:
     return rc;
 }
 
-static int libxl__vscsi_next_vscsidev_id(libxl__gc *gc, uint32_t domid,
-                                         libxl_device_vscsictrl *vscsi,
-                                         libxl_devid *vscsidev_id)
+static int libxl__vscsictrl_next_vscsidev_id(libxl__gc *gc, uint32_t domid,
+                                             libxl_device_vscsictrl *vscsi,
+                                             libxl_devid *vscsidev_id)
 {
     char *path, *val;
     xs_transaction_t t = XBT_NULL;
@@ -2461,7 +2461,7 @@ static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc, uint32_t domid,
         dev = &vscsi->vscsidevs[i];
         if (dev->vscsidev_id >= 0)
             continue;
-        rc = libxl__vscsi_next_vscsidev_id(gc, domid, vscsi, &vscsidev_id);
+        rc = libxl__vscsictrl_next_vscsidev_id(gc, domid, vscsi, &vscsidev_id);
         if (rc) {
             LOG(ERROR, "domid %u, failed to assign vscsidev_id to %s",
                 domid, dev->pdev.p_devname);
