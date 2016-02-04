@@ -482,28 +482,6 @@ out:
     return rc;
 }
 
-
-static int xlu_vscsi_append_dev(libxl_ctx *ctx, libxl_device_vscsictrl *ctrl,
-                                libxl_device_vscsidev *dev)
-{
-    int rc;
-    libxl_device_vscsidev *devs;
-
-    devs = realloc(ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
-    if (!devs) {
-        rc = ERROR_NOMEM;
-        goto out;
-    }
-
-    ctrl->vscsidevs = devs;
-    libxl_device_vscsidev_init(ctrl->vscsidevs + ctrl->num_vscsidevs);
-    libxl_device_vscsidev_copy(ctx, ctrl->vscsidevs + ctrl->num_vscsidevs, dev);
-    ctrl->num_vscsidevs++;
-    rc = 0;
-out:
-    return rc;
-}
-
 int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str, libxl_device_vscsictrl *vscsictrl)
 {
@@ -603,8 +581,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     if (xlu_vscsi_parse(cfg, ctx, tmp, &ctrl, &dev))
         goto out;
 
-    if (xlu_vscsi_append_dev(ctx, &ctrl, &dev))
-        goto out;
+    libxl_device_vscsictrl_append_vscsidev(ctx, &ctrl, &dev);
 
     vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
     if (!vscsictrls)
@@ -672,11 +649,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
         for (i = 0; i < *num_vscsis; i++) {
             tmp_ctrl = *vscsis + i;
             if (tmp_ctrl->devid == ctrl.devid) {
-                rc = xlu_vscsi_append_dev(ctx, tmp_ctrl, &dev);
-                if (rc) {
-                    LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);
-                    goto out;
-                }
+                libxl_device_vscsictrl_append_vscsidev(ctx, tmp_ctrl, &dev);
                 ctrl_found = true;
                 break;
 	           }
@@ -696,11 +669,7 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
 
         libxl_device_vscsictrl_copy(ctx, tmp_ctrl, &ctrl);
 
-        rc = xlu_vscsi_append_dev(ctx, tmp_ctrl, &dev);
-        if (rc) {
-            LOG(cfg, "xlu_vscsi_append_dev failed: %d\n", rc);
-            goto out;
-        }
+        libxl_device_vscsictrl_append_vscsidev(ctx, tmp_ctrl, &dev);
 
         (*num_vscsis)++;
     }
