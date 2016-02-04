@@ -4728,6 +4728,7 @@ out:
  * libxl_device_disk_destroy
  * libxl_device_nic_remove
  * libxl_device_nic_destroy
+ * libxl_device_vscsictrl_remove
  * libxl_device_vscsictrl_destroy
  * libxl_device_vtpm_remove
  * libxl_device_vtpm_destroy
