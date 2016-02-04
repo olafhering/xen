@@ -565,7 +565,7 @@ out:
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
     libxl_device_vscsidev dev = { }, *vd;
-    libxl_device_vscsictrl ctrl = { }, *vh, *vscsictrls;
+    libxl_device_vscsictrl ctrl = { }, *vc, *vscsictrls;
     int num_ctrls, c, d, found = 0;
     char *tmp = NULL;
 
@@ -588,27 +588,27 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
         goto out;
 
     for (c = 0; c < num_ctrls; ++c) {
-        vh = vscsictrls + c;
-        for (d = 0; d < vh->num_vscsidevs; d++) {
-            vd = vh->vscsidevs + d;
+        vc = vscsictrls + c;
+        for (d = 0; d < vc->num_vscsidevs; d++) {
+            vd = vc->vscsidevs + d;
 #define CMP(member) (vd->vdev.member == dev.vdev.member)
-            if (vh->devid == ctrl.devid &&
+            if (vc->devid == ctrl.devid &&
                 CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
-                if (vh->num_vscsidevs > 1) {
+                if (vc->num_vscsidevs > 1) {
                     /* Remove single vscsidev connected to this vscsictrl */;
-                    ctrl.devid = vh->devid;
+                    ctrl.devid = vc->devid;
                     ctrl.vscsidevs[0].vscsidev_id = vd->vscsidev_id;
                     libxl_device_vscsidev_remove(ctx, domid, &ctrl, NULL);
                 } else {
                     /* Wipe entire vscsictrl */;
-                    libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
+                    libxl_device_vscsictrl_remove(ctx, domid, vc, NULL);
                     found = 1;
                 }
             }
 #undef CMP
             libxl_device_vscsidev_dispose(vd);
         }
-        libxl_device_vscsictrl_dispose(vh);
+        libxl_device_vscsictrl_dispose(vc);
     }
     free(vscsictrls);
 
