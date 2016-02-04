@@ -567,9 +567,7 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     }
 
     libxl_device_vscsictrl_copy(ctx, vscsictrl, tmp);
-    rc = xlu_vscsi_append_dev(ctx, vscsictrl, new_dev);
-    if (rc)
-        goto out;
+    libxl_device_vscsictrl_append_vscsidev(ctx, vscsictrl, new_dev);
 
     rc = 0;
 

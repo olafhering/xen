@@ -86,26 +86,16 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
     return parsed_ok;
 }
 
-/* FIXME export to xlu? */
-static int vscsi_append_dev(libxl__gc *gc, libxl_device_vscsictrl *ctrl,
-                            libxl_device_vscsidev *dev)
+void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            libxl_device_vscsidev *dev)
 {
-    int rc;
-    libxl_device_vscsidev *devs;
-
-    devs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
-    if (!devs) {
-        rc = ERROR_NOMEM;
-        goto out;
-    }
-
-    ctrl->vscsidevs = devs;
+    GC_INIT(ctx);
+    ctrl->vscsidevs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
     libxl_device_vscsidev_init(ctrl->vscsidevs + ctrl->num_vscsidevs);
     libxl_device_vscsidev_copy(CTX, ctrl->vscsidevs + ctrl->num_vscsidevs, dev);
     ctrl->num_vscsidevs++;
-    rc = 0;
-out:
-    return rc;
+    GC_FREE;
 }
 
 static bool libxl__vscsi_fill_dev(libxl__gc *gc,
@@ -203,10 +193,8 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
     for (dev_dir = 0; dev_dirs && dev_dir < ndev_dirs; dev_dir++) {
         libxl_device_vscsidev_init(&dev);
         parsed_ok = libxl__vscsi_fill_dev(gc, t, devs_path, dev_dirs[dev_dir], &dev);
-        if (parsed_ok == true) {
-            if (vscsi_append_dev(gc, ctrl, &dev))
-                parsed_ok = false;
-        }
+        if (parsed_ok == true)
+            libxl_device_vscsictrl_append_vscsidev(CTX, ctrl, &dev);
         libxl_device_vscsidev_dispose(&dev);
         if (parsed_ok == false)
             break;

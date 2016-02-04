@@ -1570,6 +1570,9 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
                                  libxl_device_vscsictrl *vscsi,
                                  const libxl_asyncop_how *ao_how)
                                  LIBXL_EXTERNAL_CALLERS_ONLY;
+void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            libxl_device_vscsidev *dev);
 
 /* Virtual TPMs */
 int libxl_device_vtpm_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vtpm *vtpm,
