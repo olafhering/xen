@@ -619,7 +619,9 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
                 CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
                 if (vh->num_vscsidevs > 1) {
                     /* Remove single vscsidev connected to this vscsictrl */;
-                    libxl_device_vscsidev_remove(ctx, domid, vh, NULL);
+                    ctrl.devid = vh->devid;
+                    ctrl.vscsidevs[0].vscsidev_id = vd->vscsidev_id;
+                    libxl_device_vscsidev_remove(ctx, domid, &ctrl, NULL);
                 } else {
                     /* Wipe entire vscsictrl */;
                     libxl_device_vscsictrl_remove(ctx, domid, vh, NULL);
