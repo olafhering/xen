@@ -588,7 +588,7 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
     libxl_device_vscsidev dev = { }, *vd;
     libxl_device_vscsictrl ctrl = { }, *vh, *vscsictrls;
-    int num_ctrls, h, d, found = 0;
+    int num_ctrls, c, d, found = 0;
     char *tmp = NULL;
 
     libxl_device_vscsictrl_init(&ctrl);
@@ -610,8 +610,8 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     if (!vscsictrls)
         goto out;
 
-    for (h = 0; h < num_ctrls; ++h) {
-        vh = vscsictrls + h;
+    for (c = 0; c < num_ctrls; ++c) {
+        vh = vscsictrls + c;
         for (d = 0; d < vh->num_vscsidevs; d++) {
             vd = vh->vscsidevs + d;
 #define CMP(member) (vd->vdev.member == dev.vdev.member)
