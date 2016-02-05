@@ -104,7 +104,7 @@ do
 
 		blockdev --rereadpt "${f_link}"
 		udevadm settle --timeout=4
-		echo 1,12,S | sfdisk "${f_link}"
+		echo 1,96,S | sfdisk "${f_link}"
 		udevadm settle --timeout=4
 		blockdev --rereadpt "${f_link}"
 		udevadm settle --timeout=4
