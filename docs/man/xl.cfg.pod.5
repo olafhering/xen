@@ -517,6 +517,61 @@ value is optional if this is a guest domain.
 
 =back
 
+=item B<vscsi=[ "VSCSI_SPEC_STRING", "VSCSI_SPEC_STRING", ...]>
+
+Specifies the PVSCSI devices to be provided to the guest. PVSCSI passes
+SCSI devices from the backend domain to the guest.
+
+Each VSCSI_SPEC_STRING consists of "pdev,vdev[,options]".
+'pdev' describes the physical device, preferable in a persistent format such as /dev/disk/by-*/*.
+'vdev' is the domU device in vHOST:CHANNEL:TARGET:LUN notation, all integers.
+'options' lists additional flags which a backend may recognize.
+
+The supported values for "pdev" and "options" depends on the backend driver used:
+
+=over 4
+
+=item B<Linux>
+
+=over 4
+
+=item C<pdev>
+
+The backend driver in the pvops kernel is part of the Linux-IO Target framework
+(LIO). As such the SCSI devices have to be configured first with the tools
+provided by this framework, such as a xen-scsiback aware targetcli. The "pdev"
+in domU.cfg has to refer to a config item in that framework instead of the raw
+device. Usually this is a WWN in the form of "na.WWN:LUN".
+
+=item C<options>
+
+No options recognized.
+
+=back
+
+=item B<Linux based on classic Xen kernel>
+
+=over 4
+
+=item C<pdev>
+
+The dom0 device in either /dev/scsidev or pHOST:CHANNEL:TARGET:LUN notation.
+
+It's recommended to use persistent names "/dev/disk/by-*/*" to refer to a "pdev".
+The toolstack will translate this internally to "h:c:t:l" notation, which is how
+the backend driver will access the device. Using the "h:c:t:l" notation for
+"pdev" in domU.cfg is discouraged because this value will change across reboots,
+depending on the detection order in the OS.
+
+=item C<options>
+
+Currently only the option value "feature-host" is recognized. SCSI command
+emulation in backend driver is bypassed when "feature-host" is specified.
+
+=back
+
+=back
+
 =item B<vfb=[ "VFB_SPEC_STRING", "VFB_SPEC_STRING", ...]>
 
 Specifies the paravirtual framebuffer devices which should be supplied

@@ -1263,7 +1263,7 @@ static void parse_config_data(const char *config_source,
     const char *buf;
     long l, vcpus = 0;
     XLU_Config *config;
-    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms;
+    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsictrls;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
@@ -1790,6 +1790,17 @@ static void parse_config_data(const char *config_source,
             parse_disk_config(&config, buf2, disk);
 
             free(buf2);
+        }
+    }
+
+    if (!xlu_cfg_get_list(config, "vscsi", &vscsictrls, 0, 0)) {
+        int num_vscsi_items = 0;
+        d_config->num_vscsictrls = 0;
+        d_config->vscsictrls = NULL;
+        while ((buf = xlu_cfg_get_listitem (vscsictrls, num_vscsi_items)) != NULL) {
+            if (xlu_vscsi_config_add(config, ctx, buf, &d_config->num_vscsictrls, &d_config->vscsictrls))
+                exit(1);
+            num_vscsi_items++;
         }
     }
 
@@ -6742,6 +6753,201 @@ int main_blockdetach(int argc, char **argv)
     }
     libxl_device_disk_dispose(&disk);
     return rc;
+}
+
+int main_vscsiattach(int argc, char **argv)
+{
+    uint32_t domid;
+    int opt, rc;
+    XLU_Config *config = NULL;
+    libxl_device_vscsictrl *vscsictrl = NULL;
+    char *str = NULL, *feat_buf = NULL;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
+        /* No options */
+    }
+
+    if (argc < 4 || argc > 5) {
+        help("scsi-attach");
+        return 1;
+    }
+
+    if (libxl_domain_qualifier_to_domid(ctx, argv[optind], &domid) < 0) {
+        fprintf(stderr, "%s is an invalid domain identifier\n", argv[optind]);
+        return 1;
+    }
+
+    optind++;
+
+    if (argc == 5) {
+        if (asprintf(&feat_buf, ",%s", argv[4]) < 0) {
+            perror("asprintf");
+            return 1;
+        }
+    }
+
+    if (asprintf(&str, "%s,%s%s", argv[2], argv[3], feat_buf ?: "") < 0) {
+        perror("asprintf");
+        rc = 1;
+        goto out;;
+    }
+
+    vscsictrl = xmalloc(sizeof(*vscsictrl));
+    libxl_device_vscsictrl_init(vscsictrl);
+
+    config = xlu_cfg_init(stderr, "command line");
+    if (!config) {
+        fprintf(stderr, "Failed to allocate for configuration\n");
+        rc = 1;
+        goto out;
+    }
+
+    /* Parse config string and store result */
+    rc = xlu_vscsi_get_ctrl(config, ctx, domid, str, vscsictrl);
+    if (rc < 0)
+        goto out;
+
+    if (dryrun_only) {
+        char *json = libxl_device_vscsictrl_to_json(ctx, vscsictrl);
+        printf("vscsi: %s\n", json);
+        free(json);
+        if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
+        rc = 0;
+        goto out;
+    }
+
+    /* Finally add the device */
+    if (libxl_device_vscsictrl_add(ctx, domid, vscsictrl, NULL)) {
+        fprintf(stderr, "libxl_device_vscsictrl_add failed.\n");
+        rc = 1;
+        goto out;
+    }
+
+    rc = 0;
+out:
+    if (config)
+        xlu_cfg_destroy(config);
+    libxl_device_vscsictrl_dispose(vscsictrl);
+    free(vscsictrl);
+    free(str);
+    free(feat_buf);
+    return rc;
+}
+
+int main_vscsilist(int argc, char **argv)
+{
+    int opt;
+    uint32_t domid;
+    libxl_device_vscsictrl *vscsictrls;
+    libxl_vscsiinfo vscsiinfo;
+    int num_ctrls, h, d;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-list", 1) {
+        /* No options */
+    }
+    if (argc < 2) {
+        help("scsi-list");
+        return 1;
+    }
+
+    /*      Idx  BE  state ctrl p_hst v_hst state */
+    printf("%-3s %-3s %-5s %-5s %-10s %-10s %-5s\n",
+           "Idx", "BE", "state", "ctrl", "phy-hctl", "vir-hctl", "devstate");
+    for (argv += optind, argc -= optind; argc > 0; --argc, ++argv) {
+        if (libxl_domain_qualifier_to_domid(ctx, *argv, &domid) < 0) {
+            fprintf(stderr, "%s is an invalid domain identifier\n", *argv);
+            continue;
+        }
+        if (!(vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls))) {
+            continue;
+        }
+        for (h = 0; h < num_ctrls; ++h) {
+            for (d = 0; d < vscsictrls[h].num_vscsidevs; d++) {
+                if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsictrls[h],
+                                                &vscsictrls[h].vscsidevs[d],
+                                                &vscsiinfo)) {
+                    char pdev[64], vdev[64];
+                    unsigned long long lun;
+                    switch (vscsiinfo.pdev.type) {
+                        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+                            lun = vscsiinfo.pdev.u.hctl.m.lun;
+                            snprintf(pdev, sizeof(pdev), "%u:%u:%u:%llu",
+                                     vscsiinfo.pdev.u.hctl.m.hst,
+                                     vscsiinfo.pdev.u.hctl.m.chn,
+                                     vscsiinfo.pdev.u.hctl.m.tgt,
+                                     lun);
+                            break;
+                        case LIBXL_VSCSI_PDEV_TYPE_WWN:
+                            snprintf(pdev, sizeof(pdev), "%s",
+                                     vscsiinfo.pdev.u.wwn.m);
+                            break;
+                        default:
+                            pdev[0] = '\0';
+                            break;
+                    }
+                    lun = vscsiinfo.vdev.lun;
+                    snprintf(vdev, sizeof(vdev), "%u:%u:%u:%llu",
+                             vscsiinfo.vdev.hst,
+                             vscsiinfo.vdev.chn,
+                             vscsiinfo.vdev.tgt,
+                             lun);
+                    /*      Idx  BE  state Sta */
+                    printf("%-3d %-3d %-5d %-5d %-10s %-10s %d\n",
+                           vscsiinfo.devid,
+                           vscsiinfo.backend_id,
+                           vscsiinfo.vscsictrl_state,
+                           vscsiinfo.backend_id,
+                           pdev, vdev,
+                           vscsiinfo.vscsidev_state);
+
+                }
+                libxl_vscsiinfo_dispose(&vscsiinfo);
+            }
+            libxl_device_vscsictrl_dispose(&vscsictrls[h]);
+        }
+        free(vscsictrls);
+
+    }
+
+    return 0;
+}
+
+int main_vscsidetach(int argc, char **argv)
+{
+    int opt;
+    char *dom = argv[1], *str = argv[2];
+    uint32_t domid;
+    XLU_Config *config = NULL;
+    int found = 0;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-detach", 1) {
+        /* No options */
+    }
+
+    if (argc < 3) {
+        help("scsi-detach");
+        return 1;
+    }
+
+    if (libxl_domain_qualifier_to_domid(ctx, dom, &domid) < 0) {
+        fprintf(stderr, "%s is an invalid domain identifier\n", dom);
+        return 1;
+    }
+
+    config = xlu_cfg_init(stderr, "command line");
+    if (!config) {
+        fprintf(stderr, "Failed to allocate for configuration\n");
+        goto out;
+    }
+
+    found = xlu_vscsi_detach(config, ctx, domid, str);
+    if (!found)
+        fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, str, dom);
+
+out:
+    if (config)
+        xlu_cfg_destroy(config);
+    return !found;
 }
 
 int main_vtpmattach(int argc, char **argv)

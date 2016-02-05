@@ -2059,6 +2059,572 @@ static int libxl__resolve_domid(libxl__gc *gc, const char *name,
 }
 
 /******************************************************************************/
+
+static void libxl__device_vscsidev_backend_rm(libxl__gc *gc,
+                                              libxl_device_vscsidev *v,
+                                              xs_transaction_t t,
+                                              const char *be_path,
+                                              int dev_wait)
+{
+    char *dir, *path, *val;
+
+    dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
+    path = GCSPRINTF("%s/state", dir);
+    val = libxl__xs_read(gc, t, path);
+    LOG(DEBUG, "%s is %s", path, val);
+    if (val && strcmp(val, GCSPRINTF("%d", dev_wait)) == 0) {
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/state", dir));
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/p-devname", dir));
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/p-dev", dir));
+        xs_rm(CTX->xsh, t, GCSPRINTF("%s/v-dev", dir));
+        xs_rm(CTX->xsh, t, dir);
+    } else {
+        LOG(ERROR, "%s has %s, expected %d", path, val, dev_wait);
+    }
+}
+
+static int libxl__device_vscsidev_backend_set_add(libxl__gc *gc,
+                                               libxl_device_vscsidev *v,
+                                               flexarray_t *back)
+{
+    int rc;
+    char *dir;
+    unsigned int hst, chn, tgt;
+    unsigned long long lun;
+
+
+    dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsidev_id);
+    switch (v->pdev.type) {
+        case LIBXL_VSCSI_PDEV_TYPE_WWN:
+            flexarray_append_pair(back,
+                                  GCSPRINTF("%s/p-dev", dir),
+                                  v->pdev.u.wwn.m);
+            break;
+        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+            hst = v->pdev.u.hctl.m.hst;
+            chn = v->pdev.u.hctl.m.chn;
+            tgt = v->pdev.u.hctl.m.tgt;
+            lun = v->pdev.u.hctl.m.lun;
+            flexarray_append_pair(back,
+                                  GCSPRINTF("%s/p-dev", dir),
+                                  GCSPRINTF("%u:%u:%u:%llu", hst, chn, tgt, lun));
+            break;
+        case LIBXL_VSCSI_PDEV_TYPE_INVALID:
+        default:
+            rc = ERROR_FAIL;
+            goto out;
+    }
+    flexarray_append_pair(back,
+                          GCSPRINTF("%s/p-devname", dir),
+                          v->pdev.p_devname);
+    hst = v->vdev.hst;
+    chn = v->vdev.chn;
+    tgt = v->vdev.tgt;
+    lun = v->vdev.lun;
+    flexarray_append_pair(back,
+                          GCSPRINTF("%s/v-dev", dir),
+                          GCSPRINTF("%u:%u:%u:%llu", hst, chn, tgt, lun));
+    flexarray_append_pair(back,
+                          GCSPRINTF("%s/state", dir),
+                          GCSPRINTF("%d", XenbusStateInitialising));
+    rc = 0;
+out:
+    return rc;
+}
+
+static int libxl__device_vscsidev_backend_set_rm(libxl__gc *gc,
+                                                  libxl_device_vscsidev *v,
+                                                  flexarray_t *back)
+{
+    int rc;
+    char *dir;
+
+    dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsidev_id);
+    rc = flexarray_append_pair(back,
+                               GCSPRINTF("%s/state", dir),
+                               GCSPRINTF("%d", XenbusStateClosing));
+    return rc;
+}
+
+static int libxl__device_vscsi_new_backend(libxl__egc *egc,
+                                           libxl__ao_device *aodev,
+                                           libxl_device_vscsictrl *vscsi,
+                                           libxl_domain_config *d_config)
+{
+    STATE_AO_GC(aodev->ao);
+    int rc, i;
+    flexarray_t *back;
+    flexarray_t *front;
+    libxl_device_vscsidev *v;
+    xs_transaction_t t = XBT_NULL;
+
+    /* Prealloc key+value: 4 toplevel + 4 per device */
+    i = 2 * (4 + (4 * vscsi->num_vscsidevs));
+    back = flexarray_make(gc, i, 1);
+    front = flexarray_make(gc, 2 * 2, 1);
+
+    flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", aodev->dev->domid));
+    flexarray_append_pair(back, "online", "1");
+    flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateInitialising));
+    flexarray_append_pair(back, "feature-host",
+                          libxl_defbool_val(vscsi->scsi_raw_cmds) ?
+                          "1" : "0");
+
+    flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsi->backend_domid));
+    flexarray_append_pair(front, "state", GCSPRINTF("%d", XenbusStateInitialising));
+
+    for (i = 0; i < vscsi->num_vscsidevs; i++) {
+        v = vscsi->vscsidevs + i;
+        rc = libxl__device_vscsidev_backend_set_add(gc, v, back);
+        if (rc) return rc;
+    }
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        rc = libxl__device_exists(gc, t, aodev->dev);
+        if (rc < 0) goto out;
+        if (rc == 1) {              /* already exists in xenstore */
+            LOG(ERROR, "device already exists in xenstore");
+            rc = ERROR_DEVICE_EXISTS;
+            goto out;
+        }
+
+        if (aodev->update_json) {
+            rc = libxl__set_domain_configuration(gc, aodev->dev->domid, d_config);
+            if (rc) goto out;
+        }
+
+        libxl__device_generic_add(gc, t, aodev->dev,
+                                  libxl__xs_kvs_of_flexarray(gc, back,
+                                                             back->count),
+                                  libxl__xs_kvs_of_flexarray(gc, front,
+                                                             front->count),
+                                  NULL);
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    libxl__wait_device_connection(egc, aodev);
+    rc = 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
+static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
+                                           libxl__ao_device *aodev,
+                                           libxl_device_vscsictrl *vscsi,
+                                           libxl_domain_config *d_config,
+                                           const char *be_path)
+{
+    STATE_AO_GC(aodev->ao);
+    int rc, i, be_state, be_wait;
+    char *dev_path, *state_path, *state_val;
+    flexarray_t *back;
+    libxl_device_vscsidev *v;
+    xs_transaction_t t = XBT_NULL;
+    bool do_reconfigure = false;
+
+    /* Prealloc key+value: 1 toplevel + 4 per device */
+    i = 2 * (1 + (4 * vscsi->num_vscsidevs));
+    back = flexarray_make(gc, i, 1);
+
+    state_path = GCSPRINTF("%s/state", be_path);
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        state_val = libxl__xs_read(gc, t, state_path);
+        LOG(DEBUG, "%s is %s", state_path, state_val);
+        if (!state_val) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+
+        be_state = atoi(state_val);
+        switch (be_state) {
+            case XenbusStateUnknown:
+            case XenbusStateInitialising:
+            case XenbusStateClosing:
+            case XenbusStateClosed:
+            default:
+                /* The backend is in a bad state */
+                rc = ERROR_FAIL;
+                goto out;
+            case XenbusStateInitialised:
+            case XenbusStateReconfiguring:
+            case XenbusStateReconfigured:
+                /* Backend is still busy, caller has to retry */
+                rc = ERROR_NOT_READY;
+                goto out;
+            case XenbusStateInitWait:
+                /* The frontend did not connect yet */
+                be_wait = XenbusStateInitWait;
+                do_reconfigure = false;
+                break;
+            case XenbusStateConnected:
+                /* The backend can handle reconfigure */
+                be_wait = XenbusStateConnected;
+                flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
+                do_reconfigure = true;
+                break;
+        }
+
+        /* Append new vscsidev or skip existing  */
+        for (i = 0; i < vscsi->num_vscsidevs; i++) {
+            unsigned int nb = 0;
+            v = vscsi->vscsidevs + i;
+            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
+            if (libxl__xs_directory(gc, XBT_NULL, dev_path, &nb)) {
+                /* FIXME Sanity check */
+                LOG(DEBUG, "%s exists already with %u entries", dev_path, nb);
+                continue;
+            }
+            rc = libxl__device_vscsidev_backend_set_add(gc, v, back);
+            if (rc) goto out;
+        }
+
+        if (aodev->update_json) {
+            rc = libxl__set_domain_configuration(gc, aodev->dev->domid, d_config);
+            if (rc) goto out;
+        }
+
+        libxl__xs_writev(gc, t, be_path,
+                         libxl__xs_kvs_of_flexarray(gc, back, back->count));
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    if (do_reconfigure) {
+        /* Poll for backend change */
+        rc = libxl__wait_for_backend(gc, be_path, GCSPRINTF("%d", be_wait));
+        if (rc) goto out;
+    }
+    rc = 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
+static int libxl__device_vscsi_reconfigure_rm(libxl__egc *egc,
+                                           libxl__ao_device *aodev,
+                                           libxl_device_vscsictrl *vscsi,
+                                           const char *be_path,
+                                           int *dev_wait)
+{
+    STATE_AO_GC(aodev->ao);
+    int rc, i, be_state, be_wait;
+    char *dev_path, *state_path, *state_val;
+    flexarray_t *back;
+    libxl_device_vscsidev *v;
+    xs_transaction_t t = XBT_NULL;
+    bool do_reconfigure = false;
+
+    /* Prealloc key+value: 1 toplevel + 4 per device */
+    i = 2 * (1 + (4 * vscsi->num_vscsidevs));
+    back = flexarray_make(gc, i, 1);
+
+    state_path = GCSPRINTF("%s/state", be_path);
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        state_val = libxl__xs_read(gc, t, state_path);
+        LOG(DEBUG, "%s is %s", state_path, state_val);
+        if (!state_val) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+
+        be_state = atoi(state_val);
+        switch (be_state) {
+            case XenbusStateUnknown:
+            case XenbusStateInitialising:
+            case XenbusStateClosing:
+            case XenbusStateClosed:
+            default:
+                /* The backend is in a bad state */
+                rc = ERROR_FAIL;
+                goto out;
+            case XenbusStateInitialised:
+            case XenbusStateReconfiguring:
+            case XenbusStateReconfigured:
+                /* Backend is still busy, caller has to retry */
+                rc = ERROR_NOT_READY;
+                goto out;
+            case XenbusStateInitWait:
+                /* The frontend did not connect yet */
+                be_wait = XenbusStateInitWait;
+                *dev_wait = XenbusStateInitialising;
+                do_reconfigure = false;
+                break;
+            case XenbusStateConnected:
+                /* The backend can handle reconfigure */
+                be_wait = XenbusStateConnected;
+                *dev_wait = XenbusStateClosed;
+                flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
+                do_reconfigure = true;
+                break;
+        }
+
+        /* Append new vscsidev or skip existing  */
+        for (i = 0; i < vscsi->num_vscsidevs; i++) {
+            unsigned int nb = 0;
+            v = vscsi->vscsidevs + i;
+            dev_path = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
+            if (!libxl__xs_directory(gc, XBT_NULL, dev_path, &nb)) {
+                /* FIXME Sanity check */
+                LOG(DEBUG, "%s does not exist anymore", dev_path);
+                continue;
+            }
+            rc = libxl__device_vscsidev_backend_set_rm(gc, v, back);
+            if (rc) goto out;
+        }
+
+        libxl__xs_writev(gc, t, be_path,
+                         libxl__xs_kvs_of_flexarray(gc, back, back->count));
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    if (do_reconfigure) {
+        /* Poll for backend change */
+        rc = libxl__wait_for_backend(gc, be_path, GCSPRINTF("%d", be_wait));
+        if (rc) goto out;
+    }
+    rc = 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
+static int libxl__vscsictrl_next_vscsidev_id(libxl__gc *gc, uint32_t domid,
+                                             libxl_device_vscsictrl *vscsi,
+                                             libxl_devid *vscsidev_id)
+{
+    char *path, *val;
+    xs_transaction_t t = XBT_NULL;
+    unsigned int id;
+    int rc;
+
+    path = GCSPRINTF("%s/vscsi/%u/next_vscsidev_id",
+                     libxl__xs_libxl_path(gc, domid),
+                     vscsi->devid);
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        val = libxl__xs_read(gc, t, path);
+        id = val ? strtoul(val, NULL, 10) : 0;
+
+        LOG(DEBUG, "%s = %s vscsidev_id %u", path, val, id);
+
+        val = GCSPRINTF("%u", id + 1);
+        rc = libxl__xs_write_checked(gc, t, path, val);
+        if (rc) goto out;
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    *vscsidev_id = id;
+    rc = 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
+static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc, uint32_t domid,
+                                            libxl_device_vscsictrl *vscsi)
+{
+    libxl_device_vscsidev *dev;
+    libxl_devid vscsidev_id;
+    int rc, i;
+
+    for (i = 0; i < vscsi->num_vscsidevs; i++) {
+        dev = &vscsi->vscsidevs[i];
+        if (dev->vscsidev_id >= 0)
+            continue;
+        rc = libxl__vscsictrl_next_vscsidev_id(gc, domid, vscsi, &vscsidev_id);
+        if (rc) {
+            LOG(ERROR, "domid %u, failed to assign vscsidev_id to %s",
+                domid, dev->pdev.p_devname);
+            goto out;
+        }
+        dev->vscsidev_id = vscsidev_id;
+    }
+
+    rc = 0;
+out:
+    return rc;
+}
+
+static int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
+                                        libxl_device_vscsictrl *vscsi,
+                                        libxl__device *device)
+{
+    device->backend_domid = vscsi->backend_domid;
+    device->devid         = vscsi->devid;
+    device->domid         = domid;
+    device->backend_kind  = LIBXL__DEVICE_KIND_VSCSI;
+    device->kind          = LIBXL__DEVICE_KIND_VSCSI;
+
+    return 0;
+}
+
+void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
+                                 libxl_device_vscsictrl *vscsi,
+                                 libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    libxl__device *device;
+    char *be_path;
+    unsigned int be_dirs = 0;
+    int rc;
+    libxl_domain_config d_config;
+    libxl_device_vscsictrl vscsi_saved;
+    libxl__domain_userdata_lock *lock = NULL;
+
+    libxl_domain_config_init(&d_config);
+
+    libxl_device_vscsictrl_init(&vscsi_saved);
+    libxl_device_vscsictrl_copy(CTX, &vscsi_saved, vscsi);
+
+    if (vscsi->devid == -1) {
+        LOGE(ERROR, "new vscsictrl for domid %u has uninitialized devid", domid);
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    rc = libxl__vscsi_assign_vscsidev_ids(gc, domid, &vscsi_saved);
+    if (rc) goto out;
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
+    if (rc) goto out;
+
+    if (aodev->update_json) {
+        lock = libxl__lock_domain_userdata(gc, domid);
+        if (!lock) {
+            rc = ERROR_LOCK_FAIL;
+            goto out;
+        }
+
+        rc = libxl__get_domain_configuration(gc, domid, &d_config);
+        if (rc) goto out;
+
+        /* Replace or append the copy to the domain config */
+        DEVICE_ADD(vscsictrl, vscsictrls, domid, &vscsi_saved, COMPARE_VSCSI, &d_config);
+    }
+
+    aodev->dev = device;
+
+    be_path = libxl__device_backend_path(gc, aodev->dev);
+    if (libxl__xs_directory(gc, XBT_NULL, be_path, &be_dirs)) {
+        rc = libxl__device_vscsi_reconfigure_add(egc, aodev, &vscsi_saved, &d_config, be_path);
+        if (rc)
+            goto out;
+        /* Notify that this is done */
+        aodev->callback(egc, aodev);
+    } else {
+        rc = libxl__device_vscsi_new_backend(egc, aodev, &vscsi_saved, &d_config);
+        if (rc)
+            goto out;
+    }
+
+    rc = 0;
+out:
+    if (lock) libxl__unlock_domain_userdata(lock);
+    libxl_device_vscsictrl_dispose(&vscsi_saved);
+    libxl_domain_config_dispose(&d_config);
+    aodev->rc = rc;
+    if (rc) aodev->callback(egc, aodev);
+    return;
+}
+
+static void libxl__device_vscsidev_rm(libxl__egc *egc,
+                                       libxl_device_vscsictrl *vscsi,
+                                       libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    char *be_path;
+    int rc, i, dev_wait;
+    libxl_device_vscsidev *v;
+    xs_transaction_t t = XBT_NULL;
+
+    be_path = libxl__device_backend_path(gc, aodev->dev);
+    rc = libxl__device_vscsi_reconfigure_rm(egc, aodev, vscsi, be_path, &dev_wait);
+    if (rc) goto out;
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        for (i = 0; i < vscsi->num_vscsidevs; i++) {
+            v = vscsi->vscsidevs + i;
+            libxl__device_vscsidev_backend_rm(gc, v, t, be_path, dev_wait);
+        }
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    rc = 0;
+
+out:
+    aodev->rc = rc;
+    /* Notify that this is done */
+    aodev->callback(egc, aodev);
+}
+
+/* FIXME */
+/* Extended variant of DEFINE_DEVICE_REMOVE to handle reconfigure */
+int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
+                                  libxl_device_vscsictrl *vscsi,
+                                  const libxl_asyncop_how *ao_how)
+{
+    AO_CREATE(ctx, domid, ao_how);
+    libxl__device *device;
+    libxl__ao_device *aodev;
+    int rc;
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
+    if (rc != 0) goto out;
+
+    GCNEW(aodev);
+    libxl__prepare_ao_device(ao, aodev);
+    aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
+    aodev->dev = device;
+    aodev->callback = device_addrm_aocomplete;
+    aodev->force = 0;
+    aodev->update_json = true;
+
+
+    libxl__device_vscsidev_rm(egc, vscsi, aodev);
+
+out:
+    if (rc) return AO_CREATE_FAIL(rc);
+    return AO_INPROGRESS;
+}
+
 int libxl__device_vtpm_setdefault(libxl__gc *gc, libxl_device_vtpm *vtpm)
 {
     int rc;
@@ -4162,6 +4728,8 @@ out:
  * libxl_device_disk_destroy
  * libxl_device_nic_remove
  * libxl_device_nic_destroy
+ * libxl_device_vscsictrl_remove
+ * libxl_device_vscsictrl_destroy
  * libxl_device_vtpm_remove
  * libxl_device_vtpm_destroy
  * libxl_device_vkb_remove
@@ -4206,6 +4774,10 @@ DEFINE_DEVICE_REMOVE(disk, destroy, 1)
 DEFINE_DEVICE_REMOVE(nic, remove, 0)
 DEFINE_DEVICE_REMOVE(nic, destroy, 1)
 
+/* vscsi */
+DEFINE_DEVICE_REMOVE(vscsictrl, remove, 0)
+DEFINE_DEVICE_REMOVE(vscsictrl, destroy, 1)
+
 /* vkb */
 DEFINE_DEVICE_REMOVE(vkb, remove, 0)
 DEFINE_DEVICE_REMOVE(vkb, destroy, 1)
@@ -4231,6 +4803,7 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
 /* The following functions are defined:
  * libxl_device_disk_add
  * libxl_device_nic_add
+ * libxl_device_vscsictrl_add
  * libxl_device_vtpm_add
  */
 
@@ -4259,6 +4832,9 @@ DEFINE_DEVICE_ADD(disk)
 
 /* nic */
 DEFINE_DEVICE_ADD(nic)
+
+/* vscsi */
+DEFINE_DEVICE_ADD(vscsictrl)
 
 /* vtpm */
 DEFINE_DEVICE_ADD(vtpm)
@@ -6798,6 +7374,8 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
     } while (0);
 
     MERGE(nic, nics, COMPARE_DEVID, {});
+
+    MERGE(vscsictrl, vscsictrls, COMPARE_VSCSI, {});
 
     MERGE(vtpm, vtpms, COMPARE_DEVID, {});
 
