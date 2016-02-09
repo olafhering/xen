@@ -78,8 +78,6 @@ do
 		targetcli /backstores/fileio create name=${fileio_name} "file_or_dev=${f_file}" size=$((1024*1024 * 8 )) sparse=true
 		targetcli /loopback/${loopback_wwn}/luns create /backstores/fileio/${fileio_name} $lun
 
-		udevadm settle --timeout=4
-
 		vpd_uuid="`sed -n '/^T10 VPD Unit Serial Number:/s@^[^:]\+:[[:blank:]]\+@@p' /sys/kernel/config/target/core/fileio_*/${fileio_name}/wwn/vpd_unit_serial`"
 		if test -z "${vpd_uuid}"
 		then
@@ -87,6 +85,7 @@ do
 		fi
 		echo "${vpd_uuid}" > "${f_uuid}"
 		by_id="`echo ${vpd_uuid} | sed 's@-@@g;s@^\(.\{25\}\)\(.*\)@scsi-36001405\1@'`"
+		udevadm settle --exit-if-exists="/dev/disk/by-id/${by_id}"
 		ln -sfvbn "/dev/disk/by-id/${by_id}" "${f_link}"
 
 		f_major=$((`stat --dereference --format=0x%t "${f_link}"`))
@@ -103,22 +102,23 @@ do
 		f_alias=${f_alias##*/}
 
 		blockdev --rereadpt "${f_link}"
-		udevadm settle --timeout=4
+		udevadm settle
 		echo 1,96,S | sfdisk "${f_link}"
-		udevadm settle --timeout=4
+		udevadm settle
 		blockdev --rereadpt "${f_link}"
-		udevadm settle --timeout=4
+		udevadm settle
 		parted -s "${f_link}" unit s print
 
 		d_link="`readlink \"${f_link}\"`"
 		if test -n "${d_link}"
 		then
 			p_link="${d_link}-part1"
+			udevadm settle --exit-if-exists="${p_link}"
 			ls -l "${p_link}"
 			mkswap -L "swp_${fileio_name}" "${p_link}"
-			udevadm settle --timeout=4
+			udevadm settle
 			blockdev --rereadpt "${f_link}"
-			udevadm settle --timeout=4
+			udevadm settle
 			parted -s "${f_link}" unit s print
 		fi
 
