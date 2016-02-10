@@ -565,7 +565,7 @@ void update_cr3(struct vcpu *v)
     make_cr3(v, cr3_mfn);
 }
 
-static const char __section(".bss.page_aligned") zero_page[PAGE_SIZE];
+static const char __section(".bss.page_aligned.const") zero_page[PAGE_SIZE];
 
 static void invalidate_shadow_ldt(struct vcpu *v, int flush)
 {
