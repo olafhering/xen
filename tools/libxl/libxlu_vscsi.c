@@ -564,9 +564,9 @@ out:
 
 int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
 {
-    libxl_device_vscsidev dev = { }, *vd;
-    libxl_device_vscsictrl ctrl = { }, *vc, *vscsictrls;
-    int num_ctrls, c, d, found = 0;
+    libxl_device_vscsidev dev = { };
+    libxl_device_vscsictrl ctrl = { };
+    int rc;
     char *tmp = NULL;
 
     libxl_device_vscsictrl_init(&ctrl);
@@ -575,48 +575,27 @@ int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str)
     /* Create a dummy cfg */
     if (asprintf(&tmp, "0:0:0:0,%s", str) < 0) {
         LOG(cfg, "asprintf failed while removing %s from domid %u", str, domid);
+        rc = ERROR_FAIL;
         goto out;
     }
 
-    if (xlu_vscsi_parse(cfg, ctx, tmp, &ctrl, &dev))
-        goto out;
+    rc = xlu_vscsi_parse(cfg, ctx, tmp, &ctrl, &dev);
+    if (rc) goto out;
 
-    libxl_device_vscsictrl_append_vscsidev(ctx, &ctrl, &dev);
-
-    vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
-    if (!vscsictrls)
-        goto out;
-
-    for (c = 0; c < num_ctrls; ++c) {
-        vc = vscsictrls + c;
-        for (d = 0; d < vc->num_vscsidevs; d++) {
-            vd = vc->vscsidevs + d;
-#define CMP(member) (vd->vdev.member == dev.vdev.member)
-            if (vc->devid == ctrl.devid &&
-                CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)) {
-                if (vc->num_vscsidevs > 1) {
-                    /* Remove single vscsidev connected to this vscsictrl */;
-                    ctrl.devid = vc->devid;
-                    ctrl.vscsidevs[0].vscsidev_id = vd->vscsidev_id;
-                    libxl_device_vscsidev_remove(ctx, domid, &ctrl, NULL);
-                } else {
-                    /* Wipe entire vscsictrl */;
-                    libxl_device_vscsictrl_remove(ctx, domid, vc, NULL);
-                    found = 1;
-                }
-            }
-#undef CMP
-            libxl_device_vscsidev_dispose(vd);
-        }
-        libxl_device_vscsictrl_dispose(vc);
+    rc = libxl_device_vscsidev_remove(ctx, domid, &dev, NULL);
+    switch (rc) {
+    case ERROR_NOTFOUND:
+        LOG(cfg, "detach failed: %s does not exist in domid %u", str, domid);
+        break;
+    default:
+        break;
     }
-    free(vscsictrls);
 
 out:
     free(tmp);
     libxl_device_vscsidev_dispose(&dev);
     libxl_device_vscsictrl_dispose(&ctrl);
-    return found;
+    return rc;
 }
 
 int xlu_vscsi_config_add(XLU_Config *cfg,

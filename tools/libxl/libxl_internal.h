@@ -3520,6 +3520,10 @@ _hidden int libxl__vscsi_collect_ctrls(libxl__gc *gc,
                                        libxl_device_vscsictrl **ctrls,
                                        int *num);
 
+_hidden int libxl__device_vscsictrl_remove(libxl_ctx *ctx,
+                                           uint32_t domid,
+                                           libxl_device_vscsictrl *vscsictrl,
+                                           const libxl_asyncop_how *ao_how);
 /*
  * Convenience macros.
  */

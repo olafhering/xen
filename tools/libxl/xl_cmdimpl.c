@@ -6918,7 +6918,7 @@ int main_vscsidetach(int argc, char **argv)
     char *dom = argv[1], *str = argv[2];
     uint32_t domid;
     XLU_Config *config = NULL;
-    int found = 0;
+    int rc = 0;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-detach", 1) {
         /* No options */
@@ -6940,14 +6940,14 @@ int main_vscsidetach(int argc, char **argv)
         goto out;
     }
 
-    found = xlu_vscsi_detach(config, ctx, domid, str);
-    if (!found)
-        fprintf(stderr, "%s(%u) vdev %s does not exist in domain %s\n", __func__, __LINE__, str, dom);
+    rc = xlu_vscsi_detach(config, ctx, domid, str);
+    if (rc)
+        fprintf(stderr, "scsi-detach %s %s failed: %d\n", dom, str, rc);
 
 out:
     if (config)
         xlu_cfg_destroy(config);
-    return !found;
+    return !!rc;
 }
 
 int main_vtpmattach(int argc, char **argv)
