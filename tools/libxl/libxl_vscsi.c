@@ -365,8 +365,6 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
     libxl_device_vscsidev *v;
     xs_transaction_t t = XBT_NULL;
 
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
-
     /* Prealloc key+value: 1 toplevel + 4 per device */
     i = 2 * (1 + (4 * ctrl->num_vscsidevs));
     back = flexarray_make(gc, i, 1);
@@ -437,7 +435,6 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
 
 out:
     libxl__xs_transaction_abort(gc, &t);
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     return rc;
 }
 
@@ -450,7 +447,6 @@ static void libxl__device_vscsidev_backend_rm(libxl__gc *gc,
     char *dir, *path, *val;
 
     dir = GCSPRINTF("%s/vscsi-devs/dev-%u", be_path, v->vscsidev_id);
-    LOG(WARN, "rm %s", dir);
     path = GCSPRINTF("%s/state", dir);
     val = libxl__xs_read(gc, t, path);
     LOG(DEBUG, "%s is %s", path, val);
@@ -476,9 +472,6 @@ static void libxl__device_vscsidev_rm_be(libxl__egc *egc,
     xs_transaction_t t = XBT_NULL;
     int i;
 
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
-    LOG(WARN, "rc %d egc %p ds %p aodev %p ao %p", rc, egc, ds, aodev, ao);
-
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
         if (rc) goto out;
@@ -492,7 +485,6 @@ static void libxl__device_vscsidev_rm_be(libxl__egc *egc,
     }
 
 out:
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     aodev->rc = rc;
     aodev->callback(egc, aodev);
 }
@@ -505,7 +497,6 @@ static void libxl__device_vscsidev_rm(libxl__egc *egc,
     char *state_path;
     int rc, be_wait;
 
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     vscsidev_rm->be_path = libxl__device_backend_path(gc, aodev->dev);
     state_path = GCSPRINTF("%s/state", vscsidev_rm->be_path);
 
@@ -524,7 +515,6 @@ static void libxl__device_vscsidev_rm(libxl__egc *egc,
     return;
 
 out:
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     aodev->rc = rc;
     /* Notify that this is done */
     aodev->callback(egc, aodev);
@@ -533,10 +523,7 @@ out:
 static void libxl_vscsidev_rm_aodev_cb(libxl__egc *egc, libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
-    LOG(WARN, "rc %d egc %p aodev %p ao %p", aodev->rc, egc, aodev, ao);
     libxl__ao_complete(egc, ao, aodev->rc);
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
 }
 
 static int libxl__device_vscsidev_remove(libxl_ctx *ctx,
@@ -548,8 +535,6 @@ static int libxl__device_vscsidev_remove(libxl_ctx *ctx,
     libxl__ao_device *aodev;
     libxl__vscsidev_rm *vscsidev_rm;
     libxl__device *device;
-
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
 
     GCNEW(vscsidev_rm);
     aodev = &vscsidev_rm->aodev;
@@ -570,7 +555,6 @@ static int libxl__device_vscsidev_remove(libxl_ctx *ctx,
 
     libxl__device_vscsidev_rm(egc, aodev);
 
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     return AO_INPROGRESS;
 }
 
@@ -583,7 +567,6 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
     libxl_device_vscsidev *vd;
     int c, d, rc, num_ctrls = 0, found = 0;
 
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     libxl_device_vscsictrl_init(&ctrl);
 
     rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
@@ -619,7 +602,6 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
 
 out:
     libxl_device_vscsictrl_dispose(&ctrl);
-    LOG(WARN, "%s(%u)", __func__, __LINE__);
     GC_FREE;
     return rc;
 }
