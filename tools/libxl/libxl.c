@@ -2279,27 +2279,25 @@ out:
 }
 
 static int libxl__vscsictrl_next_vscsidev_id(libxl__gc *gc,
-                                             const char *be_path,
+                                             const char *libxl_path,
                                              libxl_devid *vscsidev_id)
 {
-    char *path, *val;
+    const char *val;
     xs_transaction_t t = XBT_NULL;
     unsigned int id;
     int rc;
-
-    path = GCSPRINTF("%s/next_vscsidev_id", be_path);
 
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
         if (rc) goto out;
 
-        val = libxl__xs_read(gc, t, path);
+        val = libxl__xs_read(gc, t, libxl_path);
         id = val ? strtoul(val, NULL, 10) : 0;
 
-        LOG(DEBUG, "%s = %s vscsidev_id %u", path, val, id);
+        LOG(DEBUG, "%s = %s vscsidev_id %u", libxl_path, val, id);
 
         val = GCSPRINTF("%u", id + 1);
-        rc = libxl__xs_write_checked(gc, t, path, val);
+        rc = libxl__xs_write_checked(gc, t, libxl_path, val);
         if (rc) goto out;
 
         rc = libxl__xs_transaction_commit(gc, &t);
@@ -2316,21 +2314,25 @@ out:
 }
 
 static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc,
-                                            const char *be_path,
+                                            uint32_t domid,
                                             libxl_device_vscsictrl *vscsi)
 {
     libxl_device_vscsidev *dev;
     libxl_devid vscsidev_id;
+    const char *libxl_path;
     int rc, i;
 
+    libxl_path = GCSPRINTF("%s/vscsi/%u/next_vscsidev_id",
+                           libxl__xs_libxl_path(gc, domid),
+                           vscsi->devid);
     for (i = 0; i < vscsi->num_vscsidevs; i++) {
         dev = &vscsi->vscsidevs[i];
         if (dev->vscsidev_id >= 0)
             continue;
-        rc = libxl__vscsictrl_next_vscsidev_id(gc, be_path, &vscsidev_id);
+        rc = libxl__vscsictrl_next_vscsidev_id(gc, libxl_path, &vscsidev_id);
         if (rc) {
             LOG(ERROR, "failed to assign vscsidev_id to %s for %s",
-                be_path, dev->pdev.p_devname);
+                libxl_path, dev->pdev.p_devname);
             goto out;
         }
         dev->vscsidev_id = vscsidev_id;
@@ -2386,7 +2388,7 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
     aodev->dev = device;
     be_path = libxl__device_backend_path(gc, aodev->dev);
 
-    rc = libxl__vscsi_assign_vscsidev_ids(gc, be_path, &vscsi_saved);
+    rc = libxl__vscsi_assign_vscsidev_ids(gc, domid, &vscsi_saved);
     if (rc) goto out;
 
     if (aodev->update_json) {
