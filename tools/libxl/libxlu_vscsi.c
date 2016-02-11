@@ -1,7 +1,7 @@
 /*
  * libxlu_vscsi.c - xl configuration file parsing: setup and helper functions
  *
- * Copyright (C) 2015      SUSE Linux GmbH
+ * Copyright (C) 2016      SUSE Linux GmbH
  * Author Olaf Hering <olaf@aepfle.de>
  * Author Ondřej Holeček <aaannz@gmail.com>
  *

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015      SUSE Linux GmbH
+ * Copyright (C) 2016      SUSE Linux GmbH
  * Author Olaf Hering <olaf@aepfle.de>
  *
  * This program is free software; you can redistribute it and/or modify
