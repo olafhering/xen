@@ -2386,6 +2386,9 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
     rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
     if (rc) goto out;
 
+    aodev->dev = device;
+    be_path = libxl__device_backend_path(gc, aodev->dev);
+
     if (aodev->update_json) {
         lock = libxl__lock_domain_userdata(gc, domid);
         if (!lock) {
@@ -2400,9 +2403,6 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
         DEVICE_ADD(vscsictrl, vscsictrls, domid, &vscsi_saved, COMPARE_VSCSI, &d_config);
     }
 
-    aodev->dev = device;
-
-    be_path = libxl__device_backend_path(gc, aodev->dev);
     if (libxl__xs_directory(gc, XBT_NULL, be_path, &be_dirs)) {
         rc = libxl__device_vscsi_reconfigure_add(egc, aodev, &vscsi_saved, &d_config, be_path);
         if (rc)
