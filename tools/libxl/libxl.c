@@ -2429,7 +2429,8 @@ out:
 int libxl__device_vscsictrl_remove(libxl_ctx *ctx,
                                    uint32_t domid,
                                    libxl_device_vscsictrl *vscsictrl,
-                                   const libxl_asyncop_how *ao_how)
+                                   const libxl_asyncop_how *ao_how,
+                                   int force)
 {
     AO_CREATE(ctx, domid, ao_how);
     libxl__device *device;
@@ -2445,7 +2446,7 @@ int libxl__device_vscsictrl_remove(libxl_ctx *ctx,
     aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
     aodev->dev = device;
     aodev->callback = device_addrm_aocomplete;
-    aodev->force = 0;
+    aodev->force = force;
     libxl__initiate_device_generic_remove(egc, aodev);
 
 out:
@@ -2457,7 +2458,14 @@ int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
                                   libxl_device_vscsictrl *vscsictrl,
                                   const libxl_asyncop_how *ao_how)
 {
-    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how);
+    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 0);
+}
+
+int libxl_device_vscsictrl_destroy(libxl_ctx *ctx, uint32_t domid,
+                                   libxl_device_vscsictrl *vscsictrl,
+                                   const libxl_asyncop_how *ao_how)
+{
+    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 1);
 }
 
 int libxl__device_vtpm_setdefault(libxl__gc *gc, libxl_device_vtpm *vtpm)
@@ -4563,7 +4571,6 @@ out:
  * libxl_device_disk_destroy
  * libxl_device_nic_remove
  * libxl_device_nic_destroy
- * libxl_device_vscsictrl_destroy
  * libxl_device_vtpm_remove
  * libxl_device_vtpm_destroy
  * libxl_device_vkb_remove
@@ -4613,9 +4620,6 @@ DEFINE_DEVICE_REMOVE(disk, destroy, 1)
 /* nic */
 DEFINE_DEVICE_REMOVE(nic, remove, 0)
 DEFINE_DEVICE_REMOVE(nic, destroy, 1)
-
-/* vscsi */
-DEFINE_DEVICE_REMOVE(vscsictrl, destroy, 1)
 
 /* vkb */
 DEFINE_DEVICE_REMOVE(vkb, remove, 0)

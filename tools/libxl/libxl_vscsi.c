@@ -590,7 +590,7 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
                 rc = libxl__device_vscsidev_remove(ctx, domid, &ctrl, ao_how);
             } else {
                 /* Wipe entire vscsictrl */;
-                rc = libxl__device_vscsictrl_remove(ctx, domid, vc, ao_how);
+                rc = libxl__device_vscsictrl_remove(ctx, domid, vc, ao_how, 0);
             }
         }
         libxl_device_vscsictrl_dispose(vc);
