@@ -2180,10 +2180,10 @@ out:
 }
 
 static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
-                                           libxl__ao_device *aodev,
-                                           libxl_device_vscsictrl *vscsi,
-                                           libxl_domain_config *d_config,
-                                           const char *be_path)
+                                               libxl__ao_device *aodev,
+                                               libxl_device_vscsictrl *vscsi,
+                                               libxl_domain_config *d_config,
+                                               const char *be_path)
 {
     STATE_AO_GC(aodev->ao);
     int rc, i, be_state, be_wait;
