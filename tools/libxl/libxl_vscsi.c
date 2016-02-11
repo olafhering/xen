@@ -352,8 +352,7 @@ static int libxl__device_vscsidev_backend_set_rm(libxl__gc *gc,
 
 static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
                                            const char *state_path,
-                                           int *be_wait,
-                                           bool *do_reconfigure)
+                                           int *be_wait)
 
 {
     STATE_AO_GC(aodev->ao);
@@ -403,14 +402,12 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
                 /* The frontend did not connect yet */
                 *be_wait = XenbusStateInitWait;
                 vscsidev_rm->dev_wait = XenbusStateClosing;
-                *do_reconfigure = false;
                 break;
             case XenbusStateConnected:
                 /* The backend can handle reconfigure */
                 *be_wait = XenbusStateConnected;
                 vscsidev_rm->dev_wait = XenbusStateClosed;
                 flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
-                *do_reconfigure = true;
                 break;
         }
 
@@ -507,27 +504,24 @@ static void libxl__device_vscsidev_rm(libxl__egc *egc,
     libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev, *vscsidev_rm, aodev);
     char *state_path;
     int rc, be_wait;
-    bool do_reconfigure = false;
 
     LOG(WARN, "%s(%u)", __func__, __LINE__);
     vscsidev_rm->be_path = libxl__device_backend_path(gc, aodev->dev);
     state_path = GCSPRINTF("%s/state", vscsidev_rm->be_path);
 
-    rc = libxl__device_vscsi_reconfigure_rm(aodev, state_path, &be_wait, &do_reconfigure);
+    rc = libxl__device_vscsi_reconfigure_rm(aodev, state_path, &be_wait);
     if (rc) goto out;
 
-    if (do_reconfigure) {
-        rc = libxl__ev_devstate_wait(ao, &aodev->backend_ds,
-                                     libxl__device_vscsidev_rm_be,
-                                     state_path, be_wait,
-                                     LIBXL_INIT_TIMEOUT * 1000);
-        if (rc) {
-            LOG(ERROR, "unable to initialize device %s", vscsidev_rm->be_path);
-            goto out;
-        }
+    rc = libxl__ev_devstate_wait(ao, &aodev->backend_ds,
+                                 libxl__device_vscsidev_rm_be,
+                                 state_path, be_wait,
+                                 LIBXL_INIT_TIMEOUT * 1000);
+    if (rc) {
+        LOG(ERROR, "unable to wait for %s", state_path);
+        goto out;
     }
 
-    rc = 0;
+    return;
 
 out:
     LOG(WARN, "%s(%u)", __func__, __LINE__);
