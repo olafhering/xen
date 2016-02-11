@@ -2363,7 +2363,7 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
 {
     STATE_AO_GC(aodev->ao);
     libxl__device *device;
-    char *be_path;
+    const char *be_path;
     unsigned int be_dirs = 0;
     int rc;
     libxl_domain_config d_config;
