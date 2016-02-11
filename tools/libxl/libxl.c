@@ -2345,6 +2345,7 @@ static int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
                                         libxl_device_vscsictrl *vscsi,
                                         libxl__device *device)
 {
+    device->backend_devid = vscsi->devid;
     device->backend_domid = vscsi->backend_domid;
     device->devid         = vscsi->devid;
     device->domid         = domid;
