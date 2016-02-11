@@ -2278,8 +2278,8 @@ out:
     return rc;
 }
 
-static int libxl__vscsictrl_next_vscsidev_id(libxl__gc *gc, uint32_t domid,
-                                             libxl_device_vscsictrl *vscsi,
+static int libxl__vscsictrl_next_vscsidev_id(libxl__gc *gc,
+                                             const char *be_path,
                                              libxl_devid *vscsidev_id)
 {
     char *path, *val;
@@ -2287,9 +2287,7 @@ static int libxl__vscsictrl_next_vscsidev_id(libxl__gc *gc, uint32_t domid,
     unsigned int id;
     int rc;
 
-    path = GCSPRINTF("%s/vscsi/%u/next_vscsidev_id",
-                     libxl__xs_libxl_path(gc, domid),
-                     vscsi->devid);
+    path = GCSPRINTF("%s/next_vscsidev_id", be_path);
 
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
@@ -2317,7 +2315,8 @@ out:
     return rc;
 }
 
-static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc, uint32_t domid,
+static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc,
+                                            const char *be_path,
                                             libxl_device_vscsictrl *vscsi)
 {
     libxl_device_vscsidev *dev;
@@ -2328,10 +2327,10 @@ static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc, uint32_t domid,
         dev = &vscsi->vscsidevs[i];
         if (dev->vscsidev_id >= 0)
             continue;
-        rc = libxl__vscsictrl_next_vscsidev_id(gc, domid, vscsi, &vscsidev_id);
+        rc = libxl__vscsictrl_next_vscsidev_id(gc, be_path, &vscsidev_id);
         if (rc) {
-            LOG(ERROR, "domid %u, failed to assign vscsidev_id to %s",
-                domid, dev->pdev.p_devname);
+            LOG(ERROR, "failed to assign vscsidev_id to %s for %s",
+                be_path, dev->pdev.p_devname);
             goto out;
         }
         dev->vscsidev_id = vscsidev_id;
@@ -2379,15 +2378,15 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
         goto out;
     }
 
-    rc = libxl__vscsi_assign_vscsidev_ids(gc, domid, &vscsi_saved);
-    if (rc) goto out;
-
     GCNEW(device);
     rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
     if (rc) goto out;
 
     aodev->dev = device;
     be_path = libxl__device_backend_path(gc, aodev->dev);
+
+    rc = libxl__vscsi_assign_vscsidev_ids(gc, be_path, &vscsi_saved);
+    if (rc) goto out;
 
     if (aodev->update_json) {
         lock = libxl__lock_domain_userdata(gc, domid);
