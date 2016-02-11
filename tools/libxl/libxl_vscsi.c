@@ -402,7 +402,7 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
             case XenbusStateInitWait:
                 /* The frontend did not connect yet */
                 *be_wait = XenbusStateInitWait;
-                vscsidev_rm->dev_wait = XenbusStateInitialising;
+                vscsidev_rm->dev_wait = XenbusStateClosing;
                 *do_reconfigure = false;
                 break;
             case XenbusStateConnected:
