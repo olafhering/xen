@@ -107,7 +107,6 @@ static bool libxl__vscsi_fill_dev(libxl__gc *gc,
     char *path, *c, *p, *v, *s;
     unsigned int devid;
     int r;
-    bool parsed_ok;
 
     r = sscanf(dev_dir, "dev-%u", &devid);
     if (r != 1) {
@@ -127,8 +126,7 @@ static bool libxl__vscsi_fill_dev(libxl__gc *gc,
         return false;
     }
 
-    parsed_ok = vscsi_parse_pdev(gc, dev, c, p, v);
-    if (!parsed_ok) {
+    if (!vscsi_parse_pdev(gc, dev, c, p, v)) {
         LOG(ERROR, "failed to parse %s: %s %s %s %s", path, c, p, v, s);
         return false;
     }
@@ -141,18 +139,14 @@ static bool libxl__vscsi_fill_dev(libxl__gc *gc,
         case XenbusStateConnected:
         case XenbusStateReconfiguring:
         case XenbusStateReconfigured:
-            parsed_ok = true;
             break;
         case XenbusStateClosing:
         case XenbusStateClosed:
-            parsed_ok = false;
+            LOG(DEBUG, "unexpected state in %s: %s", path, s);
             break;
     }
 
-    if (!parsed_ok)
-        LOG(ERROR, "unexpected state in %s: %s", path, s);
-
-    return parsed_ok;
+    return true;
 }
 
 static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
