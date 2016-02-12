@@ -382,8 +382,8 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
     libxl_device_vscsidev *v;
     xs_transaction_t t = XBT_NULL;
 
-    /* Prealloc key+value: 1 toplevel + 4 per device */
-    i = 2 * (1 + (4 * ctrl->num_vscsidevs));
+    /* Prealloc key+value: 1 toplevel + 1 per device */
+    i = 2 * (1 + 1);
     back = flexarray_make(gc, i, 1);
 
     for (;;) {
