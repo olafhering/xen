@@ -580,11 +580,11 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
                                  const libxl_asyncop_how *ao_how)
 {
     GC_INIT(ctx);
-    libxl_device_vscsictrl ctrl, *vc, *ctrls = NULL;
+    libxl_device_vscsictrl *vc, *ctrls = NULL;
     libxl_device_vscsidev *vd;
-    int c, d, rc, num_ctrls = 0, found = 0;
-
-    libxl_device_vscsictrl_init(&ctrl);
+    int c, d, rc, num_ctrls = 0;
+    int found = 0, idx;
+    int head, tail, i;
 
     rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
     if (rc != 0) goto out;
@@ -592,33 +592,47 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
 
     for (c = 0; c < num_ctrls; ++c) {
         vc = ctrls + c;
-        for (d = 0; !found && d < vc->num_vscsidevs; d++) {
+
+        for (d = 0; d < vc->num_vscsidevs; d++) {
             vd = vc->vscsidevs + d;
-#define CMP(member) (vd->vdev.member == vscsidev->vdev.member)
-            if (!(CMP(hst) && CMP(chn) && CMP(tgt) && CMP(lun)))
-                continue;
-#undef CMP
-            found = 1;
+            if (vd->vdev.hst == vscsidev->vdev.hst &&
+                vd->vdev.chn == vscsidev->vdev.chn &&
+                vd->vdev.tgt == vscsidev->vdev.tgt &&
+                vd->vdev.lun == vscsidev->vdev.lun) {
+                found = 1;
+                idx = d;
+                break;
+            }
+        }
+
+        if (found) {
             if (vc->num_vscsidevs > 1) {
+                /* Prepare vscsictrl, leave only desired vscsidev */
+                head = idx;
+                tail = vc->num_vscsidevs - idx - 1;
+                for (i = 0; i < head; i++)
+                    libxl_device_vscsictrl_remove_vscsidev(ctx, vc, 0);
+                for (i = 0; i < tail; i++)
+                    libxl_device_vscsictrl_remove_vscsidev(ctx, vc, 1);
+
                 /* Remove single vscsidev connected to this vscsictrl */
-                libxl_device_vscsictrl_append_vscsidev(ctx, &ctrl, vscsidev);
-                ctrl.devid = vc->devid;
-                ctrl.vscsidevs[0].vscsidev_id = vd->vscsidev_id;
-                rc = libxl__device_vscsidev_remove(ctx, domid, &ctrl, ao_how);
+                rc = libxl__device_vscsidev_remove(ctx, domid, vc, ao_how);
             } else {
                 /* Wipe entire vscsictrl */;
                 rc = libxl__device_vscsictrl_remove(ctx, domid, vc, ao_how, 0);
             }
+            break;
         }
-        libxl_device_vscsictrl_dispose(vc);
     }
+
+    for (c = 0; c < num_ctrls; ++c)
+        libxl_device_vscsictrl_dispose(ctrls + c);
     free(ctrls);
 
     if (!found)
         rc = ERROR_NOTFOUND;
 
 out:
-    libxl_device_vscsictrl_dispose(&ctrl);
     GC_FREE;
     return rc;
 }
