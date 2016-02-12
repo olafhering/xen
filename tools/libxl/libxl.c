@@ -2109,10 +2109,10 @@ out:
     return rc;
 }
 
-static int libxl__device_vscsi_new_backend(libxl__egc *egc,
-                                           libxl__ao_device *aodev,
-                                           libxl_device_vscsictrl *vscsictrl,
-                                           libxl_domain_config *d_config)
+static int libxl__device_vscsictrl_new_backend(libxl__egc *egc,
+                                               libxl__ao_device *aodev,
+                                               libxl_device_vscsictrl *vscsictrl,
+                                               libxl_domain_config *d_config)
 {
     STATE_AO_GC(aodev->ao);
     int rc, i;
@@ -2179,11 +2179,11 @@ out:
     return rc;
 }
 
-static int libxl__device_vscsi_reconfigure_add(libxl__egc *egc,
-                                               libxl__ao_device *aodev,
-                                               libxl_device_vscsictrl *vscsictrl,
-                                               libxl_domain_config *d_config,
-                                               const char *be_path)
+static int libxl__device_vscsictrl_reconfigure_add(libxl__egc *egc,
+                                                   libxl__ao_device *aodev,
+                                                   libxl_device_vscsictrl *vscsictrl,
+                                                   libxl_domain_config *d_config,
+                                                   const char *be_path)
 {
     STATE_AO_GC(aodev->ao);
     int rc, i, be_state, be_wait;
@@ -2313,9 +2313,9 @@ out:
     return rc;
 }
 
-static int libxl__vscsi_assign_vscsidev_ids(libxl__gc *gc,
-                                            uint32_t domid,
-                                            libxl_device_vscsictrl *vscsictrl)
+static int libxl__vscsictrl_assign_vscsidev_ids(libxl__gc *gc,
+                                                uint32_t domid,
+                                                libxl_device_vscsictrl *vscsictrl)
 {
     libxl_device_vscsidev *dev;
     libxl_devid vscsidev_id;
@@ -2391,7 +2391,7 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
     aodev->dev = device;
     be_path = libxl__device_backend_path(gc, aodev->dev);
 
-    rc = libxl__vscsi_assign_vscsidev_ids(gc, domid, &vscsictrl_saved);
+    rc = libxl__vscsictrl_assign_vscsidev_ids(gc, domid, &vscsictrl_saved);
     if (rc) goto out;
 
     if (aodev->update_json) {
@@ -2409,13 +2409,13 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
     }
 
     if (libxl__xs_directory(gc, XBT_NULL, be_path, &be_dirs)) {
-        rc = libxl__device_vscsi_reconfigure_add(egc, aodev, &vscsictrl_saved, &d_config, be_path);
+        rc = libxl__device_vscsictrl_reconfigure_add(egc, aodev, &vscsictrl_saved, &d_config, be_path);
         if (rc)
             goto out;
         /* Notify that this is done */
         aodev->callback(egc, aodev);
     } else {
-        rc = libxl__device_vscsi_new_backend(egc, aodev, &vscsictrl_saved, &d_config);
+        rc = libxl__device_vscsictrl_new_backend(egc, aodev, &vscsictrl_saved, &d_config);
         if (rc)
             goto out;
     }
