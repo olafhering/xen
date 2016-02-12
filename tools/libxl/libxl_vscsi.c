@@ -148,21 +148,6 @@ static bool libxl__vscsi_fill_dev(libxl__gc *gc,
         return false;
     }
 
-    switch (atoi(s)) {
-    case XenbusStateUnknown:
-    case XenbusStateInitialising:
-    case XenbusStateInitWait:
-    case XenbusStateInitialised:
-    case XenbusStateConnected:
-    case XenbusStateReconfiguring:
-    case XenbusStateReconfigured:
-        break;
-    case XenbusStateClosing:
-    case XenbusStateClosed:
-        LOG(DEBUG, "unexpected state in %s: %s", path, s);
-        break;
-    }
-
     return true;
 }
 
