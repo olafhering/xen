@@ -6858,9 +6858,10 @@ int main_vscsilist(int argc, char **argv)
             fprintf(stderr, "%s is an invalid domain identifier\n", *argv);
             continue;
         }
-        if (!(vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls))) {
+        vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
+        if (!vscsictrls)
             continue;
-        }
+
         for (h = 0; h < num_ctrls; ++h) {
             for (d = 0; d < vscsictrls[h].num_vscsidevs; d++) {
                 if (!libxl_device_vscsictrl_getinfo(ctx, domid, &vscsictrls[h],
