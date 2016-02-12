@@ -494,7 +494,11 @@ static void libxl__device_vscsidev_rm_be(libxl__egc *egc,
         if (rc) goto out;
 
         for (i = 0; i < ctrl->num_vscsidevs; i++)
-            libxl__device_vscsidev_backend_rm(gc, ctrl->vscsidevs + i, t, vscsidev_rm->be_path, vscsidev_rm->dev_wait);
+            libxl__device_vscsidev_backend_rm(gc,
+                                              ctrl->vscsidevs + i,
+                                              t,
+                                              vscsidev_rm->be_path,
+                                              vscsidev_rm->dev_wait);
 
         rc = libxl__xs_transaction_commit(gc, &t);
         if (!rc) break;
