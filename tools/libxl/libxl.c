@@ -2087,6 +2087,7 @@ static int libxl__device_vscsidev_backend_set_add(libxl__gc *gc,
                               GCSPRINTF("%u:%u:%u:%llu", hst, chn, tgt, lun));
         break;
     case LIBXL_VSCSI_PDEV_TYPE_INVALID:
+        /* fallthrough */
     default:
         rc = ERROR_FAIL;
         goto out;
