@@ -166,21 +166,18 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
     ctrl->devid = atoi(dir);
 
     be_path = libxl__xs_read(gc, t, GCSPRINTF("%s/%s/backend", fe_path, dir));
-    /* FIXME what if xenstore is broken? */
-    if (!be_path) {
-        libxl_defbool_set(&ctrl->scsi_raw_cmds, false);
-        return false;
-    }
+    if (!be_path)
+        goto out;
 
     tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/%s/backend-id", fe_path, dir));
-    /* FIXME what if xenstore is broken? */
-    if (tmp)
-        ctrl->backend_domid = atoi(tmp);
+    if (!tmp)
+        goto out;
+    ctrl->backend_domid = atoi(tmp);
 
-    parsed_ok = false;
     tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/feature-host", be_path));
-    if (tmp)
-        parsed_ok = atoi(tmp) != 0;
+    if (!tmp)
+        goto out;
+    parsed_ok = atoi(tmp) != 0;
     libxl_defbool_set(&ctrl->scsi_raw_cmds, parsed_ok);
 
     parsed_ok = true;
@@ -197,6 +194,10 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
     }
 
     return parsed_ok;
+
+out:
+    libxl_defbool_set(&ctrl->scsi_raw_cmds, false);
+    return false;
 }
 
 int libxl__vscsi_collect_ctrls(libxl__gc *gc,
