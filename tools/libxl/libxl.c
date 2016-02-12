@@ -2140,7 +2140,7 @@ static int libxl__device_vscsictrl_new_backend(libxl__egc *egc,
     for (i = 0; i < vscsictrl->num_vscsidevs; i++) {
         v = vscsictrl->vscsidevs + i;
         rc = libxl__device_vscsidev_backend_set_add(gc, v, back);
-        if (rc) return rc;
+        if (rc) goto out;
     }
 
     for (;;) {
