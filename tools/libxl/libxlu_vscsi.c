@@ -482,21 +482,15 @@ out:
 int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str, libxl_device_vscsictrl *vscsictrl)
 {
-    libxl_device_vscsidev *new_dev = NULL;
-    libxl_device_vscsictrl *new_ctrl, *vscsictrls = NULL, *tmp;
+    libxl_device_vscsidev new_dev;
+    libxl_device_vscsictrl new_ctrl, *vscsictrls = NULL, *tmp;
     int rc, found_ctrl = -1, i;
     int num_ctrls;
 
-    new_ctrl = malloc(sizeof(*new_ctrl));
-    new_dev = malloc(sizeof(*new_dev));
-    if (!(new_ctrl && new_dev)) {
-        rc = ERROR_NOMEM;
-        goto out;
-    }
-    libxl_device_vscsictrl_init(new_ctrl);
-    libxl_device_vscsidev_init(new_dev);
+    libxl_device_vscsictrl_init(&new_ctrl);
+    libxl_device_vscsidev_init(&new_dev);
 
-    rc = xlu_vscsi_parse(cfg, ctx, str, new_ctrl, new_dev);
+    rc = xlu_vscsi_parse(cfg, ctx, str, &new_ctrl, &new_dev);
     if (rc)
         goto out;
 
@@ -506,7 +500,7 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
         for (i = 0; i < num_ctrls; ++i) {
             if (!vscsictrls[i].num_vscsidevs)
                 continue;
-            if (vscsictrls[i].vscsidevs[0].vdev.hst == new_dev->vdev.hst) {
+            if (vscsictrls[i].vscsidevs[0].vdev.hst == new_dev.vdev.hst) {
                 found_ctrl = i;
                 break;
             }
@@ -515,29 +509,29 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
     if (found_ctrl == -1) {
         /* Not found, create new ctrl */
-        tmp = new_ctrl;
+        tmp = &new_ctrl;
     } else {
         tmp = vscsictrls + found_ctrl;
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsidevs; ++i) {
-            if (tmp->vscsidevs[i].vdev.hst == new_dev->vdev.hst &&
-                tmp->vscsidevs[i].vdev.chn == new_dev->vdev.chn &&
-                tmp->vscsidevs[i].vdev.tgt == new_dev->vdev.tgt &&
-                tmp->vscsidevs[i].vdev.lun == new_dev->vdev.lun) {
-                unsigned long long lun = new_dev->vdev.lun;
+            if (tmp->vscsidevs[i].vdev.hst == new_dev.vdev.hst &&
+                tmp->vscsidevs[i].vdev.chn == new_dev.vdev.chn &&
+                tmp->vscsidevs[i].vdev.tgt == new_dev.vdev.tgt &&
+                tmp->vscsidevs[i].vdev.lun == new_dev.vdev.lun) {
+                unsigned long long lun = new_dev.vdev.lun;
                 LOG(cfg, "vdev '%u:%u:%u:%llu' is already used.\n",
-                    new_dev->vdev.hst, new_dev->vdev.chn, new_dev->vdev.tgt, lun);
+                    new_dev.vdev.hst, new_dev.vdev.chn, new_dev.vdev.tgt, lun);
                 rc = ERROR_INVAL;
                 goto out;
             }
         }
 
-        if (libxl_defbool_val(new_ctrl->scsi_raw_cmds) !=
+        if (libxl_defbool_val(new_ctrl.scsi_raw_cmds) !=
             libxl_defbool_val(tmp->scsi_raw_cmds)) {
             LOG(cfg, "different feature-host setting: "
                       "existing ctrl has it %s, new ctrl has it %s\n",
-                libxl_defbool_val(new_ctrl->scsi_raw_cmds) ? "set" : "unset",
+                libxl_defbool_val(new_ctrl.scsi_raw_cmds) ? "set" : "unset",
                 libxl_defbool_val(tmp->scsi_raw_cmds) ? "set" : "unset");
             rc = ERROR_INVAL;
             goto out;
@@ -545,7 +539,7 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     }
 
     libxl_device_vscsictrl_copy(ctx, vscsictrl, tmp);
-    libxl_device_vscsictrl_append_vscsidev(ctx, vscsictrl, new_dev);
+    libxl_device_vscsictrl_append_vscsidev(ctx, vscsictrl, &new_dev);
 
     rc = 0;
 
@@ -555,10 +549,8 @@ out:
             libxl_device_vscsictrl_dispose(&vscsictrls[i]);
         free(vscsictrls);
     }
-    libxl_device_vscsidev_dispose(new_dev);
-    libxl_device_vscsictrl_dispose(new_ctrl);
-    free(new_dev);
-    free(new_ctrl);
+    libxl_device_vscsidev_dispose(&new_dev);
+    libxl_device_vscsictrl_dispose(&new_ctrl);
     return rc;
 }
 
