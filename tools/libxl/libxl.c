@@ -2127,15 +2127,23 @@ static int libxl__device_vscsictrl_new_backend(libxl__egc *egc,
     back = flexarray_make(gc, i, 1);
     front = flexarray_make(gc, 2 * 2, 1);
 
-    flexarray_append_pair(back, "frontend-id", GCSPRINTF("%d", aodev->dev->domid));
+    flexarray_append_pair(back,
+                          "frontend-id",
+                          GCSPRINTF("%d", aodev->dev->domid));
     flexarray_append_pair(back, "online", "1");
-    flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateInitialising));
+    flexarray_append_pair(back,
+                          "state",
+                          GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append_pair(back, "feature-host",
                           libxl_defbool_val(vscsictrl->scsi_raw_cmds) ?
                           "1" : "0");
 
-    flexarray_append_pair(front, "backend-id", GCSPRINTF("%d", vscsictrl->backend_domid));
-    flexarray_append_pair(front, "state", GCSPRINTF("%d", XenbusStateInitialising));
+    flexarray_append_pair(front,
+                          "backend-id",
+                          GCSPRINTF("%d", vscsictrl->backend_domid));
+    flexarray_append_pair(front,
+                          "state",
+                          GCSPRINTF("%d", XenbusStateInitialising));
 
     for (i = 0; i < vscsictrl->num_vscsidevs; i++) {
         v = vscsictrl->vscsidevs + i;
