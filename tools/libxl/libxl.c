@@ -2061,8 +2061,8 @@ static int libxl__resolve_domid(libxl__gc *gc, const char *name,
 /******************************************************************************/
 
 static int libxl__device_vscsidev_backend_set_add(libxl__gc *gc,
-                                               libxl_device_vscsidev *v,
-                                               flexarray_t *back)
+                                                  libxl_device_vscsidev *v,
+                                                  flexarray_t *back)
 {
     int rc;
     char *dir;
