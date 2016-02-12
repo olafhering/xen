@@ -461,9 +461,6 @@ int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
         goto out;
     }
 
-    /* Record group index */
-    new_ctrl->devid = new_dev->vdev.hst;
-
     if (fhost) {
         fhost = xlu__vscsi_trim_string(fhost);
         if (strcmp(fhost, "feature-host") == 0) {
@@ -507,7 +504,9 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
     if (vscsictrls) {
         for (i = 0; i < num_ctrls; ++i) {
-            if (vscsictrls[i].devid == new_ctrl->devid) {
+            if (!vscsictrls[i].num_vscsidevs)
+                continue;
+            if (vscsictrls[i].vscsidevs[0].vdev.hst == new_dev->vdev.hst) {
                 found_ctrl = i;
                 break;
             }
@@ -522,7 +521,8 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsidevs; ++i) {
-            if (tmp->vscsidevs[i].vdev.chn == new_dev->vdev.chn &&
+            if (tmp->vscsidevs[i].vdev.hst == new_dev->vdev.hst &&
+                tmp->vscsidevs[i].vdev.chn == new_dev->vdev.chn &&
                 tmp->vscsidevs[i].vdev.tgt == new_dev->vdev.tgt &&
                 tmp->vscsidevs[i].vdev.lun == new_dev->vdev.lun) {
                 unsigned long long lun = new_dev->vdev.lun;
@@ -627,7 +627,9 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
     if (*num_vscsis) {
         for (i = 0; i < *num_vscsis; i++) {
             tmp_ctrl = *vscsis + i;
-            if (tmp_ctrl->devid == ctrl.devid) {
+            if (!tmp_ctrl->num_vscsidevs)
+                continue;
+            if (tmp_ctrl->vscsidevs[0].vdev.hst == dev.vdev.hst) {
                 libxl_device_vscsictrl_append_vscsidev(ctx, tmp_ctrl, &dev);
                 ctrl_found = true;
                 break;

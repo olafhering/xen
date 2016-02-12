@@ -2376,10 +2376,13 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
     libxl_device_vscsictrl_copy(CTX, &vscsi_saved, vscsi);
 
     if (vscsi->devid == -1) {
-        LOGE(ERROR, "new vscsictrl for domid %u has uninitialized devid", domid);
-        rc = ERROR_FAIL;
-        goto out;
+        if ((vscsi->devid = libxl__device_nextid(gc, domid, "vscsi")) < 0) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
     }
+
+    libxl__update_config_vscsictrl(gc, &vscsi_saved, vscsi);
 
     GCNEW(device);
     rc = libxl__device_from_vscsictrl(gc, domid, vscsi, device);
