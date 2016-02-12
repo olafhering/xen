@@ -98,6 +98,23 @@ void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
     GC_FREE;
 }
 
+void libxl_device_vscsictrl_remove_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            unsigned int idx)
+{
+    GC_INIT(ctx);
+    if (idx >= ctrl->num_vscsidevs)
+        return;
+    libxl_device_vscsidev_dispose(&ctrl->vscsidevs[idx]);
+    if (ctrl->num_vscsidevs > idx + 1)
+        memcpy(&ctrl->vscsidevs[idx],
+               &ctrl->vscsidevs[idx + 1],
+               (ctrl->num_vscsidevs - idx - 1) * sizeof(*ctrl->vscsidevs));
+    ctrl->vscsidevs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*ctrl->vscsidevs) * (ctrl->num_vscsidevs - 1));
+    ctrl->num_vscsidevs--;
+    GC_FREE;
+}
+
 static bool libxl__vscsi_fill_dev(libxl__gc *gc,
                                   xs_transaction_t t,
                                   const char *devs_path,

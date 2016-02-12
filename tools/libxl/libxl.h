@@ -1573,6 +1573,9 @@ int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
 void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
                                             libxl_device_vscsictrl *ctrl,
                                             libxl_device_vscsidev *dev);
+void libxl_device_vscsictrl_remove_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            unsigned int idx);
 
 /* Virtual TPMs */
 int libxl_device_vtpm_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vtpm *vtpm,
