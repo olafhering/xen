@@ -221,7 +221,7 @@ int libxl__vscsi_collect_ctrls(libxl__gc *gc,
 {
     xs_transaction_t t = XBT_NULL;
     libxl_device_vscsictrl ctrl;
-	char *fe_path;
+    char *fe_path;
     char **dirs;
     unsigned int ndirs = 0, dir;
     int rc;
