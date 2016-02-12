@@ -2577,7 +2577,7 @@ _hidden void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
                                    libxl__ao_device *aodev);
 
 _hidden void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
-                                         libxl_device_vscsictrl *vscsi,
+                                         libxl_device_vscsictrl *vscsictrl,
                                          libxl__ao_device *aodev);
 
 _hidden void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
