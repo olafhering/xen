@@ -422,7 +422,8 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
                 /* The backend can handle reconfigure */
                 *be_wait = XenbusStateConnected;
                 vscsidev_rm->dev_wait = XenbusStateClosed;
-                flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
+                flexarray_append_pair(back, "state",
+                                      GCSPRINTF("%d", XenbusStateReconfiguring));
                 break;
         }
 
