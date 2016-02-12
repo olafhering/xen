@@ -2072,24 +2072,24 @@ static int libxl__device_vscsidev_backend_set_add(libxl__gc *gc,
 
     dir = GCSPRINTF("vscsi-devs/dev-%u", v->vscsidev_id);
     switch (v->pdev.type) {
-        case LIBXL_VSCSI_PDEV_TYPE_WWN:
-            flexarray_append_pair(back,
-                                  GCSPRINTF("%s/p-dev", dir),
-                                  v->pdev.u.wwn.m);
-            break;
-        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-            hst = v->pdev.u.hctl.m.hst;
-            chn = v->pdev.u.hctl.m.chn;
-            tgt = v->pdev.u.hctl.m.tgt;
-            lun = v->pdev.u.hctl.m.lun;
-            flexarray_append_pair(back,
-                                  GCSPRINTF("%s/p-dev", dir),
-                                  GCSPRINTF("%u:%u:%u:%llu", hst, chn, tgt, lun));
-            break;
-        case LIBXL_VSCSI_PDEV_TYPE_INVALID:
-        default:
-            rc = ERROR_FAIL;
-            goto out;
+    case LIBXL_VSCSI_PDEV_TYPE_WWN:
+        flexarray_append_pair(back,
+                              GCSPRINTF("%s/p-dev", dir),
+                              v->pdev.u.wwn.m);
+        break;
+    case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+        hst = v->pdev.u.hctl.m.hst;
+        chn = v->pdev.u.hctl.m.chn;
+        tgt = v->pdev.u.hctl.m.tgt;
+        lun = v->pdev.u.hctl.m.lun;
+        flexarray_append_pair(back,
+                              GCSPRINTF("%s/p-dev", dir),
+                              GCSPRINTF("%u:%u:%u:%llu", hst, chn, tgt, lun));
+        break;
+    case LIBXL_VSCSI_PDEV_TYPE_INVALID:
+    default:
+        rc = ERROR_FAIL;
+        goto out;
     }
     flexarray_append_pair(back,
                           GCSPRINTF("%s/p-devname", dir),
@@ -2212,31 +2212,31 @@ static int libxl__device_vscsictrl_reconfigure_add(libxl__egc *egc,
 
         be_state = atoi(state_val);
         switch (be_state) {
-            case XenbusStateUnknown:
-            case XenbusStateInitialising:
-            case XenbusStateClosing:
-            case XenbusStateClosed:
-            default:
-                /* The backend is in a bad state */
-                rc = ERROR_FAIL;
-                goto out;
-            case XenbusStateInitialised:
-            case XenbusStateReconfiguring:
-            case XenbusStateReconfigured:
-                /* Backend is still busy, caller has to retry */
-                rc = ERROR_NOT_READY;
-                goto out;
-            case XenbusStateInitWait:
-                /* The frontend did not connect yet */
-                be_wait = XenbusStateInitWait;
-                do_reconfigure = false;
-                break;
-            case XenbusStateConnected:
-                /* The backend can handle reconfigure */
-                be_wait = XenbusStateConnected;
-                flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
-                do_reconfigure = true;
-                break;
+        case XenbusStateUnknown:
+        case XenbusStateInitialising:
+        case XenbusStateClosing:
+        case XenbusStateClosed:
+        default:
+            /* The backend is in a bad state */
+            rc = ERROR_FAIL;
+            goto out;
+        case XenbusStateInitialised:
+        case XenbusStateReconfiguring:
+        case XenbusStateReconfigured:
+            /* Backend is still busy, caller has to retry */
+            rc = ERROR_NOT_READY;
+            goto out;
+        case XenbusStateInitWait:
+            /* The frontend did not connect yet */
+            be_wait = XenbusStateInitWait;
+            do_reconfigure = false;
+            break;
+        case XenbusStateConnected:
+            /* The backend can handle reconfigure */
+            be_wait = XenbusStateConnected;
+            flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
+            do_reconfigure = true;
+            break;
         }
 
         /* Append new vscsidev or skip existing  */

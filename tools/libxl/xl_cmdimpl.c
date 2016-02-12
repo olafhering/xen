@@ -6869,21 +6869,21 @@ int main_vscsilist(int argc, char **argv)
                     char pdev[64], vdev[64];
                     unsigned long long lun;
                     switch (vscsiinfo.pdev.type) {
-                        case LIBXL_VSCSI_PDEV_TYPE_HCTL:
-                            lun = vscsiinfo.pdev.u.hctl.m.lun;
-                            snprintf(pdev, sizeof(pdev), "%u:%u:%u:%llu",
-                                     vscsiinfo.pdev.u.hctl.m.hst,
-                                     vscsiinfo.pdev.u.hctl.m.chn,
-                                     vscsiinfo.pdev.u.hctl.m.tgt,
-                                     lun);
-                            break;
-                        case LIBXL_VSCSI_PDEV_TYPE_WWN:
-                            snprintf(pdev, sizeof(pdev), "%s",
-                                     vscsiinfo.pdev.u.wwn.m);
-                            break;
-                        default:
-                            pdev[0] = '\0';
-                            break;
+                    case LIBXL_VSCSI_PDEV_TYPE_HCTL:
+                        lun = vscsiinfo.pdev.u.hctl.m.lun;
+                        snprintf(pdev, sizeof(pdev), "%u:%u:%u:%llu",
+                                 vscsiinfo.pdev.u.hctl.m.hst,
+                                 vscsiinfo.pdev.u.hctl.m.chn,
+                                 vscsiinfo.pdev.u.hctl.m.tgt,
+                                 lun);
+                        break;
+                    case LIBXL_VSCSI_PDEV_TYPE_WWN:
+                        snprintf(pdev, sizeof(pdev), "%s",
+                                 vscsiinfo.pdev.u.wwn.m);
+                        break;
+                    default:
+                        pdev[0] = '\0';
+                        break;
                     }
                     lun = vscsiinfo.vdev.lun;
                     snprintf(vdev, sizeof(vdev), "%u:%u:%u:%llu",

@@ -149,18 +149,18 @@ static bool libxl__vscsi_fill_dev(libxl__gc *gc,
     }
 
     switch (atoi(s)) {
-        case XenbusStateUnknown:
-        case XenbusStateInitialising:
-        case XenbusStateInitWait:
-        case XenbusStateInitialised:
-        case XenbusStateConnected:
-        case XenbusStateReconfiguring:
-        case XenbusStateReconfigured:
-            break;
-        case XenbusStateClosing:
-        case XenbusStateClosed:
-            LOG(DEBUG, "unexpected state in %s: %s", path, s);
-            break;
+    case XenbusStateUnknown:
+    case XenbusStateInitialising:
+    case XenbusStateInitWait:
+    case XenbusStateInitialised:
+    case XenbusStateConnected:
+    case XenbusStateReconfiguring:
+    case XenbusStateReconfigured:
+        break;
+    case XenbusStateClosing:
+    case XenbusStateClosed:
+        LOG(DEBUG, "unexpected state in %s: %s", path, s);
+        break;
     }
 
     return true;
@@ -399,32 +399,32 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
 
         be_state = atoi(state_val);
         switch (be_state) {
-            case XenbusStateUnknown:
-            case XenbusStateInitialising:
-            case XenbusStateClosing:
-            case XenbusStateClosed:
-            default:
-                /* The backend is in a bad state */
-                rc = ERROR_FAIL;
-                goto out;
-            case XenbusStateInitialised:
-            case XenbusStateReconfiguring:
-            case XenbusStateReconfigured:
-                /* Backend is still busy, caller has to retry */
-                rc = ERROR_NOT_READY;
-                goto out;
-            case XenbusStateInitWait:
-                /* The frontend did not connect yet */
-                *be_wait = XenbusStateInitWait;
-                vscsidev_rm->dev_wait = XenbusStateClosing;
-                break;
-            case XenbusStateConnected:
-                /* The backend can handle reconfigure */
-                *be_wait = XenbusStateConnected;
-                vscsidev_rm->dev_wait = XenbusStateClosed;
-                flexarray_append_pair(back, "state",
-                                      GCSPRINTF("%d", XenbusStateReconfiguring));
-                break;
+        case XenbusStateUnknown:
+        case XenbusStateInitialising:
+        case XenbusStateClosing:
+        case XenbusStateClosed:
+        default:
+            /* The backend is in a bad state */
+            rc = ERROR_FAIL;
+            goto out;
+        case XenbusStateInitialised:
+        case XenbusStateReconfiguring:
+        case XenbusStateReconfigured:
+            /* Backend is still busy, caller has to retry */
+            rc = ERROR_NOT_READY;
+            goto out;
+        case XenbusStateInitWait:
+            /* The frontend did not connect yet */
+            *be_wait = XenbusStateInitWait;
+            vscsidev_rm->dev_wait = XenbusStateClosing;
+            break;
+        case XenbusStateConnected:
+            /* The backend can handle reconfigure */
+            *be_wait = XenbusStateConnected;
+            vscsidev_rm->dev_wait = XenbusStateClosed;
+            flexarray_append_pair(back, "state",
+                                  GCSPRINTF("%d", XenbusStateReconfiguring));
+            break;
         }
 
         /* Append new vscsidev or skip existing  */
