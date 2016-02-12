@@ -528,7 +528,7 @@ static void libxl__device_vscsidev_rm(libxl__egc *egc,
     rc = libxl__ev_devstate_wait(ao, &aodev->backend_ds,
                                  libxl__device_vscsidev_rm_be,
                                  state_path, be_wait,
-                                 LIBXL_INIT_TIMEOUT * 1000);
+                                 LIBXL_DESTROY_TIMEOUT * 1000);
     if (rc) {
         LOG(ERROR, "unable to wait for %s", state_path);
         goto out;
