@@ -500,8 +500,6 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
     if (vscsictrls) {
         for (i = 0; i < num_ctrls; ++i) {
-            if (!vscsictrls[i].num_vscsidevs)
-                continue;
             if (vscsictrls[i].idx == new_dev.vdev.hst) {
                 found_ctrl = i;
                 break;
@@ -620,8 +618,6 @@ int xlu_vscsi_config_add(XLU_Config *cfg,
     if (*num_vscsis) {
         for (i = 0; i < *num_vscsis; i++) {
             tmp_ctrl = *vscsis + i;
-            if (!tmp_ctrl->num_vscsidevs)
-                continue;
             if (tmp_ctrl->idx == dev.vdev.hst) {
                 libxl_device_vscsictrl_append_vscsidev(ctx, tmp_ctrl, &dev);
                 ctrl_found = true;
