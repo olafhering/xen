@@ -3526,6 +3526,9 @@ _hidden int libxl__device_vscsictrl_remove(libxl_ctx *ctx,
                                            libxl_device_vscsictrl *vscsictrl,
                                            const libxl_asyncop_how *ao_how,
                                            int force);
+_hidden int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
+                                         libxl_device_vscsictrl *vscsictrl,
+                                         libxl__device *device);
 /*
  * Convenience macros.
  */
