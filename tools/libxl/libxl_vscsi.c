@@ -174,6 +174,11 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
         goto out;
     ctrl->backend_domid = atoi(tmp);
 
+    tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/idx", be_path));
+    if (!tmp)
+        goto out;
+    ctrl->idx = atoi(tmp);
+
     tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/feature-host", be_path));
     if (!tmp)
         goto out;
@@ -186,6 +191,8 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
     for (dev_dir = 0; dev_dirs && dev_dir < ndev_dirs; dev_dir++) {
         libxl_device_vscsidev_init(&dev);
         parsed_ok = libxl__vscsi_fill_dev(gc, t, devs_path, dev_dirs[dev_dir], &dev);
+        if (parsed_ok == true)
+            parsed_ok = ctrl->idx == dev.vdev.hst;
         if (parsed_ok == true)
             libxl_device_vscsictrl_append_vscsidev(CTX, ctrl, &dev);
         libxl_device_vscsidev_dispose(&dev);

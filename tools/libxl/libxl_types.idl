@@ -662,6 +662,7 @@ libxl_device_vscsidev = Struct("device_vscsidev", [
 libxl_device_vscsictrl = Struct("device_vscsictrl", [
     ("backend_domid",    libxl_domid),
     ("devid",            libxl_devid),
+    ("idx",              libxl_devid),
     ("vscsidevs",        Array(libxl_device_vscsidev, "num_vscsidevs")),
     ("scsi_raw_cmds",    libxl_defbool),
     ])

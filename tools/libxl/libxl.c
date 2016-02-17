@@ -2134,6 +2134,9 @@ static int libxl__device_vscsictrl_new_backend(libxl__egc *egc,
     flexarray_append_pair(back,
                           "state",
                           GCSPRINTF("%d", XenbusStateInitialising));
+    flexarray_append_pair(back,
+                          "idx",
+                          GCSPRINTF("%d", vscsictrl->idx));
     flexarray_append_pair(back, "feature-host",
                           libxl_defbool_val(vscsictrl->scsi_raw_cmds) ?
                           "1" : "0");
