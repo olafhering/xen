@@ -1087,7 +1087,7 @@ int libxl_device_vscsidev_add(libxl_ctx *ctx, uint32_t domid,
     libxl_device_vscsictrl *vc, *ctrls = NULL;
     libxl_device_vscsidev *vd;
     int c, d, rc, num_ctrls = 0;
-    int dup = 0;
+    int duplicate = 0;
 
     rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
     if (rc != 0) goto out;
@@ -1108,12 +1108,12 @@ int libxl_device_vscsidev_add(libxl_ctx *ctx, uint32_t domid,
                 LOG(ERROR, "vdev '%u:%u:%u:%llu' is already used.\n",
                     vd->vdev.hst, vd->vdev.chn, vd->vdev.tgt, lun);
                 rc = ERROR_DEVICE_EXISTS;
-                dup = 1;
+                duplicate = 1;
                 break;
             }
         }
 
-        if (!dup) {
+        if (!duplicate) {
             /* Append vscsidev to this vscsictrl, trigger reconfigure */
             libxl_device_vscsictrl_append_vscsidev(ctx, vc, vscsidev);
             rc = libxl_device_vscsictrl_reconfigure(ctx, domid, vc, ao_how);
