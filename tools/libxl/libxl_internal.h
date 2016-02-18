@@ -3973,13 +3973,6 @@ static inline void libxl__update_config_nic(libxl__gc *gc,
     libxl_mac_copy(CTX, &dst->mac, &src->mac);
 }
 
-static inline void libxl__update_config_vscsictrl(libxl__gc *gc,
-                                                  libxl_device_vscsictrl *dst,
-                                                  libxl_device_vscsictrl *src)
-{
-    dst->devid = src->devid;
-}
-
 static inline void libxl__update_config_vtpm(libxl__gc *gc,
                                              libxl_device_vtpm *dst,
                                              libxl_device_vtpm *src)
