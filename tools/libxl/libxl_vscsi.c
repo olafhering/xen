@@ -207,10 +207,11 @@ out:
     return false;
 }
 
-int libxl__vscsi_collect_ctrls(libxl__gc *gc,
-                               uint32_t domid,
-                               libxl_device_vscsictrl **ctrls,
-                               int *num)
+/* return an array of vscsictrls with num elements */
+static int libxl__vscsi_collect_ctrls(libxl__gc *gc,
+                                      uint32_t domid,
+                                      libxl_device_vscsictrl **ctrls,
+                                      int *num)
 {
     xs_transaction_t t = XBT_NULL;
     libxl_device_vscsictrl ctrl;
