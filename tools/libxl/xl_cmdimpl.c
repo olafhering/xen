@@ -6760,8 +6760,10 @@ int main_vscsiattach(int argc, char **argv)
     uint32_t domid;
     int opt, rc;
     XLU_Config *config = NULL;
-    libxl_device_vscsictrl *vscsictrl = NULL;
+    libxl_device_vscsictrl ctrl, *existing = NULL;
+    libxl_device_vscsidev dev;
     char *str = NULL, *feat_buf = NULL;
+    char *json;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "scsi-attach", 1) {
         /* No options */
@@ -6792,8 +6794,10 @@ int main_vscsiattach(int argc, char **argv)
         goto out;;
     }
 
-    vscsictrl = xmalloc(sizeof(*vscsictrl));
-    libxl_device_vscsictrl_init(vscsictrl);
+    existing = xmalloc(sizeof(*existing));
+    libxl_device_vscsictrl_init(existing);
+    libxl_device_vscsictrl_init(&ctrl);
+    libxl_device_vscsidev_init(&dev);
 
     config = xlu_cfg_init(stderr, "command line");
     if (!config) {
@@ -6803,12 +6807,13 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Parse config string and store result */
-    rc = xlu_vscsi_get_ctrl(config, ctx, domid, str, vscsictrl);
+    rc = xlu_vscsi_get_ctrl(config, ctx, domid, str, &ctrl, &dev, &existing);
     if (rc < 0)
         goto out;
 
     if (dryrun_only) {
-        char *json = libxl_device_vscsictrl_to_json(ctx, vscsictrl);
+        libxl_device_vscsictrl_append_vscsidev(ctx, existing ? : &ctrl, &dev);
+        json = libxl_device_vscsictrl_to_json(ctx, existing ? : &ctrl);
         printf("vscsi: %s\n", json);
         free(json);
         if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
@@ -6817,18 +6822,29 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Finally add the device */
-    if (libxl_device_vscsictrl_add(ctx, domid, vscsictrl, NULL)) {
-        fprintf(stderr, "libxl_device_vscsictrl_add failed.\n");
-        rc = 1;
-        goto out;
+    if (existing) {
+        if (libxl_device_vscsidev_add(ctx, domid, &dev, NULL)) {
+            fprintf(stderr, "libxl_device_vscsidev_add failed\n");
+            rc = 1;
+            goto out;
+        }
+    } else {
+        libxl_device_vscsictrl_append_vscsidev(ctx, &ctrl, &dev);
+        if (libxl_device_vscsictrl_add(ctx, domid, &ctrl, NULL)) {
+            fprintf(stderr, "libxl_device_vscsictrl_add failed.\n");
+            rc = 1;
+            goto out;
+        }
     }
 
     rc = 0;
 out:
     if (config)
         xlu_cfg_destroy(config);
-    libxl_device_vscsictrl_dispose(vscsictrl);
-    free(vscsictrl);
+    libxl_device_vscsictrl_dispose(existing);
+    libxl_device_vscsictrl_dispose(&ctrl);
+    libxl_device_vscsidev_dispose(&dev);
+    free(existing);
     free(str);
     free(feat_buf);
     return rc;

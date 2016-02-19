@@ -482,17 +482,17 @@ out:
 }
 
 int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
-                       const char *str, libxl_device_vscsictrl *vscsictrl)
+                       const char *str,
+                       libxl_device_vscsictrl *ctrl,
+                       libxl_device_vscsidev *dev,
+                       libxl_device_vscsictrl **existing)
 {
-    libxl_device_vscsidev new_dev;
-    libxl_device_vscsictrl new_ctrl, *vscsictrls = NULL, *tmp;
+    libxl_device_vscsictrl *vscsictrls = NULL, *tmp;
     int rc, found_ctrl = -1, i;
     int num_ctrls;
 
-    libxl_device_vscsictrl_init(&new_ctrl);
-    libxl_device_vscsidev_init(&new_dev);
 
-    rc = xlu_vscsi_parse(cfg, ctx, str, &new_ctrl, &new_dev);
+    rc = xlu_vscsi_parse(cfg, ctx, str, ctrl, dev);
     if (rc)
         goto out;
 
@@ -500,7 +500,7 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     vscsictrls = libxl_device_vscsictrl_list(ctx, domid, &num_ctrls);
     if (vscsictrls) {
         for (i = 0; i < num_ctrls; ++i) {
-            if (vscsictrls[i].idx == new_dev.vdev.hst) {
+            if (vscsictrls[i].idx == dev->vdev.hst) {
                 found_ctrl = i;
                 break;
             }
@@ -508,48 +508,44 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     }
 
     if (found_ctrl == -1) {
-        /* Not found, create new ctrl */
-        tmp = &new_ctrl;
+        *existing = NULL;
     } else {
         tmp = vscsictrls + found_ctrl;
 
         /* Check if the vdev address is already taken */
         for (i = 0; i < tmp->num_vscsidevs; ++i) {
-            if (tmp->vscsidevs[i].vdev.chn == new_dev.vdev.chn &&
-                tmp->vscsidevs[i].vdev.tgt == new_dev.vdev.tgt &&
-                tmp->vscsidevs[i].vdev.lun == new_dev.vdev.lun) {
-                unsigned long long lun = new_dev.vdev.lun;
+            if (tmp->vscsidevs[i].vdev.chn == dev->vdev.chn &&
+                tmp->vscsidevs[i].vdev.tgt == dev->vdev.tgt &&
+                tmp->vscsidevs[i].vdev.lun == dev->vdev.lun) {
+                unsigned long long lun = dev->vdev.lun;
                 LOG(cfg, "vdev '%u:%u:%u:%llu' is already used.\n",
-                    new_dev.vdev.hst, new_dev.vdev.chn, new_dev.vdev.tgt, lun);
+                    dev->vdev.hst, dev->vdev.chn, dev->vdev.tgt, lun);
                 rc = ERROR_INVAL;
                 goto out;
             }
         }
 
-        if (libxl_defbool_val(new_ctrl.scsi_raw_cmds) !=
+        if (libxl_defbool_val(ctrl->scsi_raw_cmds) !=
             libxl_defbool_val(tmp->scsi_raw_cmds)) {
             LOG(cfg, "different feature-host setting: "
                       "existing ctrl has it %s, new ctrl has it %s\n",
-                libxl_defbool_val(new_ctrl.scsi_raw_cmds) ? "set" : "unset",
+                libxl_defbool_val(ctrl->scsi_raw_cmds) ? "set" : "unset",
                 libxl_defbool_val(tmp->scsi_raw_cmds) ? "set" : "unset");
             rc = ERROR_INVAL;
             goto out;
         }
-    }
 
-    libxl_device_vscsictrl_copy(ctx, vscsictrl, tmp);
-    libxl_device_vscsictrl_append_vscsidev(ctx, vscsictrl, &new_dev);
+        libxl_device_vscsictrl_copy(ctx, *existing, tmp);
+    }
 
     rc = 0;
 
 out:
     if (vscsictrls) {
         for (i = 0; i < num_ctrls; ++i)
-            libxl_device_vscsictrl_dispose(&vscsictrls[i]);
+            libxl_device_vscsictrl_dispose(vscsictrls + i);
         free(vscsictrls);
     }
-    libxl_device_vscsidev_dispose(&new_dev);
-    libxl_device_vscsictrl_dispose(&new_ctrl);
     return rc;
 }
 
@@ -651,11 +647,11 @@ out:
     return rc;
 }
 #else /* ! __linux__ */
-int xlu_vscsi_get_ctrl(XLU_Config *config,
-                       libxl_ctx *ctx,
-                       uint32_t domid,
+int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str,
-                       libxl_device_vscsictrl *vscsictrl)
+                       libxl_device_vscsictrl *ctrl,
+                       libxl_device_vscsidev *dev,
+                       libxl_device_vscsictrl **existing)
 {
     return ERROR_INVAL;
 }
