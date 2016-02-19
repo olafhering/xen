@@ -161,7 +161,7 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
     char *tmp, *be_path, *devs_path;
     char **dev_dirs;
     unsigned int ndev_dirs, dev_dir;
-    bool parsed_ok;
+    bool ok;
 
     ctrl->devid = atoi(dir);
 
@@ -182,25 +182,25 @@ static bool libxl__vscsi_fill_ctrl(libxl__gc *gc,
     tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/feature-host", be_path));
     if (!tmp)
         goto out;
-    parsed_ok = atoi(tmp) != 0;
-    libxl_defbool_set(&ctrl->scsi_raw_cmds, parsed_ok);
+    ok = atoi(tmp) != 0;
+    libxl_defbool_set(&ctrl->scsi_raw_cmds, ok);
 
-    parsed_ok = true;
+    ok = true;
     devs_path = GCSPRINTF("%s/vscsi-devs", be_path);
     dev_dirs = libxl__xs_directory(gc, t, devs_path, &ndev_dirs);
     for (dev_dir = 0; dev_dirs && dev_dir < ndev_dirs; dev_dir++) {
         libxl_device_vscsidev_init(&dev);
-        parsed_ok = libxl__vscsi_fill_dev(gc, t, devs_path, dev_dirs[dev_dir], &dev);
-        if (parsed_ok == true)
-            parsed_ok = ctrl->idx == dev.vdev.hst;
-        if (parsed_ok == true)
+        ok = libxl__vscsi_fill_dev(gc, t, devs_path, dev_dirs[dev_dir], &dev);
+        if (ok == true)
+            ok = ctrl->idx == dev.vdev.hst;
+        if (ok == true)
             libxl_device_vscsictrl_append_vscsidev(CTX, ctrl, &dev);
         libxl_device_vscsidev_dispose(&dev);
-        if (parsed_ok == false)
+        if (ok == false)
             break;
     }
 
-    return parsed_ok;
+    return ok;
 
 out:
     libxl_defbool_set(&ctrl->scsi_raw_cmds, false);
