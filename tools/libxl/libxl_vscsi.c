@@ -314,6 +314,9 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", vscsipath));
     vscsiinfo->vscsictrl_state = val ? strtoul(val, NULL, 10) : -1;
 
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/idx", vscsipath));
+    vscsiinfo->idx = val ? strtoul(val, NULL, 10) : -1;
+
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", vscsipath));
     vscsiinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
 
