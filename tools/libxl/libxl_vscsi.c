@@ -1020,17 +1020,17 @@ void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
     vscsictrl_change fn;
     int rc;
 
-    GCNEW(device);
-    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
-    if (rc) goto out;
-    aodev->dev = device;
-
     if (vscsictrl->devid == -1) {
         if ((vscsictrl->devid = libxl__device_nextid(gc, domid, "vscsi")) < 0) {
             rc = ERROR_FAIL;
             goto out;
         }
     }
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
+    if (rc) goto out;
+    aodev->dev = device;
 
     fn = libxl__device_vscsictrl_new_backend;
     libxl__device_vscsictrl_change(egc, aodev, vscsictrl, fn);
