@@ -346,7 +346,7 @@ typedef struct libxl__vscsidev_rm {
     libxl_device_vscsictrl *ctrl;
     char *be_path;
     int dev_wait;
-    libxl__ao_device aodev;
+    libxl__device dev;
 } libxl__vscsidev_rm;
 
 static int libxl__device_vscsidev_backend_set_rm(libxl__gc *gc,
@@ -369,7 +369,7 @@ static int libxl__device_vscsi_reconfigure_rm(libxl__ao_device *aodev,
 
 {
     STATE_AO_GC(aodev->ao);
-    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev, *vscsidev_rm, aodev);
+    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
     libxl_device_vscsictrl *ctrl = vscsidev_rm->ctrl;
     const char *be_path = vscsidev_rm->be_path;
     int rc, i, be_state;
@@ -481,7 +481,7 @@ static void libxl__device_vscsidev_rm_be(libxl__egc *egc,
 {
     libxl__ao_device *aodev = CONTAINER_OF(ds, *aodev, backend_ds);
     STATE_AO_GC(aodev->ao);
-    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev, *vscsidev_rm, aodev);
+    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
     libxl_device_vscsictrl *ctrl = vscsidev_rm->ctrl;
     xs_transaction_t t = XBT_NULL;
     int i;
@@ -511,7 +511,7 @@ static void libxl__device_vscsidev_rm(libxl__egc *egc,
                                        libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
-    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev, *vscsidev_rm, aodev);
+    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
     char *state_path;
     int rc, be_wait;
 
@@ -553,26 +553,26 @@ static int libxl__device_vscsidev_remove(libxl_ctx *ctx,
     libxl__ao_device *aodev;
     libxl__vscsidev_rm *vscsidev_rm;
     libxl__device *device;
+    int rc;
+
+    GCNEW(aodev);
 
     GCNEW(vscsidev_rm);
-    aodev = &vscsidev_rm->aodev;
     vscsidev_rm->ctrl = vscsictrl;
+    device = &vscsidev_rm->dev;
 
-    GCNEW(device);
-    device->backend_devid = vscsictrl->devid;
-    device->backend_domid = vscsictrl->backend_domid;
-    device->devid         = vscsictrl->devid;
-    device->domid         = domid;
-    device->backend_kind  = LIBXL__DEVICE_KIND_VSCSI;
-    device->kind          = LIBXL__DEVICE_KIND_VSCSI;
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
+    if (rc) goto out;
+    aodev->dev = device;
 
     libxl__prepare_ao_device(ao, aodev);
-    aodev->dev = device;
     aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
     aodev->callback = libxl_vscsidev_aodev_cb;
 
     libxl__device_vscsidev_rm(egc, aodev);
 
+out:
+    if (rc) AO_CREATE_FAIL(rc);
     return AO_INPROGRESS;
 }
 
