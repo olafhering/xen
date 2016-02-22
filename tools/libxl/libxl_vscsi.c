@@ -538,6 +538,7 @@ out:
     aodev->callback(egc, aodev);
 }
 
+/* Simplified variant of device_addrm_aocomplete */
 static void libxl_vscsidev_aodev_cb(libxl__egc *egc, libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
