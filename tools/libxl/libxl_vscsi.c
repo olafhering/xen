@@ -248,6 +248,55 @@ out:
     return rc;
 }
 
+/* Simplified variant of device_addrm_aocomplete */
+static void vscsi_aodev_complete(libxl__egc *egc, libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    libxl__ao_complete(egc, ao, aodev->rc);
+}
+
+static int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
+                                        libxl_device_vscsictrl *vscsictrl,
+                                        libxl__device *device)
+{
+    device->backend_devid = vscsictrl->devid;
+    device->backend_domid = vscsictrl->backend_domid;
+    device->devid         = vscsictrl->devid;
+    device->domid         = domid;
+    device->backend_kind  = LIBXL__DEVICE_KIND_VSCSI;
+    device->kind          = LIBXL__DEVICE_KIND_VSCSI;
+
+    return 0;
+}
+
+static int vscsictrl_remove(libxl_ctx *ctx,
+                            uint32_t domid,
+                            libxl_device_vscsictrl *vscsictrl,
+                            const libxl_asyncop_how *ao_how,
+                            int force)
+{
+    AO_CREATE(ctx, domid, ao_how);
+    libxl__device *device;
+    libxl__ao_device *aodev;
+    int rc;
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
+    if (rc != 0) goto out;
+
+    GCNEW(aodev);
+    libxl__prepare_ao_device(ao, aodev);
+    aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
+    aodev->dev = device;
+    aodev->callback = vscsi_aodev_complete;
+    aodev->force = force;
+    libxl__initiate_device_remove(egc, aodev);
+
+out:
+    if (rc) return AO_CREATE_FAIL(rc);
+    return AO_INPROGRESS;
+}
+
 static int vscsidev_be_set_rm(libxl__gc *gc,
                               libxl_device_vscsidev *v,
                               flexarray_t *back)
@@ -432,55 +481,6 @@ out:
     aodev->rc = rc;
     /* Notify that this is done */
     aodev->callback(egc, aodev);
-}
-
-/* Simplified variant of device_addrm_aocomplete */
-static void vscsi_aodev_complete(libxl__egc *egc, libxl__ao_device *aodev)
-{
-    STATE_AO_GC(aodev->ao);
-    libxl__ao_complete(egc, ao, aodev->rc);
-}
-
-static int libxl__device_from_vscsictrl(libxl__gc *gc, uint32_t domid,
-                                        libxl_device_vscsictrl *vscsictrl,
-                                        libxl__device *device)
-{
-    device->backend_devid = vscsictrl->devid;
-    device->backend_domid = vscsictrl->backend_domid;
-    device->devid         = vscsictrl->devid;
-    device->domid         = domid;
-    device->backend_kind  = LIBXL__DEVICE_KIND_VSCSI;
-    device->kind          = LIBXL__DEVICE_KIND_VSCSI;
-
-    return 0;
-}
-
-static int vscsictrl_remove(libxl_ctx *ctx,
-                            uint32_t domid,
-                            libxl_device_vscsictrl *vscsictrl,
-                            const libxl_asyncop_how *ao_how,
-                            int force)
-{
-    AO_CREATE(ctx, domid, ao_how);
-    libxl__device *device;
-    libxl__ao_device *aodev;
-    int rc;
-
-    GCNEW(device);
-    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
-    if (rc != 0) goto out;
-
-    GCNEW(aodev);
-    libxl__prepare_ao_device(ao, aodev);
-    aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
-    aodev->dev = device;
-    aodev->callback = vscsi_aodev_complete;
-    aodev->force = force;
-    libxl__initiate_device_remove(egc, aodev);
-
-out:
-    if (rc) return AO_CREATE_FAIL(rc);
-    return AO_INPROGRESS;
 }
 
 static int vscsidev_remove(libxl_ctx *ctx,
