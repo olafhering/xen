@@ -4154,48 +4154,6 @@ out:
     return rc;
 }
 
-int libxl__device_vscsictrl_remove(libxl_ctx *ctx,
-                                   uint32_t domid,
-                                   libxl_device_vscsictrl *vscsictrl,
-                                   const libxl_asyncop_how *ao_how,
-                                   int force)
-{
-    AO_CREATE(ctx, domid, ao_how);
-    libxl__device *device;
-    libxl__ao_device *aodev;
-    int rc;
-
-    GCNEW(device);
-    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
-    if (rc != 0) goto out;
-
-    GCNEW(aodev);
-    libxl__prepare_ao_device(ao, aodev);
-    aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
-    aodev->dev = device;
-    aodev->callback = device_addrm_aocomplete;
-    aodev->force = force;
-    libxl__initiate_device_generic_remove(egc, aodev);
-
-out:
-    if (rc) return AO_CREATE_FAIL(rc);
-    return AO_INPROGRESS;
-}
-
-int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
-                                  libxl_device_vscsictrl *vscsictrl,
-                                  const libxl_asyncop_how *ao_how)
-{
-    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 0);
-}
-
-int libxl_device_vscsictrl_destroy(libxl_ctx *ctx, uint32_t domid,
-                                   libxl_device_vscsictrl *vscsictrl,
-                                   const libxl_asyncop_how *ao_how)
-{
-    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 1);
-}
-
 /******************************************************************************/
 
 /* Macro for defining device remove/destroy functions in a compact way */
