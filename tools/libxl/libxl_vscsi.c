@@ -342,13 +342,12 @@ out:
 }
 
 
-struct libxl__vscsidev_rm {
+typedef struct libxl__vscsidev_rm {
     libxl_device_vscsictrl *ctrl;
     char *be_path;
     int dev_wait;
     libxl__ao_device aodev;
-};
-typedef struct libxl__vscsidev_rm libxl__vscsidev_rm;
+} libxl__vscsidev_rm;
 
 static int libxl__device_vscsidev_backend_set_rm(libxl__gc *gc,
                                                   libxl_device_vscsidev *v,
