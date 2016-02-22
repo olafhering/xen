@@ -86,35 +86,6 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
     return parsed_ok;
 }
 
-void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
-                                            libxl_device_vscsictrl *ctrl,
-                                            libxl_device_vscsidev *dev)
-{
-    GC_INIT(ctx);
-    ctrl->vscsidevs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
-    libxl_device_vscsidev_init(ctrl->vscsidevs + ctrl->num_vscsidevs);
-    libxl_device_vscsidev_copy(CTX, ctrl->vscsidevs + ctrl->num_vscsidevs, dev);
-    ctrl->num_vscsidevs++;
-    GC_FREE;
-}
-
-void libxl_device_vscsictrl_remove_vscsidev(libxl_ctx *ctx,
-                                            libxl_device_vscsictrl *ctrl,
-                                            unsigned int idx)
-{
-    GC_INIT(ctx);
-    if (idx >= ctrl->num_vscsidevs)
-        return;
-    libxl_device_vscsidev_dispose(&ctrl->vscsidevs[idx]);
-    if (ctrl->num_vscsidevs > idx + 1)
-        memmove(&ctrl->vscsidevs[idx],
-                &ctrl->vscsidevs[idx + 1],
-                (ctrl->num_vscsidevs - idx - 1) * sizeof(*ctrl->vscsidevs));
-    ctrl->vscsidevs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*ctrl->vscsidevs) * (ctrl->num_vscsidevs - 1));
-    ctrl->num_vscsidevs--;
-    GC_FREE;
-}
-
 static bool libxl__vscsi_fill_dev(libxl__gc *gc,
                                   xs_transaction_t t,
                                   const char *devs_path,
@@ -262,82 +233,6 @@ static int libxl__vscsi_collect_ctrls(libxl__gc *gc,
 
 out:
     libxl__xs_transaction_abort(gc, &t);
-    return rc;
-}
-
-libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
-                                                    uint32_t domid,
-                                                    int *num)
-{
-    GC_INIT(ctx);
-    libxl_device_vscsictrl *ctrls = NULL;
-    int rc, num_ctrls = 0;
-
-    *num = 0;
-
-    rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
-    if (rc == 0)
-        *num = num_ctrls;
-
-    GC_FREE;
-    return ctrls;
-}
-
-int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
-                                   libxl_device_vscsictrl *vscsictrl,
-                                   libxl_device_vscsidev *vscsidev,
-                                   libxl_vscsiinfo *vscsiinfo)
-{
-    GC_INIT(ctx);
-    char *dompath, *vscsipath;
-    char *val;
-    int rc = ERROR_FAIL;
-
-    libxl_vscsiinfo_init(vscsiinfo);
-    dompath = libxl__xs_get_dompath(gc, domid);
-    vscsiinfo->devid = vscsictrl->devid;
-    vscsiinfo->vscsidev_id = vscsidev->vscsidev_id;
-    libxl_vscsi_pdev_copy(ctx, &vscsiinfo->pdev, &vscsidev->pdev);
-    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->vdev, &vscsidev->vdev);
-
-    vscsipath = GCSPRINTF("%s/device/vscsi/%d", dompath, vscsiinfo->devid);
-    vscsiinfo->backend = xs_read(ctx->xsh, XBT_NULL,
-                                 GCSPRINTF("%s/backend", vscsipath), NULL);
-    if (!vscsiinfo->backend)
-        goto out;
-    if(!libxl__xs_read(gc, XBT_NULL, vscsiinfo->backend))
-        goto out;
-
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/backend-id", vscsipath));
-    vscsiinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", vscsipath));
-    vscsiinfo->vscsictrl_state = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/idx", vscsipath));
-    vscsiinfo->idx = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", vscsipath));
-    vscsiinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/ring-ref", vscsipath));
-    vscsiinfo->rref = val ? strtoul(val, NULL, 10) : -1;
-
-    vscsiinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
-                                  GCSPRINTF("%s/frontend", vscsiinfo->backend), NULL);
-
-    val = libxl__xs_read(gc, XBT_NULL,
-                         GCSPRINTF("%s/frontend-id", vscsiinfo->backend));
-    vscsiinfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL,
-                         GCSPRINTF("%s/vscsi-devs/dev-%u/state",
-                         vscsiinfo->backend, vscsidev->vscsidev_id));
-    vscsiinfo->vscsidev_state = val ? strtoul(val, NULL, 10) : -1;
-
-    rc = 0;
-out:
-    GC_FREE;
     return rc;
 }
 
@@ -587,20 +482,6 @@ out:
     return AO_INPROGRESS;
 }
 
-int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
-                                  libxl_device_vscsictrl *vscsictrl,
-                                  const libxl_asyncop_how *ao_how)
-{
-    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 0);
-}
-
-int libxl_device_vscsictrl_destroy(libxl_ctx *ctx, uint32_t domid,
-                                   libxl_device_vscsictrl *vscsictrl,
-                                   const libxl_asyncop_how *ao_how)
-{
-    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 1);
-}
-
 static int libxl__device_vscsidev_remove(libxl_ctx *ctx,
                                          uint32_t domid,
                                          libxl_device_vscsictrl *vscsictrl,
@@ -631,68 +512,6 @@ static int libxl__device_vscsidev_remove(libxl_ctx *ctx,
 out:
     if (rc) AO_CREATE_FAIL(rc);
     return AO_INPROGRESS;
-}
-
-int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
-                                 libxl_device_vscsidev *vscsidev,
-                                 const libxl_asyncop_how *ao_how)
-{
-    GC_INIT(ctx);
-    libxl_device_vscsictrl *vc, *ctrls = NULL;
-    libxl_device_vscsidev *vd;
-    int c, d, rc, num_ctrls = 0;
-    int found = 0, idx;
-    int head, tail, i;
-
-    rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
-    if (rc != 0) goto out;
-
-
-    for (c = 0; c < num_ctrls; ++c) {
-        vc = ctrls + c;
-
-        for (d = 0; d < vc->num_vscsidevs; d++) {
-            vd = vc->vscsidevs + d;
-            if (vd->vdev.hst == vscsidev->vdev.hst &&
-                vd->vdev.chn == vscsidev->vdev.chn &&
-                vd->vdev.tgt == vscsidev->vdev.tgt &&
-                vd->vdev.lun == vscsidev->vdev.lun) {
-                found = 1;
-                idx = d;
-                break;
-            }
-        }
-
-        if (found) {
-            if (vc->num_vscsidevs > 1) {
-                /* Prepare vscsictrl, leave only desired vscsidev */
-                head = idx;
-                tail = vc->num_vscsidevs - idx - 1;
-                for (i = 0; i < head; i++)
-                    libxl_device_vscsictrl_remove_vscsidev(ctx, vc, 0);
-                for (i = 0; i < tail; i++)
-                    libxl_device_vscsictrl_remove_vscsidev(ctx, vc, 1);
-
-                /* Remove single vscsidev connected to this vscsictrl */
-                rc = libxl__device_vscsidev_remove(ctx, domid, vc, ao_how);
-            } else {
-                /* Wipe entire vscsictrl */;
-                rc = libxl__device_vscsictrl_remove(ctx, domid, vc, ao_how, 0);
-            }
-            break;
-        }
-    }
-
-    for (c = 0; c < num_ctrls; ++c)
-        libxl_device_vscsictrl_dispose(ctrls + c);
-    free(ctrls);
-
-    if (!found)
-        rc = ERROR_NOTFOUND;
-
-out:
-    GC_FREE;
-    return rc;
 }
 
 static int libxl__device_vscsidev_backend_set_add(libxl__gc *gc,
@@ -1053,36 +872,6 @@ out:
     }
 }
 
-void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
-                                 libxl_device_vscsictrl *vscsictrl,
-                                 libxl__ao_device *aodev)
-{
-    STATE_AO_GC(aodev->ao);
-    libxl__device *device;
-    vscsictrl_change fn;
-    int rc;
-
-    if (vscsictrl->devid == -1) {
-        if ((vscsictrl->devid = libxl__device_nextid(gc, domid, "vscsi")) < 0) {
-            rc = ERROR_FAIL;
-            goto out;
-        }
-    }
-
-    GCNEW(device);
-    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
-    if (rc) goto out;
-    aodev->dev = device;
-
-    fn = libxl__device_vscsictrl_new_backend;
-    libxl__device_vscsictrl_change(egc, aodev, vscsictrl, fn);
-    return;
-
-out:
-    aodev->rc = rc;
-    aodev->callback(egc, aodev);
-}
-
 static void libxl__device_vscsictrl_reconfigure(libxl__egc *egc,
                                                 uint32_t domid,
                                                 libxl_device_vscsictrl *vscsictrl,
@@ -1123,6 +912,126 @@ static int libxl_device_vscsictrl_reconfigure(libxl_ctx *ctx,
     libxl__device_vscsictrl_reconfigure(egc, domid, vscsictrl, aodev);
 
     return AO_INPROGRESS;
+}
+
+void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
+                                 libxl_device_vscsictrl *vscsictrl,
+                                 libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    libxl__device *device;
+    vscsictrl_change fn;
+    int rc;
+
+    if (vscsictrl->devid == -1) {
+        if ((vscsictrl->devid = libxl__device_nextid(gc, domid, "vscsi")) < 0) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+    }
+
+    GCNEW(device);
+    rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
+    if (rc) goto out;
+    aodev->dev = device;
+
+    fn = libxl__device_vscsictrl_new_backend;
+    libxl__device_vscsictrl_change(egc, aodev, vscsictrl, fn);
+    return;
+
+out:
+    aodev->rc = rc;
+    aodev->callback(egc, aodev);
+}
+
+int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
+                                  libxl_device_vscsictrl *vscsictrl,
+                                  const libxl_asyncop_how *ao_how)
+{
+    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 0);
+}
+
+int libxl_device_vscsictrl_destroy(libxl_ctx *ctx, uint32_t domid,
+                                   libxl_device_vscsictrl *vscsictrl,
+                                   const libxl_asyncop_how *ao_how)
+{
+    return libxl__device_vscsictrl_remove(ctx, domid, vscsictrl, ao_how, 1);
+}
+
+libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx,
+                                                    uint32_t domid,
+                                                    int *num)
+{
+    GC_INIT(ctx);
+    libxl_device_vscsictrl *ctrls = NULL;
+    int rc, num_ctrls = 0;
+
+    *num = 0;
+
+    rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
+    if (rc == 0)
+        *num = num_ctrls;
+
+    GC_FREE;
+    return ctrls;
+}
+
+int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
+                                   libxl_device_vscsictrl *vscsictrl,
+                                   libxl_device_vscsidev *vscsidev,
+                                   libxl_vscsiinfo *vscsiinfo)
+{
+    GC_INIT(ctx);
+    char *dompath, *vscsipath;
+    char *val;
+    int rc = ERROR_FAIL;
+
+    libxl_vscsiinfo_init(vscsiinfo);
+    dompath = libxl__xs_get_dompath(gc, domid);
+    vscsiinfo->devid = vscsictrl->devid;
+    vscsiinfo->vscsidev_id = vscsidev->vscsidev_id;
+    libxl_vscsi_pdev_copy(ctx, &vscsiinfo->pdev, &vscsidev->pdev);
+    libxl_vscsi_hctl_copy(ctx, &vscsiinfo->vdev, &vscsidev->vdev);
+
+    vscsipath = GCSPRINTF("%s/device/vscsi/%d", dompath, vscsiinfo->devid);
+    vscsiinfo->backend = xs_read(ctx->xsh, XBT_NULL,
+                                 GCSPRINTF("%s/backend", vscsipath), NULL);
+    if (!vscsiinfo->backend)
+        goto out;
+    if(!libxl__xs_read(gc, XBT_NULL, vscsiinfo->backend))
+        goto out;
+
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/backend-id", vscsipath));
+    vscsiinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", vscsipath));
+    vscsiinfo->vscsictrl_state = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/idx", vscsipath));
+    vscsiinfo->idx = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", vscsipath));
+    vscsiinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/ring-ref", vscsipath));
+    vscsiinfo->rref = val ? strtoul(val, NULL, 10) : -1;
+
+    vscsiinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
+                                  GCSPRINTF("%s/frontend", vscsiinfo->backend), NULL);
+
+    val = libxl__xs_read(gc, XBT_NULL,
+                         GCSPRINTF("%s/frontend-id", vscsiinfo->backend));
+    vscsiinfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
+
+    val = libxl__xs_read(gc, XBT_NULL,
+                         GCSPRINTF("%s/vscsi-devs/dev-%u/state",
+                         vscsiinfo->backend, vscsidev->vscsidev_id));
+    vscsiinfo->vscsidev_state = val ? strtoul(val, NULL, 10) : -1;
+
+    rc = 0;
+out:
+    GC_FREE;
+    return rc;
 }
 
 int libxl_device_vscsidev_add(libxl_ctx *ctx, uint32_t domid,
@@ -1174,6 +1083,97 @@ int libxl_device_vscsidev_add(libxl_ctx *ctx, uint32_t domid,
 out:
     GC_FREE;
     return rc;
+}
+
+int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
+                                 libxl_device_vscsidev *vscsidev,
+                                 const libxl_asyncop_how *ao_how)
+{
+    GC_INIT(ctx);
+    libxl_device_vscsictrl *vc, *ctrls = NULL;
+    libxl_device_vscsidev *vd;
+    int c, d, rc, num_ctrls = 0;
+    int found = 0, idx;
+    int head, tail, i;
+
+    rc = libxl__vscsi_collect_ctrls(gc, domid, &ctrls, &num_ctrls);
+    if (rc != 0) goto out;
+
+
+    for (c = 0; c < num_ctrls; ++c) {
+        vc = ctrls + c;
+
+        for (d = 0; d < vc->num_vscsidevs; d++) {
+            vd = vc->vscsidevs + d;
+            if (vd->vdev.hst == vscsidev->vdev.hst &&
+                vd->vdev.chn == vscsidev->vdev.chn &&
+                vd->vdev.tgt == vscsidev->vdev.tgt &&
+                vd->vdev.lun == vscsidev->vdev.lun) {
+                found = 1;
+                idx = d;
+                break;
+            }
+        }
+
+        if (found) {
+            if (vc->num_vscsidevs > 1) {
+                /* Prepare vscsictrl, leave only desired vscsidev */
+                head = idx;
+                tail = vc->num_vscsidevs - idx - 1;
+                for (i = 0; i < head; i++)
+                    libxl_device_vscsictrl_remove_vscsidev(ctx, vc, 0);
+                for (i = 0; i < tail; i++)
+                    libxl_device_vscsictrl_remove_vscsidev(ctx, vc, 1);
+
+                /* Remove single vscsidev connected to this vscsictrl */
+                rc = libxl__device_vscsidev_remove(ctx, domid, vc, ao_how);
+            } else {
+                /* Wipe entire vscsictrl */;
+                rc = libxl__device_vscsictrl_remove(ctx, domid, vc, ao_how, 0);
+            }
+            break;
+        }
+    }
+
+    for (c = 0; c < num_ctrls; ++c)
+        libxl_device_vscsictrl_dispose(ctrls + c);
+    free(ctrls);
+
+    if (!found)
+        rc = ERROR_NOTFOUND;
+
+out:
+    GC_FREE;
+    return rc;
+}
+
+void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            libxl_device_vscsidev *dev)
+{
+    GC_INIT(ctx);
+    ctrl->vscsidevs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*dev) * (ctrl->num_vscsidevs + 1));
+    libxl_device_vscsidev_init(ctrl->vscsidevs + ctrl->num_vscsidevs);
+    libxl_device_vscsidev_copy(CTX, ctrl->vscsidevs + ctrl->num_vscsidevs, dev);
+    ctrl->num_vscsidevs++;
+    GC_FREE;
+}
+
+void libxl_device_vscsictrl_remove_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            unsigned int idx)
+{
+    GC_INIT(ctx);
+    if (idx >= ctrl->num_vscsidevs)
+        return;
+    libxl_device_vscsidev_dispose(&ctrl->vscsidevs[idx]);
+    if (ctrl->num_vscsidevs > idx + 1)
+        memmove(&ctrl->vscsidevs[idx],
+                &ctrl->vscsidevs[idx + 1],
+                (ctrl->num_vscsidevs - idx - 1) * sizeof(*ctrl->vscsidevs));
+    ctrl->vscsidevs = libxl__realloc(NOGC, ctrl->vscsidevs, sizeof(*ctrl->vscsidevs) * (ctrl->num_vscsidevs - 1));
+    ctrl->num_vscsidevs--;
+    GC_FREE;
 }
 
 /*
