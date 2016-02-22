@@ -15,6 +15,18 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 #include "libxl_internal.h"
 
+typedef struct vscsidev_rm {
+    libxl_device_vscsictrl *ctrl;
+    char *be_path;
+    int dev_wait;
+    libxl__device dev;
+} vscsidev_rm_t;
+
+typedef void (*vscsictrl_add)(libxl__egc *egc,
+                              libxl__ao_device *aodev,
+                              libxl_device_vscsictrl *vscsictrl,
+                              libxl_domain_config *d_config);
+
 #define XLU_WWN_LEN 16
 
 static int vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
@@ -236,14 +248,6 @@ out:
     return rc;
 }
 
-
-typedef struct libxl__vscsidev_rm {
-    libxl_device_vscsictrl *ctrl;
-    char *be_path;
-    int dev_wait;
-    libxl__device dev;
-} libxl__vscsidev_rm;
-
 static int vscsidev_be_set_rm(libxl__gc *gc,
                               libxl_device_vscsidev *v,
                               flexarray_t *back)
@@ -264,7 +268,7 @@ static int vscsictrl_reconfigure_rm(libxl__ao_device *aodev,
 
 {
     STATE_AO_GC(aodev->ao);
-    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
+    vscsidev_rm_t *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
     libxl_device_vscsictrl *ctrl = vscsidev_rm->ctrl;
     const char *be_path = vscsidev_rm->be_path;
     int rc, i, be_state;
@@ -376,7 +380,7 @@ static void vscsictrl_remove_be_cb(libxl__egc *egc,
 {
     libxl__ao_device *aodev = CONTAINER_OF(ds, *aodev, backend_ds);
     STATE_AO_GC(aodev->ao);
-    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
+    vscsidev_rm_t *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
     libxl_device_vscsictrl *ctrl = vscsidev_rm->ctrl;
     xs_transaction_t t = XBT_NULL;
     int i;
@@ -403,7 +407,7 @@ out:
 static void vscsidev__remove(libxl__egc *egc, libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
-    libxl__vscsidev_rm *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
+    vscsidev_rm_t *vscsidev_rm = CONTAINER_OF(aodev->dev, *vscsidev_rm, dev);
     char *state_path;
     int rc, be_wait;
 
@@ -486,7 +490,7 @@ static int vscsidev_remove(libxl_ctx *ctx,
 {
     AO_CREATE(ctx, domid, ao_how);
     libxl__ao_device *aodev;
-    libxl__vscsidev_rm *vscsidev_rm;
+    vscsidev_rm_t *vscsidev_rm;
     libxl__device *device;
     int rc;
 
@@ -820,8 +824,6 @@ static int vscsictrl_assign_vscsidev_ids(libxl__gc *gc,
 out:
     return rc;
 }
-
-typedef void (*vscsictrl_add)(libxl__egc *egc, libxl__ao_device *aodev, libxl_device_vscsictrl *vscsictrl, libxl_domain_config *d_config);
 
 static void vscsictrl_update_json(libxl__egc *egc,
                                   libxl__ao_device *aodev,
