@@ -139,6 +139,7 @@
  * for the toolstack:
  * 
  *     <domid>/<vhost>/vscsi-devs/dev-1/p-devname = "/dev/$device"
+ *     <domid>/<vhost>/libxl_ctrl_index = "0"
  * 
  * 
  * Backend/frontend protocol
