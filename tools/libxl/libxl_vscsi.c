@@ -502,9 +502,9 @@ static int vscsidev_remove(libxl_ctx *ctx,
 
     rc = libxl__device_from_vscsictrl(gc, domid, vscsictrl, device);
     if (rc) goto out;
-    aodev->dev = device;
 
     libxl__prepare_ao_device(ao, aodev);
+    aodev->dev = device;
     aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
     aodev->callback = vscsi_aodev_complete;
 
