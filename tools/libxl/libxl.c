@@ -2031,7 +2031,7 @@ out:
 }
 
 /* common function to get next device id */
-static int libxl__device_nextid(libxl__gc *gc, uint32_t domid, char *device)
+int libxl__device_nextid(libxl__gc *gc, uint32_t domid, char *device)
 {
     char *dompath, **l;
     unsigned int nb;
