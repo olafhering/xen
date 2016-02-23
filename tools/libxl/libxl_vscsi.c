@@ -590,7 +590,7 @@ static void vscsictrl_new_backend(libxl__egc *egc,
                           "state",
                           GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append_pair(back,
-                          "idx",
+                          "libxl_ctrl_index",
                           GCSPRINTF("%d", vscsictrl->idx));
     flexarray_append_pair(back, "feature-host",
                           libxl_defbool_val(vscsictrl->scsi_raw_cmds) ?
