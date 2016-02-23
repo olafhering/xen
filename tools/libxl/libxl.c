@@ -4231,6 +4231,7 @@ DEFINE_DEVICE_REMOVE(vtpm, destroy, 1)
 /* The following functions are defined:
  * libxl_device_disk_add
  * libxl_device_nic_add
+ * libxl_device_vscsictrl_add
  * libxl_device_vtpm_add
  */
 
@@ -4259,6 +4260,9 @@ DEFINE_DEVICE_ADD(disk)
 
 /* nic */
 DEFINE_DEVICE_ADD(nic)
+
+/* vscsi */
+DEFINE_DEVICE_ADD(vscsictrl)
 
 /* vtpm */
 DEFINE_DEVICE_ADD(vtpm)
@@ -6798,6 +6802,11 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
     } while (0);
 
     MERGE(nic, nics, COMPARE_DEVID, {});
+
+    MERGE(vscsictrl, vscsictrls, COMPARE_VSCSI, {
+            libxl_device_vscsictrl_dispose(dst);
+            libxl_device_vscsictrl_copy(CTX, dst, src);
+          });
 
     MERGE(vtpm, vtpms, COMPARE_DEVID, {});
 
