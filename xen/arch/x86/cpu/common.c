@@ -205,12 +205,12 @@ static void __init early_cpu_detect(void)
 		c->x86_model += ((eax >> 16) & 0xF) << 4;
 	c->x86_mask = eax & 15;
 	edx &= ~cleared_caps[cpufeat_word(X86_FEATURE_FPU)];
-	ecx &= ~cleared_caps[cpufeat_word(X86_FEATURE_XMM3)];
-	if (edx & cpufeat_mask(X86_FEATURE_CLFLSH))
+	ecx &= ~cleared_caps[cpufeat_word(X86_FEATURE_SSE3)];
+	if (edx & cpufeat_mask(X86_FEATURE_CLFLUSH))
 		c->x86_cache_alignment = ((ebx >> 8) & 0xff) * 8;
 	/* Leaf 0x1 capabilities filled in early for Xen. */
 	c->x86_capability[cpufeat_word(X86_FEATURE_FPU)] = edx;
-	c->x86_capability[cpufeat_word(X86_FEATURE_XMM3)] = ecx;
+	c->x86_capability[cpufeat_word(X86_FEATURE_SSE3)] = ecx;
 
 	if ( cpuid_eax(0x80000000) >= 0x80000008 )
 		paddr_bits = cpuid_eax(0x80000008) & 0xff;
@@ -249,9 +249,9 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	c->cpuid_level = cpuid_eax(0);
 	cpuid(0x00000001, &eax, &ebx, &ecx, &edx);
 	c->x86_capability[cpufeat_word(X86_FEATURE_FPU)] = edx;
-	c->x86_capability[cpufeat_word(X86_FEATURE_XMM3)] = ecx;
+	c->x86_capability[cpufeat_word(X86_FEATURE_SSE3)] = ecx;
 
-	if ( cpu_has(c, X86_FEATURE_CLFLSH) )
+	if ( cpu_has(c, X86_FEATURE_CLFLUSH) )
 		c->x86_clflush_size = ((ebx >> 8) & 0xff) * 8;
 
 	if ( (c->cpuid_level >= CPUID_PM_LEAF) &&
@@ -452,7 +452,7 @@ void detect_ht(struct cpuinfo_x86 *c)
 	u32 	eax, ebx, ecx, edx;
 	int 	index_msb, core_bits;
 
-	if (!cpu_has(c, X86_FEATURE_HT) ||
+	if (!cpu_has(c, X86_FEATURE_HTT) ||
 	    cpu_has(c, X86_FEATURE_CMP_LEGACY) ||
 	    cpu_has(c, X86_FEATURE_XTOPOLOGY))
 		return;
@@ -510,7 +510,7 @@ unsigned int __init apicid_to_socket(unsigned int apicid)
 		return _phys_pkg_id(apicid, core_plus_mask_width);
 	}
 
-	if (boot_cpu_has(X86_FEATURE_HT) &&
+	if (boot_cpu_has(X86_FEATURE_HTT) &&
 	    !boot_cpu_has(X86_FEATURE_CMP_LEGACY)) {
 		unsigned int num_siblings = (cpuid_ebx(1) & 0xff0000) >> 16;
 

@@ -31,26 +31,21 @@
 #define X86_FEATURE_CMOV	(0*32+15) /* CMOV instruction (FCMOVCC and FCOMI too if FPU present) */
 #define X86_FEATURE_PAT		(0*32+16) /* Page Attribute Table */
 #define X86_FEATURE_PSE36	(0*32+17) /* 36-bit PSEs */
-#define X86_FEATURE_PN		(0*32+18) /* Processor serial number */
-#define X86_FEATURE_CLFLSH	(0*32+19) /* Supports the CLFLUSH instruction */
+#define X86_FEATURE_CLFLUSH	(0*32+19) /* Supports the CLFLUSH instruction */
 #define X86_FEATURE_DS		(0*32+21) /* Debug Store */
 #define X86_FEATURE_ACPI	(0*32+22) /* ACPI via MSR */
 #define X86_FEATURE_MMX		(0*32+23) /* Multimedia Extensions */
 #define X86_FEATURE_FXSR	(0*32+24) /* FXSAVE and FXRSTOR instructions (fast save and restore */
 				          /* of FPU context), and CR4.OSFXSR available */
-#define X86_FEATURE_XMM		(0*32+25) /* Streaming SIMD Extensions */
-#define X86_FEATURE_XMM2	(0*32+26) /* Streaming SIMD Extensions-2 */
-#define X86_FEATURE_SELFSNOOP	(0*32+27) /* CPU self snoop */
-#define X86_FEATURE_HT		(0*32+28) /* Hyper-Threading */
-#define X86_FEATURE_ACC		(0*32+29) /* Automatic clock control */
-#define X86_FEATURE_IA64	(0*32+30) /* IA-64 processor */
+#define X86_FEATURE_SSE		(0*32+25) /* Streaming SIMD Extensions */
+#define X86_FEATURE_SSE2	(0*32+26) /* Streaming SIMD Extensions-2 */
+#define X86_FEATURE_HTT		(0*32+28) /* Hyper-Threading Technology */
+#define X86_FEATURE_TM1		(0*32+29) /* Thermal Monitor 1 */
 #define X86_FEATURE_PBE		(0*32+31) /* Pending Break Enable */
-#define X86_FEATURE_3DNOW_ALT	(0*32+31) /* AMD nonstandard 3DNow (Aliases PBE) */
 
 /* AMD-defined CPU features, CPUID level 0x80000001, word 1 */
 /* Don't duplicate feature flags which are redundant with Intel! */
 #define X86_FEATURE_SYSCALL	(1*32+11) /* SYSCALL/SYSRET */
-#define X86_FEATURE_MP		(1*32+19) /* MP Capable. */
 #define X86_FEATURE_NX		(1*32+20) /* Execute Disable */
 #define X86_FEATURE_MMXEXT	(1*32+22) /* AMD MMX extensions */
 #define X86_FEATURE_FFXSR       (1*32+25) /* FFXSR instruction optimizations */
@@ -79,17 +74,16 @@
 #define X86_FEATURE_APERFMPERF   (3*32+16) /* APERFMPERF */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
-#define X86_FEATURE_XMM3	(4*32+ 0) /* Streaming SIMD Extensions-3 */
+#define X86_FEATURE_SSE3	(4*32+ 0) /* Streaming SIMD Extensions-3 */
 #define X86_FEATURE_PCLMULQDQ	(4*32+ 1) /* Carry-less mulitplication */
 #define X86_FEATURE_DTES64	(4*32+ 2) /* 64-bit Debug Store */
-#define X86_FEATURE_MWAIT	(4*32+ 3) /* Monitor/Mwait support */
+#define X86_FEATURE_MONITOR	(4*32+ 3) /* Monitor/Mwait support */
 #define X86_FEATURE_DSCPL	(4*32+ 4) /* CPL Qualified Debug Store */
-#define X86_FEATURE_VMXE	(4*32+ 5) /* Virtual Machine Extensions */
-#define X86_FEATURE_SMXE	(4*32+ 6) /* Safer Mode Extensions */
-#define X86_FEATURE_EST		(4*32+ 7) /* Enhanced SpeedStep */
+#define X86_FEATURE_VMX		(4*32+ 5) /* Virtual Machine Extensions */
+#define X86_FEATURE_SMX		(4*32+ 6) /* Safer Mode Extensions */
+#define X86_FEATURE_EIST	(4*32+ 7) /* Enhanced SpeedStep */
 #define X86_FEATURE_TM2		(4*32+ 8) /* Thermal Monitor 2 */
 #define X86_FEATURE_SSSE3	(4*32+ 9) /* Supplemental Streaming SIMD Extensions-3 */
-#define X86_FEATURE_CID		(4*32+10) /* Context ID */
 #define X86_FEATURE_FMA		(4*32+12) /* Fused Multiply Add */
 #define X86_FEATURE_CX16        (4*32+13) /* CMPXCHG16B */
 #define X86_FEATURE_XTPR	(4*32+14) /* Send Task Priority Messages */
@@ -102,7 +96,7 @@
 #define X86_FEATURE_MOVBE	(4*32+22) /* movbe instruction */
 #define X86_FEATURE_POPCNT	(4*32+23) /* POPCNT instruction */
 #define X86_FEATURE_TSC_DEADLINE (4*32+24) /* "tdt" TSC Deadline Timer */
-#define X86_FEATURE_AES		(4*32+25) /* AES instructions */
+#define X86_FEATURE_AESNI	(4*32+25) /* AES instructions */
 #define X86_FEATURE_XSAVE	(4*32+26) /* XSAVE/XRSTOR/XSETBV/XGETBV */
 #define X86_FEATURE_OSXSAVE	(4*32+27) /* OSXSAVE */
 #define X86_FEATURE_AVX 	(4*32+28) /* Advanced Vector Extensions */
@@ -110,17 +104,7 @@
 #define X86_FEATURE_RDRAND 	(4*32+30) /* Digital Random Number Generator */
 #define X86_FEATURE_HYPERVISOR	(4*32+31) /* Running under some hypervisor */
 
-/* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000001, word 5 */
-#define X86_FEATURE_XSTORE	(5*32+ 2) /* on-CPU RNG present (xstore insn) */
-#define X86_FEATURE_XSTORE_EN	(5*32+ 3) /* on-CPU RNG enabled */
-#define X86_FEATURE_XCRYPT	(5*32+ 6) /* on-CPU crypto (xcrypt insn) */
-#define X86_FEATURE_XCRYPT_EN	(5*32+ 7) /* on-CPU crypto enabled */
-#define X86_FEATURE_ACE2	(5*32+ 8) /* Advanced Cryptography Engine v2 */
-#define X86_FEATURE_ACE2_EN	(5*32+ 9) /* ACE v2 enabled */
-#define X86_FEATURE_PHE		(5*32+ 10) /* PadLock Hash Engine */
-#define X86_FEATURE_PHE_EN	(5*32+ 11) /* PHE enabled */
-#define X86_FEATURE_PMM		(5*32+ 12) /* PadLock Montgomery Multiplier */
-#define X86_FEATURE_PMM_EN	(5*32+ 13) /* PMM enabled */
+/* UNUSED, word 5 */
 
 /* More extended AMD flags: CPUID level 0x80000001, ecx, word 6 */
 #define X86_FEATURE_LAHF_LM     (6*32+ 0) /* LAHF/SAHF in long mode */
@@ -143,7 +127,7 @@
 #define X86_FEATURE_TBM         (6*32+21) /* trailing bit manipulations */
 #define X86_FEATURE_TOPOEXT     (6*32+22) /* topology extensions CPUID leafs */
 #define X86_FEATURE_DBEXT       (6*32+26) /* data breakpoint extension */
-#define X86_FEATURE_MWAITX      (6*32+29) /* MWAIT extension (MONITORX/MWAITX) */
+#define X86_FEATURE_MONITORX    (6*32+29) /* MWAIT extension (MONITORX/MWAITX) */
 
 /* Intel-defined CPU features, CPUID level 0x00000007:0 (ebx), word 7 */
 #define X86_FEATURE_FSGSBASE	(7*32+ 0) /* {RD,WR}{FS,GS}BASE instructions */
@@ -155,14 +139,15 @@
 #define X86_FEATURE_ERMS	(7*32+ 9) /* Enhanced REP MOVSB/STOSB */
 #define X86_FEATURE_INVPCID	(7*32+10) /* Invalidate Process Context ID */
 #define X86_FEATURE_RTM 	(7*32+11) /* Restricted Transactional Memory */
-#define X86_FEATURE_CMT 	(7*32+12) /* Cache Monitoring Technology */
+#define X86_FEATURE_PQM 	(7*32+12) /* Platform QoS Monitoring */
 #define X86_FEATURE_NO_FPU_SEL 	(7*32+13) /* FPU CS/DS stored as zero */
 #define X86_FEATURE_MPX		(7*32+14) /* Memory Protection Extensions */
-#define X86_FEATURE_CAT 	(7*32+15) /* Cache Allocation Technology */
+#define X86_FEATURE_PQE 	(7*32+15) /* Platform QoS Enforcement */
 #define X86_FEATURE_RDSEED	(7*32+18) /* RDSEED instruction */
 #define X86_FEATURE_ADX		(7*32+19) /* ADCX, ADOX instructions */
 #define X86_FEATURE_SMAP	(7*32+20) /* Supervisor Mode Access Prevention */
 #define X86_FEATURE_PCOMMIT	(7*32+22) /* PCOMMIT instruction */
+#define X86_FEATURE_CLFLUSHOPT	(7*32+23) /* CLFLUSHOPT instruction */
 
 /* Intel-defined CPU features, CPUID level 0x00000007:0 (ecx), word 8 */
 #define X86_FEATURE_PKU	(8*32+ 3) /* Protection Keys for Userspace */
@@ -193,43 +178,32 @@
 #define cpu_has_sep		boot_cpu_has(X86_FEATURE_SEP)
 #define cpu_has_mtrr		1
 #define cpu_has_mmx		1
-#define cpu_has_xmm3		boot_cpu_has(X86_FEATURE_XMM3)
-#define cpu_has_ht		boot_cpu_has(X86_FEATURE_HT)
-#define cpu_has_mp		1
+#define cpu_has_sse		boot_cpu_has(X86_FEATURE_SSE)
+#define cpu_has_sse2		boot_cpu_has(X86_FEATURE_SSE2)
+#define cpu_has_sse3		boot_cpu_has(X86_FEATURE_SSE3)
+#define cpu_has_htt		boot_cpu_has(X86_FEATURE_HTT)
 #define cpu_has_nx		boot_cpu_has(X86_FEATURE_NX)
-#define cpu_has_clflush		boot_cpu_has(X86_FEATURE_CLFLSH)
+#define cpu_has_clflush		boot_cpu_has(X86_FEATURE_CLFLUSH)
 #define cpu_has_page1gb		boot_cpu_has(X86_FEATURE_PAGE1GB)
 #define cpu_has_fsgsbase	boot_cpu_has(X86_FEATURE_FSGSBASE)
 #define cpu_has_aperfmperf	boot_cpu_has(X86_FEATURE_APERFMPERF)
-
 #define cpu_has_smep            boot_cpu_has(X86_FEATURE_SMEP)
 #define cpu_has_smap            boot_cpu_has(X86_FEATURE_SMAP)
 #define cpu_has_fpu_sel         (!boot_cpu_has(X86_FEATURE_NO_FPU_SEL))
-
 #define cpu_has_ffxsr           ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) \
                                  && boot_cpu_has(X86_FEATURE_FFXSR))
-
 #define cpu_has_x2apic          boot_cpu_has(X86_FEATURE_X2APIC)
-
 #define cpu_has_pcid            boot_cpu_has(X86_FEATURE_PCID)
-
 #define cpu_has_xsave           boot_cpu_has(X86_FEATURE_XSAVE)
 #define cpu_has_avx             boot_cpu_has(X86_FEATURE_AVX)
 #define cpu_has_lwp             boot_cpu_has(X86_FEATURE_LWP)
 #define cpu_has_mpx             boot_cpu_has(X86_FEATURE_MPX)
-
 #define cpu_has_arch_perfmon    boot_cpu_has(X86_FEATURE_ARCH_PERFMON)
-
 #define cpu_has_rdtscp          boot_cpu_has(X86_FEATURE_RDTSCP)
-
 #define cpu_has_svm		boot_cpu_has(X86_FEATURE_SVM)
-
-#define cpu_has_vmx		boot_cpu_has(X86_FEATURE_VMXE)
-
+#define cpu_has_vmx		boot_cpu_has(X86_FEATURE_VMX)
 #define cpu_has_cpuid_faulting	boot_cpu_has(X86_FEATURE_CPUID_FAULTING)
-
 #define cpu_has_cx16            boot_cpu_has(X86_FEATURE_CX16)
-
 #define cpu_has_xsaveopt	boot_cpu_has(X86_FEATURE_XSAVEOPT)
 #define cpu_has_xsavec		boot_cpu_has(X86_FEATURE_XSAVEC)
 #define cpu_has_xgetbv1		boot_cpu_has(X86_FEATURE_XGETBV1)

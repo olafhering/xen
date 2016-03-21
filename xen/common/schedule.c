@@ -241,8 +241,6 @@ int sched_init_vcpu(struct vcpu *v, unsigned int processor)
     if ( v->sched_priv == NULL )
         return 1;
 
-    TRACE_2D(TRC_SCHED_DOM_ADD, v->domain->domain_id, v->vcpu_id);
-
     /* Idle VCPUs are scheduled immediately, so don't put them in runqueue. */
     if ( is_idle_domain(d) )
     {
@@ -272,6 +270,12 @@ int sched_move_domain(struct domain *d, struct cpupool *c)
     void *vcpudata;
     struct scheduler *old_ops;
     void *old_domdata;
+
+    for_each_vcpu ( d, v )
+    {
+        if ( v->affinity_broken )
+            return -EBUSY;
+    }
 
     domdata = SCHED_OP(c->sched, alloc_domdata, d);
     if ( domdata == NULL )
@@ -369,19 +373,25 @@ void sched_destroy_vcpu(struct vcpu *v)
 int sched_init_domain(struct domain *d)
 {
     SCHED_STAT_CRANK(dom_init);
+    TRACE_1D(TRC_SCHED_DOM_ADD, d->domain_id);
     return SCHED_OP(DOM2OP(d), init_domain, d);
 }
 
 void sched_destroy_domain(struct domain *d)
 {
     SCHED_STAT_CRANK(dom_destroy);
+    TRACE_1D(TRC_SCHED_DOM_REM, d->domain_id);
     SCHED_OP(DOM2OP(d), destroy_domain, d);
 }
 
 void vcpu_sleep_nosync(struct vcpu *v)
 {
     unsigned long flags;
-    spinlock_t *lock = vcpu_schedule_lock_irqsave(v, &flags);
+    spinlock_t *lock;
+
+    TRACE_2D(TRC_SCHED_SLEEP, v->domain->domain_id, v->vcpu_id);
+
+    lock = vcpu_schedule_lock_irqsave(v, &flags);
 
     if ( likely(!vcpu_runnable(v)) )
     {
@@ -392,8 +402,6 @@ void vcpu_sleep_nosync(struct vcpu *v)
     }
 
     vcpu_schedule_unlock_irqrestore(lock, flags, v);
-
-    TRACE_2D(TRC_SCHED_SLEEP, v->domain->domain_id, v->vcpu_id);
 }
 
 void vcpu_sleep_sync(struct vcpu *v)
@@ -409,7 +417,11 @@ void vcpu_sleep_sync(struct vcpu *v)
 void vcpu_wake(struct vcpu *v)
 {
     unsigned long flags;
-    spinlock_t *lock = vcpu_schedule_lock_irqsave(v, &flags);
+    spinlock_t *lock;
+
+    TRACE_2D(TRC_SCHED_WAKE, v->domain->domain_id, v->vcpu_id);
+
+    lock = vcpu_schedule_lock_irqsave(v, &flags);
 
     if ( likely(vcpu_runnable(v)) )
     {
@@ -424,8 +436,6 @@ void vcpu_wake(struct vcpu *v)
     }
 
     vcpu_schedule_unlock_irqrestore(lock, flags, v);
-
-    TRACE_2D(TRC_SCHED_WAKE, v->domain->domain_id, v->vcpu_id);
 }
 
 void vcpu_unblock(struct vcpu *v)
@@ -611,7 +621,6 @@ void restore_vcpu_affinity(struct domain *d)
 
         if ( v->affinity_broken )
         {
-            printk(XENLOG_DEBUG "Restoring affinity for %pv\n", v);
             cpumask_copy(v->cpu_hard_affinity, v->cpu_hard_affinity_saved);
             v->affinity_broken = 0;
         }
@@ -666,7 +675,13 @@ int cpu_disable_scheduler(unsigned int cpu)
             if ( cpumask_empty(&online_affinity) &&
                  cpumask_test_cpu(cpu, v->cpu_hard_affinity) )
             {
-                printk(XENLOG_DEBUG "Breaking affinity for %pv\n", v);
+                if ( v->affinity_broken )
+                {
+                    /* The vcpu is temporarily pinned, can't move it. */
+                    vcpu_schedule_unlock_irqrestore(lock, flags, v);
+                    ret = -EBUSY;
+                    break;
+                }
 
                 if (system_state == SYS_STATE_suspend)
                 {
@@ -674,6 +689,8 @@ int cpu_disable_scheduler(unsigned int cpu)
                                  v->cpu_hard_affinity);
                     v->affinity_broken = 1;
                 }
+                else
+                    printk(XENLOG_DEBUG "Breaking affinity for %pv\n", v);
 
                 cpumask_setall(v->cpu_hard_affinity);
             }
@@ -749,14 +766,22 @@ static int vcpu_set_affinity(
     struct vcpu *v, const cpumask_t *affinity, cpumask_t *which)
 {
     spinlock_t *lock;
+    int ret = 0;
 
     lock = vcpu_schedule_lock_irq(v);
 
-    cpumask_copy(which, affinity);
+    if ( v->affinity_broken )
+        ret = -EBUSY;
+    else
+    {
+        cpumask_copy(which, affinity);
 
-    /* Always ask the scheduler to re-evaluate placement
-     * when changing the affinity */
-    set_bit(_VPF_migrating, &v->pause_flags);
+        /*
+         * Always ask the scheduler to re-evaluate placement
+         * when changing the affinity.
+         */
+        set_bit(_VPF_migrating, &v->pause_flags);
+    }
 
     vcpu_schedule_unlock_irq(lock, v);
 
@@ -768,7 +793,7 @@ static int vcpu_set_affinity(
         vcpu_migrate(v);
     }
 
-    return 0;
+    return ret;
 }
 
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity)
@@ -798,6 +823,8 @@ void vcpu_block(void)
     struct vcpu *v = current;
 
     set_bit(_VPF_blocked, &v->pause_flags);
+
+    arch_vcpu_block(v);
 
     /* Check for events /after/ blocking: avoids wakeup waiting race. */
     if ( local_events_need_delivery() )
@@ -835,6 +862,8 @@ static long do_poll(struct sched_poll *sched_poll)
     set_bit(_VPF_blocked, &v->pause_flags);
     v->poll_evtchn = -1;
     set_bit(v->vcpu_id, d->poll_mask);
+
+    arch_vcpu_block(v);
 
 #ifndef CONFIG_X86 /* set_bit() implies mb() on x86 */
     /* Check for events /after/ setting flags: avoids wakeup waiting race. */
@@ -975,6 +1004,50 @@ void watchdog_domain_destroy(struct domain *d)
         kill_timer(&d->watchdog_timer[i]);
 }
 
+int vcpu_pin_override(struct vcpu *v, int cpu)
+{
+    spinlock_t *lock;
+    int ret = -EINVAL;
+
+    lock = vcpu_schedule_lock_irq(v);
+
+    if ( cpu < 0 )
+    {
+        if ( v->affinity_broken )
+        {
+            cpumask_copy(v->cpu_hard_affinity, v->cpu_hard_affinity_saved);
+            v->affinity_broken = 0;
+            set_bit(_VPF_migrating, &v->pause_flags);
+            ret = 0;
+        }
+    }
+    else if ( cpu < nr_cpu_ids )
+    {
+        if ( v->affinity_broken )
+            ret = -EBUSY;
+        else if ( cpumask_test_cpu(cpu, VCPU2ONLINE(v)) )
+        {
+            cpumask_copy(v->cpu_hard_affinity_saved, v->cpu_hard_affinity);
+            v->affinity_broken = 1;
+            cpumask_copy(v->cpu_hard_affinity, cpumask_of(cpu));
+            set_bit(_VPF_migrating, &v->pause_flags);
+            ret = 0;
+        }
+    }
+
+    vcpu_schedule_unlock_irq(lock, v);
+
+    domain_update_node_affinity(v->domain);
+
+    if ( v->pause_flags & VPF_migrating )
+    {
+        vcpu_sleep_nosync(v);
+        vcpu_migrate(v);
+    }
+
+    return ret;
+}
+
 typedef long ret_t;
 
 #endif /* !COMPAT */
@@ -1084,6 +1157,23 @@ ret_t do_sched_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 
+    case SCHEDOP_pin_override:
+    {
+        struct sched_pin_override sched_pin_override;
+
+        ret = -EPERM;
+        if ( !is_hardware_domain(current->domain) )
+            break;
+
+        ret = -EFAULT;
+        if ( copy_from_guest(&sched_pin_override, arg, 1) )
+            break;
+
+        ret = vcpu_pin_override(current, sched_pin_override.pcpu);
+
+        break;
+    }
+
     default:
         ret = -ENOSYS;
     }
@@ -1167,8 +1257,8 @@ long sched_adjust_global(struct xen_sysctl_scheduler_op *op)
     if ( rc )
         return rc;
 
-    if ( (op->cmd != XEN_DOMCTL_SCHEDOP_putinfo) &&
-         (op->cmd != XEN_DOMCTL_SCHEDOP_getinfo) )
+    if ( (op->cmd != XEN_SYSCTL_SCHEDOP_putinfo) &&
+         (op->cmd != XEN_SYSCTL_SCHEDOP_getinfo) )
         return -EINVAL;
 
     pool = cpupool_get_by_id(op->cpupool_id);

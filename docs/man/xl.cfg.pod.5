@@ -778,6 +778,90 @@ Note this may be overridden by rdm_policy option in PCI device configuration.
 
 =back
 
+=item B<usbctrl=[ "USBCTRL_SPEC_STRING", "USBCTRL_SPEC_STRING", ... ]>
+
+Specifies the USB controllers created for this guest. Each
+B<USB_SPEC_STRING> has the form C<KEY=VALUE,KEY=VALUE,...> where:
+
+=over 4
+
+=item B<KEY=VALUE>
+
+Possible B<KEY>s are:
+
+=over 4
+
+=item B<type=TYPE>
+
+Specifies the usb controller type.  Currently only 'pv' and 'auto'
+are supported.
+
+=item B<version=VERSION>
+
+Specifies the usb controller version.  Possible values include
+1 (USB1.1) and 2 (USB2.0). Default is 2 (USB2.0).
+
+=item B<ports=PORTS>
+
+Specifies the total ports of the usb controller. The maximum
+number is 31. Default is 8.
+
+USB controler ids start from 0.  In line with the USB spec, however,
+ports on a controller start from 1.
+
+E.g.
+usbctrl=["version=1,ports=4", "version=2,ports=8",]
+The first controller has:
+controller id = 0, and port 1,2,3,4.
+The second controller has:
+controller id = 1, and port 1,2,3,4,5,6,7,8.
+
+=back
+
+=back
+
+=item B<usbdev=[ "USB_SPEC_STRING", "USB_SPEC_STRING", ... ]>
+
+Specifies the USB devices to be attached to the guest at boot. Each
+B<USB_SPEC_STRING> has the form C<KEY=VALUE,KEY=VALUE,...> where:
+
+=over 4
+
+=item B<KEY=VALUE>
+
+Possible B<KEY>s are:
+
+=over 4
+
+=item B<devtype=hostdev>
+
+Specifies USB device type. Currently only support 'hostdev'.
+
+=item B<hostbus=busnum>
+
+Specifies busnum of the USB device from the host perspective.
+
+=item B<hostaddr=devnum>
+
+Specifies devnum of the USB device from the host perspective.
+
+=item B<controller=CONTROLLER>
+
+Specifies USB controller id, to which controller the USB device is attached.
+
+=item B<port=PORT>
+
+Specifies USB port, to which port the USB device is attached. B<port=PORT>
+is valid only when B<controller=CONTROLLER> is specified.
+
+=back
+
+If no controller is specified, an available controller:port combination
+will be used.  If there are no available controller:port options,
+a new controller will be created.
+
+=back
+
 =item B<pci=[ "PCI_SPEC_STRING", "PCI_SPEC_STRING", ... ]>
 
 Specifies the host PCI devices to passthrough to this guest. Each B<PCI_SPEC_STRING>
@@ -1369,8 +1453,16 @@ deprecated. Options are:
 
 =item B<"default">
 
-Guest rdtsc/p executed natively when monotonicity can be guaranteed
+Guest rdtsc/p is executed natively when monotonicity can be guaranteed
 and emulated otherwise (with frequency scaled if necessary).
+
+If a HVM container in B<default> TSC mode is created on a host that
+provides constant host TSC, its guest TSC frequency will be the same
+as the host. If it is later migrated to another host that provide
+constant host TSC and supports Intel VMX TSC scaling/AMD SVM TSC
+ratio, its guest TSC frequency will be the same before and after
+migration, and guest rdtsc/p will be executed natively as well after
+migration.
 
 =item B<"always_emulate">
 
@@ -1392,6 +1484,10 @@ Same as B<native>, except xen manages TSC_AUX register so guest can
 determine when a restore/migration has occurred and assumes guest
 obtains/uses pvclock-like mechanism to adjust for monotonicity and
 frequency changes.
+
+If a HVM container in B<native_paravirt> TSC mode can execute both guest
+rdtsc and guest rdtscp natively, then the guest TSC frequency will be
+determined in the similar way to that of B<default> TSC mode.
 
 =back
 
@@ -1528,10 +1624,20 @@ This set incorporates use of hypercalls for remote TLB flushing.
 This enlightenment may improve performance of Windows guests running
 on hosts with higher levels of (physical) CPU contention.
 
+=item B<apic_assist>
+
+This set incorporates use of the APIC assist page to avoid EOI of
+the local APIC.
+This enlightenment may improve performance of guests that make use of
+per-vcpu event channel upcall vectors.
+Note that this enlightenment will have no effect if the guest is
+using APICv posted interrupts.
+
 =item B<defaults>
 
 This is a special value that enables the default set of groups, which
-is currently the B<base>, B<freq> and B<time_ref_count> groups.
+is currently the B<base>, B<freq>, B<time_ref_count> and B<apic_assist>
+groups.
 
 =item B<all>
 
@@ -1896,6 +2002,8 @@ option to the device-model.
 
 Run the device model as user "username", instead of
 xen-qemudepriv-domid$domid or xen-qemudepriv-shared or root.
+Please note that running QEMU as non-root causes migration and PCI
+passthrough not to work properly.
 
 =back
 

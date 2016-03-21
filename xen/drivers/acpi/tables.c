@@ -189,6 +189,32 @@ void __init acpi_table_print_madt_entry(struct acpi_subtable_header *header)
 		}
 		break;
 
+	case ACPI_MADT_TYPE_GENERIC_INTERRUPT:
+		{
+			struct acpi_madt_generic_interrupt *p =
+				container_of(header, struct acpi_madt_generic_interrupt, header);
+
+			printk(KERN_DEBUG PREFIX
+			       "GICC (acpi_id[0x%04x] address[0x%"PRIx64"] MPIDR[0x%"PRIx64"] %s)\n",
+			       p->uid, p->base_address,
+			       p->arm_mpidr,
+			       (p->flags & ACPI_MADT_ENABLED) ? "enabled" : "disabled");
+
+		}
+		break;
+
+	case ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR:
+		{
+			struct acpi_madt_generic_distributor *p =
+				container_of(header, struct acpi_madt_generic_distributor, header);
+
+			printk(KERN_DEBUG PREFIX
+			       "GIC Distributor (gic_id[0x%04x] address[0x%"PRIx64"] gsi_base[%d])\n",
+			       p->gic_id, p->base_address,
+			       p->global_irq_base);
+		}
+		break;
+
 	default:
 		printk(KERN_WARNING PREFIX
 		       "Found unsupported MADT entry (type = %#x)\n",
@@ -197,6 +223,65 @@ void __init acpi_table_print_madt_entry(struct acpi_subtable_header *header)
 	}
 }
 
+static struct acpi_subtable_header * __init
+acpi_get_entry(const char *id, unsigned long table_size,
+	       const struct acpi_table_header *table_header,
+	       enum acpi_madt_type entry_id, unsigned int entry_index)
+{
+	struct acpi_subtable_header *entry;
+	int count = 0;
+	unsigned long table_end;
+
+	if (!table_size)
+		return NULL;
+
+	if (!table_header) {
+		printk(KERN_WARNING PREFIX "%4.4s not present\n", id);
+		return NULL;
+	}
+
+	table_end = (unsigned long)table_header + table_header->length;
+
+	/* Parse all entries looking for a match. */
+	entry = (void *)table_header + table_size;
+
+	while ((unsigned long)(entry + 1) < table_end) {
+		if (entry->length < sizeof(*entry)) {
+			printk(KERN_ERR PREFIX "[%4.4s:%#x] Invalid length\n",
+			       id, entry_id);
+			return NULL;
+		}
+
+		if (entry->type == entry_id) {
+			if (count == entry_index)
+				return entry;
+			count++;
+		}
+
+		entry = (void *)entry + entry->length;
+	}
+
+	return NULL;
+}
+
+struct acpi_subtable_header * __init
+acpi_table_get_entry_madt(enum acpi_madt_type entry_id,
+			  unsigned int entry_index)
+{
+	struct acpi_table_header *table_header;
+	acpi_status status;
+
+	status = acpi_get_table(ACPI_SIG_MADT, acpi_apic_instance,
+				&table_header);
+	if (ACPI_FAILURE(status)) {
+		printk(KERN_WARNING PREFIX "%4.4s not present\n",
+		       ACPI_SIG_MADT);
+		return NULL;
+	}
+
+	return acpi_get_entry(ACPI_SIG_MADT, sizeof(struct acpi_table_madt),
+			      table_header, entry_id, entry_index);
+}
 
 int __init
 acpi_parse_entries(char *id, unsigned long table_size,

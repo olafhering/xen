@@ -7,6 +7,7 @@
 #include <xen/vmap.h>
 #include <asm/io.h>
 #include <asm/psci.h>
+#include <asm/acpi.h>
 
 struct smp_enable_ops {
         int             (*prepare_cpu)(int);
@@ -70,7 +71,7 @@ int __init arch_smp_init(void)
     return 0;
 }
 
-int __init arch_cpu_init(int cpu, struct dt_device_node *dn)
+static int __init dt_arch_cpu_init(int cpu, struct dt_device_node *dn)
 {
     const char *enable_method;
 
@@ -92,6 +93,15 @@ int __init arch_cpu_init(int cpu, struct dt_device_node *dn)
     }
 
     return 0;
+}
+
+int __init arch_cpu_init(int cpu, struct dt_device_node *dn)
+{
+    if ( acpi_disabled )
+        return dt_arch_cpu_init(cpu, dn);
+    else
+        /* acpi only supports psci at present */
+        return smp_psci_init(cpu);
 }
 
 int __init arch_cpu_up(int cpu)

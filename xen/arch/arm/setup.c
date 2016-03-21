@@ -36,6 +36,7 @@
 #include <xen/pfn.h>
 #include <xen/vmap.h>
 #include <xen/libfdt/libfdt.h>
+#include <xen/acpi.h>
 #include <asm/page.h>
 #include <asm/current.h>
 #include <asm/setup.h>
@@ -45,10 +46,15 @@
 #include <asm/procinfo.h>
 #include <asm/setup.h>
 #include <xsm/xsm.h>
+#include <asm/acpi.h>
 
 struct bootinfo __initdata bootinfo;
 
 struct cpuinfo_arm __read_mostly boot_cpu_data;
+
+#ifdef CONFIG_ACPI
+bool_t __read_mostly acpi_disabled;
+#endif
 
 #ifdef CONFIG_ARM_32
 static unsigned long opt_xenheap_megabytes __initdata;
@@ -609,8 +615,6 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
        allocator. */
     init_xenheap_pages(pfn_to_paddr(xenheap_mfn_start),
                        pfn_to_paddr(boot_mfn_start));
-
-    end_boot_allocator();
 }
 #else /* CONFIG_ARM_64 */
 static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
@@ -678,8 +682,6 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
 
     setup_frametable_mappings(ram_start, ram_end);
     max_page = PFN_DOWN(ram_end);
-
-    end_boot_allocator();
 }
 #endif
 
@@ -750,6 +752,11 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     setup_mm(fdt_paddr, fdt_size);
 
+    /* Parse the ACPI tables for possible boot-time configuration */
+    acpi_boot_table_init();
+
+    end_boot_allocator();
+
     vm_init();
     dt_unflatten_host_device_tree();
 
@@ -761,7 +768,7 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     gic_preinit();
 
-    dt_uart_init();
+    arm_uart_init();
     console_init_preirq();
     console_init_ring();
 

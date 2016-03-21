@@ -617,7 +617,9 @@ _hidden void *libxl__zalloc(libxl__gc *gc_opt, size_t size) NN1;
 _hidden void *libxl__calloc(libxl__gc *gc_opt, size_t nmemb, size_t size) NN1;
 /* change the size of the memory block pointed to by @ptr to @new_size bytes.
  * unlike other allocation functions here any additional space between the
- * oldsize and @new_size is not initialised (similar to a gc'd realloc(3)). */
+ * oldsize and @new_size is not initialised (similar to a gc'd realloc(3)).
+ * if @ptr is non-NULL and @gc_opt is not nogc_gc then @ptr must have been
+ * registered with @gc_opt previously. */
 _hidden void *libxl__realloc(libxl__gc *gc_opt, void *ptr, size_t new_size) NN1;
 /* print @fmt into an allocated string large enoughto contain the result.
  * (similar to gc'd asprintf(3)). */
@@ -1179,6 +1181,8 @@ _hidden int libxl__init_console_from_channel(libxl__gc *gc,
                                              int dev_num,
                                              libxl_device_channel *channel);
 _hidden int libxl__device_nextid(libxl__gc *gc, uint32_t domid, char *device);
+_hidden int libxl__resolve_domid(libxl__gc *gc, const char *name,
+                                 uint32_t *domid);
 
 /*
  * For each aggregate type which can be used as an input we provide:
@@ -1964,7 +1968,7 @@ _hidden char *libxl__device_model_xs_path(libxl__gc *gc, uint32_t dm_domid,
  * their own callback function and should just use the one they're
  * given.
  *
- * Functions using LIBXL__INIT_EGC may *not* generally be called from
+ * Functions using LIBXL_INIT_EGC may *not* generally be called from
  * within libxl, because libxl__egc_cleanup may call back into the
  * application.  This should be enforced by declaring all such
  * functions in libxl.h or libxl_event.h with
@@ -2426,8 +2430,8 @@ struct libxl__multidev {
  * provided by qemu) are freed (eg, fds closed) before it shuts down,
  * and no confirmation from a terminating qemu back to the toolstack.
  *
- * This will need to be fixed in Xen 4.3.  In the meantime (Xen 4.2)
- * we implement a bodge.
+ * This will need to be fixed in future Xen versions. In the meantime
+ * (Xen 4.2) we implement a bodge.
  *
  *      WE WANT TO UNPLUG         WE WANT TO SHUT DOWN OR DESTROY
  *                    |                           |
@@ -2585,6 +2589,14 @@ _hidden void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
                                    libxl_device_vtpm *vtpm,
                                    libxl__ao_device *aodev);
 
+_hidden void libxl__device_usbctrl_add(libxl__egc *egc, uint32_t domid,
+                                       libxl_device_usbctrl *usbctrl,
+                                       libxl__ao_device *aodev);
+
+_hidden void libxl__device_usbdev_add(libxl__egc *egc, uint32_t domid,
+                                      libxl_device_usbdev *usbdev,
+                                      libxl__ao_device *aodev);
+
 /* Internal function to connect a vkb device */
 _hidden int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
                                   libxl_device_vkb *vkb);
@@ -2614,8 +2626,15 @@ _hidden void libxl__wait_device_connection(libxl__egc*,
  *
  * Once finished, aodev->callback will be executed.
  */
-_hidden void libxl__initiate_device_remove(libxl__egc *egc,
-                                           libxl__ao_device *aodev);
+_hidden void libxl__initiate_device_generic_remove(libxl__egc *egc,
+                                                   libxl__ao_device *aodev);
+
+_hidden int libxl__device_from_usbctrl(libxl__gc *gc, uint32_t domid,
+                               libxl_device_usbctrl *usbctrl,
+                               libxl__device *device);
+
+_hidden void libxl__initiate_device_usbctrl_remove(libxl__egc *egc,
+                                                   libxl__ao_device *aodev);
 
 /*
  * libxl__get_hotplug_script_info returns the args and env that should
@@ -2797,9 +2816,9 @@ typedef struct libxl__save_helper_state {
                       * marshalling and xc callback functions */
 } libxl__save_helper_state;
 
-/*----- remus device related state structure -----*/
+/*----- checkpoint device related state structure -----*/
 /*
- * The abstract Remus device layer exposes a common
+ * The abstract checkpoint device layer exposes a common
  * set of API to [external] libxl for manipulating devices attached to
  * a guest protected by Remus. The device layer also exposes a set of
  * [internal] interfaces that every device type must implement.
@@ -2807,34 +2826,35 @@ typedef struct libxl__save_helper_state {
  * The following API are exposed to libxl:
  *
  * One-time configuration operations:
- *  +libxl__remus_devices_setup
+ *  +libxl__checkpoint_devices_setup
  *    > Enable output buffering for NICs, setup disk replication, etc.
- *  +libxl__remus_devices_teardown
+ *  +libxl__checkpoint_devices_teardown
  *    > Disable output buffering and disk replication; teardown any
  *       associated external setups like qdiscs for NICs.
  *
  * Operations executed every checkpoint (in order of invocation):
- *  +libxl__remus_devices_postsuspend
- *  +libxl__remus_devices_preresume
- *  +libxl__remus_devices_commit
+ *  +libxl__checkpoint_devices_postsuspend
+ *  +libxl__checkpoint_devices_preresume
+ *  +libxl__checkpoint_devices_commit
  *
  * Each device type needs to implement the interfaces specified in
- * the libxl__remus_device_instance_ops if it wishes to support Remus.
+ * the libxl__checkpoint_device_instance_ops if it wishes to support Remus.
  *
- * The high-level control flow through the Remus device layer is shown below:
+ * The high-level control flow through the checkpoint device layer is shown
+ * below:
  *
  * xl remus
  *  |->  libxl_domain_remus_start
- *    |-> libxl__remus_devices_setup
- *      |-> Per-checkpoint libxl__remus_devices_[postsuspend,preresume,commit]
+ *    |-> libxl__checkpoint_devices_setup
+ *      |-> Per-checkpoint libxl__checkpoint_devices_[postsuspend,preresume,commit]
  *        ...
  *        |-> On backup failure, network error or other internal errors:
- *            libxl__remus_devices_teardown
+ *            libxl__checkpoint_devices_teardown
  */
 
-typedef struct libxl__remus_device libxl__remus_device;
-typedef struct libxl__remus_devices_state libxl__remus_devices_state;
-typedef struct libxl__remus_device_instance_ops libxl__remus_device_instance_ops;
+typedef struct libxl__checkpoint_device libxl__checkpoint_device;
+typedef struct libxl__checkpoint_devices_state libxl__checkpoint_devices_state;
+typedef struct libxl__checkpoint_device_instance_ops libxl__checkpoint_device_instance_ops;
 
 /*
  * Interfaces to be implemented by every device subkind that wishes to
@@ -2844,7 +2864,7 @@ typedef struct libxl__remus_device_instance_ops libxl__remus_device_instance_ops
  * synchronous and call dev->aodev.callback directly (as the last
  * thing they do).
  */
-struct libxl__remus_device_instance_ops {
+struct libxl__checkpoint_device_instance_ops {
     /* the device kind this ops belongs to... */
     libxl__device_kind kind;
 
@@ -2855,12 +2875,12 @@ struct libxl__remus_device_instance_ops {
      * Asynchronous.
      */
 
-    void (*postsuspend)(libxl__egc *egc, libxl__remus_device *dev);
-    void (*preresume)(libxl__egc *egc, libxl__remus_device *dev);
-    void (*commit)(libxl__egc *egc, libxl__remus_device *dev);
+    void (*postsuspend)(libxl__egc *egc, libxl__checkpoint_device *dev);
+    void (*preresume)(libxl__egc *egc, libxl__checkpoint_device *dev);
+    void (*commit)(libxl__egc *egc, libxl__checkpoint_device *dev);
 
     /*
-     * setup() and teardown() are refer to the actual remus device.
+     * setup() and teardown() are refer to the actual checkpoint device.
      * Asynchronous.
      * teardown is called even if setup fails.
      */
@@ -2869,45 +2889,50 @@ struct libxl__remus_device_instance_ops {
      * device. If matched, the device will then be managed with this set of
      * subkind operations.
      * Yields 0 if the device successfully set up.
-     * REMUS_DEVOPS_DOES_NOT_MATCH if the ops does not match the device.
+     * CHECKPOINT_DEVOPS_DOES_NOT_MATCH if the ops does not match the device.
      * any other rc indicates failure.
      */
-    void (*setup)(libxl__egc *egc, libxl__remus_device *dev);
-    void (*teardown)(libxl__egc *egc, libxl__remus_device *dev);
+    void (*setup)(libxl__egc *egc, libxl__checkpoint_device *dev);
+    void (*teardown)(libxl__egc *egc, libxl__checkpoint_device *dev);
 };
 
-int init_subkind_nic(libxl__remus_devices_state *rds);
-void cleanup_subkind_nic(libxl__remus_devices_state *rds);
-int init_subkind_drbd_disk(libxl__remus_devices_state *rds);
-void cleanup_subkind_drbd_disk(libxl__remus_devices_state *rds);
+int init_subkind_nic(libxl__checkpoint_devices_state *cds);
+void cleanup_subkind_nic(libxl__checkpoint_devices_state *cds);
+int init_subkind_drbd_disk(libxl__checkpoint_devices_state *cds);
+void cleanup_subkind_drbd_disk(libxl__checkpoint_devices_state *cds);
 
-typedef void libxl__remus_callback(libxl__egc *,
-                                   libxl__remus_devices_state *, int rc);
+typedef void libxl__checkpoint_callback(libxl__egc *,
+                                        libxl__checkpoint_devices_state *,
+                                        int rc);
 
 /*
- * State associated with a remus invocation, including parameters
- * passed to the remus abstract device layer by the remus
+ * State associated with a checkpoint invocation, including parameters
+ * passed to the checkpoint abstract device layer by the remus
  * save/restore machinery.
  */
-struct libxl__remus_devices_state {
-    /*---- must be set by caller of libxl__remus_device_(setup|teardown) ----*/
+struct libxl__checkpoint_devices_state {
+    /*-- must be set by caller of libxl__checkpoint_device_(setup|teardown) --*/
 
     libxl__ao *ao;
     uint32_t domid;
-    libxl__remus_callback *callback;
+    libxl__checkpoint_callback *callback;
+    void *concrete_data;
     int device_kind_flags;
+    /* The ops must be pointer array, and the last ops must be NULL. */
+    const libxl__checkpoint_device_instance_ops **ops;
 
     /*----- private for abstract layer only -----*/
 
     int num_devices;
     /*
-     * this array is allocated before setup the remus devices by the
-     * remus abstract layer.
-     * devs may be NULL, means there's no remus devices that has been set up.
+     * this array is allocated before setup the checkpoint devices by the
+     * checkpoint abstract layer.
+     * devs may be NULL, means there's no checkpoint devices that has been
+     * set up.
      * the size of this array is 'num_devices', which is the total number
      * of libxl nic devices and disk devices(num_nics + num_disks).
      */
-    libxl__remus_device **devs;
+    libxl__checkpoint_device **devs;
 
     libxl_device_nic *nics;
     int num_nics;
@@ -2915,34 +2940,24 @@ struct libxl__remus_devices_state {
     int num_disks;
 
     libxl__multidev multidev;
-
-    /*----- private for concrete (device-specific) layer only -----*/
-
-    /* private for nic device subkind ops */
-    char *netbufscript;
-    struct nl_sock *nlsock;
-    struct nl_cache *qdisc_cache;
-
-    /* private for drbd disk subkind ops */
-    char *drbd_probe_script;
 };
 
 /*
  * Information about a single device being handled by remus.
- * Allocated by the remus abstract layer.
+ * Allocated by the checkpoint abstract layer.
  */
-struct libxl__remus_device {
+struct libxl__checkpoint_device {
     /*----- shared between abstract and concrete layers -----*/
     /*
      * if this is true, that means the subkind ops match the device
      */
     bool matched;
 
-    /*----- set by remus device abstruct layer -----*/
-    /* libxl__device_* which this remus device related to */
+    /*----- set by checkpoint device abstruct layer -----*/
+    /* libxl__device_* which this checkpoint device related to */
     const void *backend_dev;
     libxl__device_kind kind;
-    libxl__remus_devices_state *rds;
+    libxl__checkpoint_devices_state *cds;
     libxl__ao_device aodev;
 
     /*----- private for abstract layer only -----*/
@@ -2953,7 +2968,7 @@ struct libxl__remus_device {
      * individual devices.
      */
     int ops_index;
-    const libxl__remus_device_instance_ops *ops;
+    const libxl__checkpoint_device_instance_ops *ops;
 
     /*----- private for concrete (device-specific) layer -----*/
 
@@ -2961,17 +2976,34 @@ struct libxl__remus_device {
     void *concrete_data;
 };
 
-/* the following 5 APIs are async ops, call rds->callback when done */
-_hidden void libxl__remus_devices_setup(libxl__egc *egc,
-                                        libxl__remus_devices_state *rds);
-_hidden void libxl__remus_devices_teardown(libxl__egc *egc,
-                                           libxl__remus_devices_state *rds);
-_hidden void libxl__remus_devices_postsuspend(libxl__egc *egc,
-                                              libxl__remus_devices_state *rds);
-_hidden void libxl__remus_devices_preresume(libxl__egc *egc,
-                                            libxl__remus_devices_state *rds);
-_hidden void libxl__remus_devices_commit(libxl__egc *egc,
-                                         libxl__remus_devices_state *rds);
+/* the following 5 APIs are async ops, call cds->callback when done */
+_hidden void libxl__checkpoint_devices_setup(libxl__egc *egc,
+                                        libxl__checkpoint_devices_state *cds);
+_hidden void libxl__checkpoint_devices_teardown(libxl__egc *egc,
+                                        libxl__checkpoint_devices_state *cds);
+_hidden void libxl__checkpoint_devices_postsuspend(libxl__egc *egc,
+                                        libxl__checkpoint_devices_state *cds);
+_hidden void libxl__checkpoint_devices_preresume(libxl__egc *egc,
+                                        libxl__checkpoint_devices_state *cds);
+_hidden void libxl__checkpoint_devices_commit(libxl__egc *egc,
+                                        libxl__checkpoint_devices_state *cds);
+
+/*----- Remus related state structure -----*/
+typedef struct libxl__remus_state libxl__remus_state;
+struct libxl__remus_state {
+    /* private */
+    libxl__ev_time checkpoint_timeout; /* used for Remus checkpoint */
+    int interval; /* checkpoint interval */
+
+    /*----- private for concrete (device-specific) layer only -----*/
+    /* private for nic device subkind ops */
+    char *netbufscript;
+    struct nl_sock *nlsock;
+    struct nl_cache *qdisc_cache;
+
+    /* private for drbd disk subkind ops */
+    char *drbd_probe_script;
+};
 _hidden int libxl__netbuffer_enabled(libxl__gc *gc);
 
 /*----- Legacy conversion helper -----*/
@@ -3014,11 +3046,12 @@ static inline bool libxl__conversion_helper_inuse
  */
 
 typedef struct libxl__domain_suspend_state libxl__domain_suspend_state;
+typedef struct libxl__domain_save_state libxl__domain_save_state;
 
-typedef void libxl__domain_suspend_cb(libxl__egc*,
-                                      libxl__domain_suspend_state*, int rc);
+typedef void libxl__domain_save_cb(libxl__egc*,
+                                   libxl__domain_save_state*, int rc);
 typedef void libxl__save_device_model_cb(libxl__egc*,
-                                         libxl__domain_suspend_state*, int rc);
+                                         libxl__domain_save_state*, int rc);
 
 /* State for writing a libxl migration v2 stream */
 typedef struct libxl__stream_write_state libxl__stream_write_state;
@@ -3027,7 +3060,7 @@ typedef void (*sws_record_done_cb)(libxl__egc *egc,
 struct libxl__stream_write_state {
     /* filled by the user */
     libxl__ao *ao;
-    libxl__domain_suspend_state *dss;
+    libxl__domain_save_state *dss;
     int fd;
     void (*completion_callback)(libxl__egc *egc,
                                 libxl__stream_write_state *sws,
@@ -3080,10 +3113,36 @@ typedef struct libxl__logdirty_switch {
     libxl__ev_time timeout;
 } libxl__logdirty_switch;
 
+_hidden void libxl__logdirty_init(libxl__logdirty_switch *lds);
+
 struct libxl__domain_suspend_state {
+    /* set by caller of libxl__domain_suspend_init */
+    libxl__ao *ao;
+    uint32_t domid;
+
+    /* private */
+    libxl_domain_type type;
+
+    libxl__ev_evtchn guest_evtchn;
+    int guest_evtchn_lockfd;
+    int guest_responded;
+
+    libxl__xswait_state pvcontrol;
+    libxl__ev_xswatch guest_watch;
+    libxl__ev_time guest_timeout;
+
+    const char *dm_savefile;
+    void (*callback_common_done)(libxl__egc*,
+                                 struct libxl__domain_suspend_state*, int ok);
+};
+int libxl__domain_suspend_init(libxl__egc *egc,
+                               libxl__domain_suspend_state *dsps,
+                               libxl_domain_type type);
+
+struct libxl__domain_save_state {
     /* set by caller of libxl__domain_save */
     libxl__ao *ao;
-    libxl__domain_suspend_cb *callback;
+    libxl__domain_save_cb *callback;
 
     uint32_t domid;
     int fd;
@@ -3091,25 +3150,17 @@ struct libxl__domain_suspend_state {
     libxl_domain_type type;
     int live;
     int debug;
+    int checkpointed_stream;
     const libxl_domain_remus_info *remus;
     /* private */
     int rc;
-    libxl__ev_evtchn guest_evtchn;
-    int guest_evtchn_lockfd;
     int hvm;
     int xcflags;
-    int guest_responded;
-    libxl__xswait_state pvcontrol;
-    libxl__ev_xswatch guest_watch;
-    libxl__ev_time guest_timeout;
-    const char *dm_savefile;
-    libxl__remus_devices_state rds;
-    libxl__ev_time checkpoint_timeout; /* used for Remus checkpoint */
-    int interval; /* checkpoint interval (for Remus) */
+    libxl__domain_suspend_state dsps;
+    libxl__remus_state rs;
+    libxl__checkpoint_devices_state cds;
     libxl__stream_write_state sws;
     libxl__logdirty_switch logdirty;
-    void (*callback_common_done)(libxl__egc*,
-                                 struct libxl__domain_suspend_state*, int ok);
 };
 
 
@@ -3307,6 +3358,14 @@ _hidden void libxl__add_vtpms(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                              libxl_domain_config *d_config,
                              libxl__multidev *multidev);
 
+_hidden void libxl__add_usbctrls(libxl__egc *egc, libxl__ao *ao,
+                                 uint32_t domid, libxl_domain_config *d_config,
+                                 libxl__multidev *multidev);
+
+_hidden void libxl__add_usbdevs(libxl__egc *egc, libxl__ao *ao,
+                                uint32_t domid, libxl_domain_config *d_config,
+                                libxl__multidev *multidev);
+
 /*----- device model creation -----*/
 
 /* First layer; wraps libxl__spawn_spawn. */
@@ -3454,12 +3513,12 @@ struct libxl__domain_create_state {
 
 /* calls dss->callback when done */
 _hidden void libxl__domain_save(libxl__egc *egc,
-                                libxl__domain_suspend_state *dss);
+                                libxl__domain_save_state *dss);
 
 
 /* calls libxl__xc_domain_suspend_done when done */
 _hidden void libxl__xc_domain_save(libxl__egc *egc,
-                                   libxl__domain_suspend_state *dss,
+                                   libxl__domain_save_state *dss,
                                    libxl__save_helper_state *shs);
 /* If rc==0 then retval is the return value from xc_domain_save
  * and errnoval is the errno value it provided.
@@ -3477,7 +3536,7 @@ void libxl__xc_domain_saverestore_async_callback_done(libxl__egc *egc,
 
 _hidden void libxl__domain_suspend_common_switch_qemu_logdirty
                                (int domid, unsigned int enable, void *data);
-_hidden int libxl__save_emulator_xenstore_data(libxl__domain_suspend_state *dss,
+_hidden int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
                                                char **buf, uint32_t *len);
 _hidden int libxl__restore_emulator_xenstore_data
     (libxl__domain_create_state *dcs, const char *ptr, uint32_t size);
@@ -3505,15 +3564,24 @@ static inline bool libxl__save_helper_inuse(const libxl__save_helper_state *shs)
 
 /* Each time the dm needs to be saved, we must call suspend and then save */
 _hidden int libxl__domain_suspend_device_model(libxl__gc *gc,
-                                           libxl__domain_suspend_state *dss);
+                                           libxl__domain_suspend_state *dsps);
 
 _hidden const char *libxl__device_model_savefile(libxl__gc *gc, uint32_t domid);
 
-/* calls dss->callback_common_done when done */
+/* calls dsps->callback_common_done when done */
 _hidden void libxl__domain_suspend(libxl__egc *egc,
-                                   libxl__domain_suspend_state *dss);
+                                   libxl__domain_suspend_state *dsps);
 /* used by libxc to suspend the guest during migration */
 _hidden void libxl__domain_suspend_callback(void *data);
+
+/* Remus setup and teardown */
+_hidden void libxl__remus_setup(libxl__egc *egc,
+                                libxl__remus_state *rs);
+_hidden void libxl__remus_teardown(libxl__egc *egc,
+                                   libxl__remus_state *rs,
+                                   int rc);
+_hidden void libxl__remus_restore_setup(libxl__egc *egc,
+                                        libxl__domain_create_state *dcs);
 
 
 /*
@@ -3976,6 +4044,9 @@ static inline void libxl__update_config_vtpm(libxl__gc *gc,
 #define COMPARE_PCI(a, b) ((a)->func == (b)->func &&    \
                            (a)->bus == (b)->bus &&      \
                            (a)->dev == (b)->dev)
+#define COMPARE_USB(a, b) ((a)->ctrl == (b)->ctrl && \
+                           (a)->port == (b)->port)
+#define COMPARE_USBCTRL(a, b) ((a)->devid == (b)->devid)
 
 /* DEVICE_ADD
  *
@@ -4040,6 +4111,10 @@ void libxl__bitmap_copy_best_effort(libxl__gc *gc, libxl_bitmap *dptr,
 
 int libxl__count_physical_sockets(libxl__gc *gc, int *sockets);
 
+_hidden int libxl__read_sysfs_file_contents(libxl__gc *gc,
+                                            const char *filename,
+                                            void **data_r,
+                                            int *datalen_r);
 
 #define LIBXL_QEMU_USER_PREFIX "xen-qemuuser"
 #define LIBXL_QEMU_USER_BASE   LIBXL_QEMU_USER_PREFIX"-domid"

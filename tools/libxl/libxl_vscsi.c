@@ -290,7 +290,7 @@ static int vscsictrl_remove(libxl_ctx *ctx,
     aodev->dev = device;
     aodev->callback = vscsi_aodev_complete;
     aodev->force = force;
-    libxl__initiate_device_remove(egc, aodev);
+    libxl__initiate_device_generic_remove(egc, aodev);
 
 out:
     if (rc) return AO_CREATE_FAIL(rc);

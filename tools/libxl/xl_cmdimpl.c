@@ -499,11 +499,16 @@ static int do_daemonize(char *name, const char *pidfile)
 
     CHK_SYSCALL(logfile = open(fullname, O_WRONLY|O_CREAT|O_APPEND, 0644));
     free(fullname);
+    assert(logfile >= 3);
 
     CHK_SYSCALL(nullfd = open("/dev/null", O_RDONLY));
+    assert(nullfd >= 3);
+
     dup2(nullfd, 0);
     dup2(logfile, 1);
     dup2(logfile, 2);
+
+    close(nullfd);
 
     CHK_SYSCALL(daemon(0, 1));
 
@@ -1255,6 +1260,58 @@ static void parse_vnuma_config(const XLU_Config *config,
     free(vcpu_parsed);
 }
 
+/* Parses usbctrl data and adds info into usbctrl
+ * Returns 1 if the input token does not match one of the keys
+ * or parsed values are not correct. Successful parse returns 0 */
+static int parse_usbctrl_config(libxl_device_usbctrl *usbctrl, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("type", token, oparg)) {
+        if (libxl_usbctrl_type_from_string(oparg, &usbctrl->type)) {
+            fprintf(stderr, "Invalid usb controller type '%s'\n", oparg);
+            return 1;
+        }
+    } else if (MATCH_OPTION("version", token, oparg)) {
+        usbctrl->version = atoi(oparg);
+    } else if (MATCH_OPTION("ports", token, oparg)) {
+        usbctrl->ports = atoi(oparg);
+    } else {
+        fprintf(stderr, "Unknown string `%s' in usbctrl spec\n", token);
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Parses usbdev data and adds info into usbdev
+ * Returns 1 if the input token does not match one of the keys
+ * or parsed values are not correct. Successful parse returns 0 */
+static int parse_usbdev_config(libxl_device_usbdev *usbdev, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("type", token, oparg)) {
+        if (libxl_usbdev_type_from_string(oparg, &usbdev->type)) {
+            fprintf(stderr, "Invalid usb device type: %s\n", optarg);
+            return 1;
+        }
+    } else if (MATCH_OPTION("hostbus", token, oparg)) {
+        usbdev->u.hostdev.hostbus = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("hostaddr", token, oparg)) {
+        usbdev->u.hostdev.hostaddr = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("controller", token, oparg)) {
+        usbdev->ctrl = atoi(oparg);
+    } else if (MATCH_OPTION("port", token, oparg)) {
+        usbdev->port = atoi(oparg);
+    } else {
+        fprintf(stderr, "Unknown string `%s' in usbdev spec\n", token);
+        return 1;
+    }
+
+    return 0;
+}
+
 static void parse_config_data(const char *config_source,
                               const char *config_data,
                               int config_len,
@@ -1263,7 +1320,8 @@ static void parse_config_data(const char *config_source,
     const char *buf;
     long l, vcpus = 0;
     XLU_Config *config;
-    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms, *vscsictrls;
+    XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms,
+                   *usbctrls, *usbdevs, *vscsictrls;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
@@ -2091,6 +2149,58 @@ skip_vfb:
         }
     }
 
+    if (!xlu_cfg_get_list(config, "usbctrl", &usbctrls, 0, 0)) {
+        d_config->num_usbctrls = 0;
+        d_config->usbctrls = NULL;
+        while ((buf = xlu_cfg_get_listitem(usbctrls, d_config->num_usbctrls))
+               != NULL) {
+            libxl_device_usbctrl *usbctrl;
+            char *buf2 = strdup(buf);
+            char *p;
+
+            usbctrl = ARRAY_EXTEND_INIT(d_config->usbctrls,
+                                        d_config->num_usbctrls,
+                                        libxl_device_usbctrl_init);
+            p = strtok(buf2, ",");
+            if (!p)
+                goto skip_usbctrl;
+            do {
+                while (*p == ' ')
+                    p++;
+                if (parse_usbctrl_config(usbctrl, p))
+                    exit(1);
+            } while ((p = strtok(NULL, ",")) != NULL);
+skip_usbctrl:
+            free(buf2);
+        }
+    }
+
+    if (!xlu_cfg_get_list(config, "usbdev", &usbdevs, 0, 0)) {
+        d_config->num_usbdevs = 0;
+        d_config->usbdevs = NULL;
+        while ((buf = xlu_cfg_get_listitem(usbdevs, d_config->num_usbdevs))
+               != NULL) {
+            libxl_device_usbdev *usbdev;
+            char *buf2 = strdup(buf);
+            char *p;
+
+            usbdev = ARRAY_EXTEND_INIT_NODEVID(d_config->usbdevs,
+                                               d_config->num_usbdevs,
+                                               libxl_device_usbdev_init);
+            p = strtok(buf2, ",");
+            if (!p)
+                goto skip_usbdev;
+            do {
+                while (*p == ' ')
+                    p++;
+                if (parse_usbdev_config(usbdev, p))
+                    exit(1);
+            } while ((p = strtok(NULL, ",")) != NULL);
+skip_usbdev:
+            free(buf2);
+        }
+    }
+
     switch (xlu_cfg_get_list(config, "cpuid", &cpuids, 0, 1)) {
     case 0:
         {
@@ -2804,12 +2914,8 @@ static uint32_t create_domain(struct domain_create *dom_info)
                 return ERROR_FAIL;
             }
             /* allocate space for the extra config plus two EOLs plus \0 */
-            config_data = realloc(config_data, config_len
+            config_data = xrealloc(config_data, config_len
                 + strlen(extra_config) + 2 + 1);
-            if (!config_data) {
-                fprintf(stderr, "Failed to realloc config_data\n");
-                return ERROR_FAIL;
-            }
             config_len += sprintf(config_data + config_len, "\n%s\n",
                 extra_config);
         }
@@ -2878,11 +2984,13 @@ start:
     if (rc < 0)
         goto error_out;
 
-    ret = freemem(domid, &d_config.b_info);
-    if (ret < 0) {
-        fprintf(stderr, "failed to free memory for the domain\n");
-        ret = ERROR_FAIL;
-        goto error_out;
+    if (domid_soft_reset == INVALID_DOMID) {
+        ret = freemem(domid, &d_config.b_info);
+        if (ret < 0) {
+            fprintf(stderr, "failed to free memory for the domain\n");
+            ret = ERROR_FAIL;
+            goto error_out;
+        }
     }
 
     libxl_asyncprogress_how autoconnect_console_how_buf;
@@ -3076,6 +3184,13 @@ error_out:
     }
 
 out:
+    if (restore_fd_to_close >= 0) {
+        if (close(restore_fd_to_close))
+            fprintf(stderr, "Failed to close restoring file, fd %d, errno %d\n",
+                    restore_fd_to_close, errno);
+        restore_fd_to_close = -1;
+    }
+
     if (logfile != 2)
         close(logfile);
 
@@ -3410,6 +3525,196 @@ int main_cd_insert(int argc, char **argv)
     file = argv[optind + 2];
 
     cd_insert(domid, virtdev, file);
+    return 0;
+}
+
+int main_usbctrl_attach(int argc, char **argv)
+{
+    uint32_t domid;
+    int opt, rc = 0;
+    libxl_device_usbctrl usbctrl;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "usbctrl-attach", 1) {
+        /* No options */
+    }
+
+    domid = find_domain(argv[optind++]);
+
+    libxl_device_usbctrl_init(&usbctrl);
+
+    for (argv += optind, argc -= optind; argc > 0; ++argv, --argc) {
+        if (parse_usbctrl_config(&usbctrl, *argv))
+            return 1;
+    }
+
+    rc = libxl_device_usbctrl_add(ctx, domid, &usbctrl, 0);
+    if (rc) {
+        fprintf(stderr, "libxl_device_usbctrl_add failed.\n");
+        rc = 1;
+    }
+
+    libxl_device_usbctrl_dispose(&usbctrl);
+    return rc;
+}
+
+int main_usbctrl_detach(int argc, char **argv)
+{
+    uint32_t domid;
+    int opt, devid, rc;
+    libxl_device_usbctrl usbctrl;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "usbctrl-detach", 2) {
+        /* No options */
+    }
+
+    domid = find_domain(argv[optind]);
+    devid = atoi(argv[optind+1]);
+
+    libxl_device_usbctrl_init(&usbctrl);
+    if (libxl_devid_to_device_usbctrl(ctx, domid, devid, &usbctrl)) {
+        fprintf(stderr, "Unknown device %s.\n", argv[optind+1]);
+        return 1;
+    }
+
+    rc = libxl_device_usbctrl_remove(ctx, domid, &usbctrl, 0);
+    if (rc) {
+        fprintf(stderr, "libxl_device_usbctrl_remove failed.\n");
+        rc = 1;
+    }
+
+    libxl_device_usbctrl_dispose(&usbctrl);
+    return rc;
+
+}
+
+int main_usbdev_attach(int argc, char **argv)
+{
+    uint32_t domid;
+    int opt, rc;
+    libxl_device_usbdev usbdev;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "usbdev-attach", 2) {
+        /* No options */
+    }
+
+    libxl_device_usbdev_init(&usbdev);
+
+    domid = find_domain(argv[optind++]);
+
+    for (argv += optind, argc -= optind; argc > 0; ++argv, --argc) {
+        if (parse_usbdev_config(&usbdev, *argv))
+            return 1;
+    }
+
+    rc = libxl_device_usbdev_add(ctx, domid, &usbdev, 0);
+    if (rc) {
+        fprintf(stderr, "libxl_device_usbdev_add failed.\n");
+        rc = 1;
+    }
+
+    libxl_device_usbdev_dispose(&usbdev);
+    return rc;
+}
+
+int main_usbdev_detach(int argc, char **argv)
+{
+    uint32_t domid;
+    int ctrl, port;
+    int opt, rc = 1;
+    libxl_device_usbdev usbdev;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "usbdev-detach", 3) {
+        /* No options */
+    }
+
+    domid = find_domain(argv[optind]);
+    ctrl = atoi(argv[optind+1]);
+    port = atoi(argv[optind+2]);
+
+    if (argc - optind > 3) {
+        fprintf(stderr, "Invalid arguments.\n");
+        return 1;
+    }
+
+    libxl_device_usbdev_init(&usbdev);
+    if (libxl_ctrlport_to_device_usbdev(ctx, domid, ctrl, port, &usbdev)) {
+        fprintf(stderr, "Unknown device at controller %d port %d.\n",
+                ctrl, port);
+        return 1;
+    }
+
+    rc = libxl_device_usbdev_remove(ctx, domid, &usbdev, 0);
+    if (rc) {
+        fprintf(stderr, "libxl_device_usbdev_remove failed.\n");
+        rc = 1;
+    }
+
+    libxl_device_usbdev_dispose(&usbdev);
+    return rc;
+}
+
+int main_usblist(int argc, char **argv)
+{
+    uint32_t domid;
+    libxl_device_usbctrl *usbctrls;
+    libxl_usbctrlinfo usbctrlinfo;
+    int numctrl, i, j, opt;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "usb-list", 1) {
+        /* No options */
+    }
+
+    domid = find_domain(argv[optind++]);
+
+    if (argc > optind) {
+        fprintf(stderr, "Invalid arguments.\n");
+        exit(-1);
+    }
+
+    usbctrls = libxl_device_usbctrl_list(ctx, domid, &numctrl);
+    if (!usbctrls) {
+        return 0;
+    }
+
+    for (i = 0; i < numctrl; ++i) {
+        printf("%-6s %-6s %-3s %-5s %-7s %-5s\n",
+                "Devid", "Type", "BE", "state", "usb-ver", "ports");
+
+        libxl_usbctrlinfo_init(&usbctrlinfo);
+
+        if (!libxl_device_usbctrl_getinfo(ctx, domid,
+                                &usbctrls[i], &usbctrlinfo)) {
+            printf("%-6d %-6s %-3d %-5d %-7d %-5d\n",
+                    usbctrlinfo.devid,
+                    libxl_usbctrl_type_to_string(usbctrlinfo.type),
+                    usbctrlinfo.backend_id, usbctrlinfo.state,
+                    usbctrlinfo.version, usbctrlinfo.ports);
+
+            for (j = 1; j <= usbctrlinfo.ports; j++) {
+                libxl_device_usbdev usbdev;
+
+                libxl_device_usbdev_init(&usbdev);
+
+                printf("  Port %d:", j);
+
+                if (!libxl_ctrlport_to_device_usbdev(ctx, domid,
+                                                     usbctrlinfo.devid,
+                                                     j, &usbdev)) {
+                    printf(" Bus %03x Device %03x\n",
+                           usbdev.u.hostdev.hostbus,
+                           usbdev.u.hostdev.hostaddr);
+                } else {
+                    printf("\n");
+                }
+
+                libxl_device_usbdev_dispose(&usbdev);
+            }
+        }
+
+        libxl_usbctrlinfo_dispose(&usbctrlinfo);
+    }
+
+    libxl_device_usbctrl_list_free(usbctrls, numctrl);
     return 0;
 }
 
@@ -4435,7 +4740,8 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 }
 
 static void migrate_receive(int debug, int daemonize, int monitor,
-                            int send_fd, int recv_fd, int remus)
+                            int send_fd, int recv_fd,
+                            libxl_checkpointed_stream checkpointed)
 {
     uint32_t domid;
     int rc, rc2;
@@ -4460,7 +4766,7 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     dom_info.paused = 1;
     dom_info.migrate_fd = recv_fd;
     dom_info.migration_domname_r = &migration_domname;
-    dom_info.checkpointed_stream = remus;
+    dom_info.checkpointed_stream = checkpointed;
 
     rc = create_domain(&dom_info);
     if (rc < 0) {
@@ -4471,7 +4777,8 @@ static void migrate_receive(int debug, int daemonize, int monitor,
 
     domid = rc;
 
-    if (remus) {
+    switch (checkpointed) {
+    case LIBXL_CHECKPOINTED_STREAM_REMUS:
         /* If we are here, it means that the sender (primary) has crashed.
          * TODO: Split-Brain Check.
          */
@@ -4504,6 +4811,9 @@ static void migrate_receive(int debug, int daemonize, int monitor,
                     common_domname, domid, rc);
 
         exit(rc ? -ERROR_FAIL: 0);
+    default:
+        /* do nothing */
+        break;
     }
 
     fprintf(stderr, "migration target: Transfer complete,"
@@ -4641,7 +4951,8 @@ int main_restore(int argc, char **argv)
 
 int main_migrate_receive(int argc, char **argv)
 {
-    int debug = 0, daemonize = 1, monitor = 1, remus = 0;
+    int debug = 0, daemonize = 1, monitor = 1;
+    libxl_checkpointed_stream checkpointed = LIBXL_CHECKPOINTED_STREAM_NONE;
     int opt;
 
     SWITCH_FOREACH_OPT(opt, "Fedr", NULL, "migrate-receive", 0) {
@@ -4656,7 +4967,7 @@ int main_migrate_receive(int argc, char **argv)
         debug = 1;
         break;
     case 'r':
-        remus = 1;
+        checkpointed = LIBXL_CHECKPOINTED_STREAM_REMUS;
         break;
     }
 
@@ -4666,7 +4977,7 @@ int main_migrate_receive(int argc, char **argv)
     }
     migrate_receive(debug, daemonize, monitor,
                     STDOUT_FILENO, STDIN_FILENO,
-                    remus);
+                    checkpointed);
 
     return 0;
 }
@@ -6044,9 +6355,11 @@ int main_sched_credit(int argc, char **argv)
 {
     const char *dom = NULL;
     const char *cpupool = NULL;
-    int weight = 256, cap = 0, opt_w = 0, opt_c = 0;
-    int opt_s = 0;
-    int tslice = 0, opt_t = 0, ratelimit = 0, opt_r = 0;
+    int weight = 256, cap = 0;
+    int tslice = 0, ratelimit = 0;
+    bool opt_w = false, opt_c = false;
+    bool opt_t = false, opt_r = false;
+    bool opt_s = false;
     int opt, rc;
     static struct option opts[] = {
         {"domain", 1, 0, 'd'},
@@ -6065,22 +6378,22 @@ int main_sched_credit(int argc, char **argv)
         break;
     case 'w':
         weight = strtol(optarg, NULL, 10);
-        opt_w = 1;
+        opt_w = true;
         break;
     case 'c':
         cap = strtol(optarg, NULL, 10);
-        opt_c = 1;
+        opt_c = true;
         break;
     case 't':
         tslice = strtol(optarg, NULL, 10);
-        opt_t = 1;
+        opt_t = true;
         break;
     case 'r':
         ratelimit = strtol(optarg, NULL, 10);
-        opt_r = 1;
+        opt_r = true;
         break;
     case 's':
-        opt_s = 1;
+        opt_s = true;
         break;
     case 'p':
         cpupool = optarg;
@@ -6166,7 +6479,8 @@ int main_sched_credit2(int argc, char **argv)
 {
     const char *dom = NULL;
     const char *cpupool = NULL;
-    int weight = 256, opt_w = 0;
+    int weight = 256;
+    bool opt_w = false;
     int opt, rc;
     static struct option opts[] = {
         {"domain", 1, 0, 'd'},
@@ -6181,7 +6495,7 @@ int main_sched_credit2(int argc, char **argv)
         break;
     case 'w':
         weight = strtol(optarg, NULL, 10);
-        opt_w = 1;
+        opt_w = true;
         break;
     case 'p':
         cpupool = optarg;
@@ -6255,11 +6569,11 @@ int main_sched_rtds(int argc, char **argv)
         break;
     case 'p':
         period = strtol(optarg, NULL, 10);
-        opt_p = 1;
+        opt_p = true;
         break;
     case 'b':
         budget = strtol(optarg, NULL, 10);
-        opt_b = 1;
+        opt_b = true;
         break;
     case 'c':
         cpupool = optarg;
@@ -7167,6 +7481,7 @@ static char *current_time_to_string(time_t now)
 static void print_dom0_uptime(int short_mode, time_t now)
 {
     int fd;
+    ssize_t nr;
     char buf[512];
     uint32_t uptime = 0;
     char *uptime_str = NULL;
@@ -7177,11 +7492,14 @@ static void print_dom0_uptime(int short_mode, time_t now)
     if (fd == -1)
         goto err;
 
-    if (read(fd, buf, sizeof(buf)) == -1) {
+    nr = read(fd, buf, sizeof(buf) - 1);
+    if (nr == -1) {
         close(fd);
         goto err;
     }
     close(fd);
+
+    buf[nr] = '\0';
 
     strtok(buf, " ");
     uptime = strtoul(buf, NULL, 10);
@@ -7263,8 +7581,10 @@ static void print_uptime(int short_mode, uint32_t doms[], int nb_doms)
             fprintf(stderr, "Could not list vms.\n");
             return;
         }
-        for (i = 0; i < nb_vm; i++)
+        for (i = 0; i < nb_vm; i++) {
+            if (info[i].domid == 0) continue;
             print_domU_uptime(info[i].domid, short_mode, now);
+        }
         libxl_vminfo_list_free(info, nb_vm);
     } else {
         for (i = 0; i < nb_doms; i++) {

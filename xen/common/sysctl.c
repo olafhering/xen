@@ -171,7 +171,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         op->u.availheap.avail_bytes <<= PAGE_SHIFT;
         break;
 
-#if defined (CONFIG_HAS_ACPI) && defined (CONFIG_HAS_CPUFREQ)
+#if defined (CONFIG_ACPI) && defined (CONFIG_HAS_CPUFREQ)
     case XEN_SYSCTL_get_pmstat:
         ret = do_get_pm_info(&op->u.get_pmstat);
         break;
@@ -426,7 +426,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
                 break;
             }
 
-            spin_lock(&pcidevs_lock);
+            pcidevs_lock();
             pdev = pci_get_pdev(dev.seg, dev.bus, dev.devfn);
             if ( !pdev )
                 node = XEN_INVALID_DEV;
@@ -434,7 +434,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
                 node = XEN_INVALID_NODE_ID;
             else
                 node = pdev->node;
-            spin_unlock(&pcidevs_lock);
+            pcidevs_unlock();
 
             if ( copy_to_guest_offset(ti->nodes, i, &node, 1) )
             {

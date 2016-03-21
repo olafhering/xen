@@ -27,6 +27,7 @@
 #include <xen/softirq.h>
 #include <xen/list.h>
 #include <xen/device_tree.h>
+#include <xen/acpi.h>
 #include <asm/p2m.h>
 #include <asm/domain.h>
 #include <asm/platform.h>
@@ -34,6 +35,7 @@
 #include <asm/io.h>
 #include <asm/gic.h>
 #include <asm/vgic.h>
+#include <asm/acpi.h>
 
 static void gic_restore_pending_irqs(struct vcpu *v);
 
@@ -98,7 +100,7 @@ void gic_restore_state(struct vcpu *v)
  * needs to be called with a valid cpu_mask, ie each cpu in the mask has
  * already called gic_cpu_init
  * - desc.lock must be held
- * - arch.type must be valid (i.e != DT_IRQ_TYPE_INVALID)
+ * - arch.type must be valid (i.e != IRQ_TYPE_INVALID)
  */
 static void gic_set_irq_properties(struct irq_desc *desc,
                                    const cpumask_t *cpu_mask,
@@ -223,15 +225,12 @@ int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
         *out_hwirq += 16;
 
     if ( out_type )
-        *out_type = intspec[2] & DT_IRQ_TYPE_SENSE_MASK;
+        *out_type = intspec[2] & IRQ_TYPE_SENSE_MASK;
 
     return 0;
 }
 
-/* Find the interrupt controller and set up the callback to translate
- * device tree IRQ.
- */
-void __init gic_preinit(void)
+static void __init gic_dt_preinit(void)
 {
     int rc;
     struct dt_device_node *node;
@@ -259,6 +258,36 @@ void __init gic_preinit(void)
     /* Set the GIC as the primary interrupt controller */
     dt_interrupt_controller = node;
     dt_device_set_used_by(node, DOMID_XEN);
+}
+
+#ifdef CONFIG_ACPI
+static void __init gic_acpi_preinit(void)
+{
+    struct acpi_subtable_header *header;
+    struct acpi_madt_generic_distributor *dist;
+
+    header = acpi_table_get_entry_madt(ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR, 0);
+    if ( !header )
+        panic("No valid GICD entries exists");
+
+    dist = container_of(header, struct acpi_madt_generic_distributor, header);
+
+    if ( acpi_device_init(DEVICE_GIC, NULL, dist->version) )
+        panic("Unable to find compatible GIC in the ACPI table");
+}
+#else
+static void __init gic_acpi_preinit(void) { }
+#endif
+
+/* Find the interrupt controller and set up the callback to translate
+ * device tree or ACPI IRQ.
+ */
+void __init gic_preinit(void)
+{
+    if ( acpi_disabled )
+        gic_dt_preinit();
+    else
+        gic_acpi_preinit();
 }
 
 /* Set up the GIC */

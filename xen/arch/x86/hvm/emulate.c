@@ -498,6 +498,7 @@ static int hvmemul_virtual_to_linear(
 {
     struct segment_register *reg;
     int okay;
+    unsigned long max_reps = 4096;
 
     if ( seg == x86_seg_none )
     {
@@ -506,16 +507,21 @@ static int hvmemul_virtual_to_linear(
     }
 
     /*
+     * If introspection has been enabled for this domain, and we're emulating
+     * becase a vm_reply asked us to (i.e. not doing regular IO) reps should
+     * be at most 1, since optimization might otherwise cause a single
+     * vm_event being triggered for repeated writes to a whole page.
+     */
+    if ( unlikely(current->domain->arch.mem_access_emulate_each_rep) &&
+         current->arch.vm_event->emulate_flags != 0 )
+       max_reps = 1;
+
+    /*
      * Clip repetitions to avoid overflow when multiplying by @bytes_per_rep.
      * The chosen maximum is very conservative but it's what we use in
      * hvmemul_linear_to_phys() so there is no point in using a larger value.
-     * If introspection has been enabled for this domain, *reps should be
-     * at most 1, since optimization might otherwise cause a single vm_event
-     * being triggered for repeated writes to a whole page.
      */
-    *reps = min_t(unsigned long, *reps,
-                  unlikely(current->domain->arch.mem_access_emulate_each_rep)
-                           ? 1 : 4096);
+    *reps = min_t(unsigned long, *reps, max_reps);
 
     reg = hvmemul_get_seg_reg(seg, hvmemul_ctxt);
 
@@ -745,7 +751,7 @@ static int __hvmemul_read(
 
     rc = hvmemul_virtual_to_linear(
         seg, offset, bytes, &reps, access_type, hvmemul_ctxt, &addr);
-    if ( rc != X86EMUL_OKAY )
+    if ( rc != X86EMUL_OKAY || !bytes )
         return rc;
     if ( ((access_type != hvm_access_insn_fetch
            ? vio->mmio_access.read_access
@@ -811,13 +817,17 @@ static int hvmemul_insn_fetch(
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
     unsigned int insn_off = offset - hvmemul_ctxt->insn_buf_eip;
 
-    /* Fall back if requested bytes are not in the prefetch cache. */
-    if ( unlikely((insn_off + bytes) > hvmemul_ctxt->insn_buf_bytes) )
+    /*
+     * Fall back if requested bytes are not in the prefetch cache.
+     * But always perform the (fake) read when bytes == 0.
+     */
+    if ( !bytes ||
+         unlikely((insn_off + bytes) > hvmemul_ctxt->insn_buf_bytes) )
     {
         int rc = __hvmemul_read(seg, offset, p_data, bytes,
                                 hvm_access_insn_fetch, hvmemul_ctxt);
 
-        if ( rc == X86EMUL_OKAY )
+        if ( rc == X86EMUL_OKAY && bytes )
         {
             ASSERT(insn_off + bytes <= sizeof(hvmemul_ctxt->insn_buf));
             memcpy(&hvmemul_ctxt->insn_buf[insn_off], p_data, bytes);
@@ -849,7 +859,7 @@ static int hvmemul_write(
 
     rc = hvmemul_virtual_to_linear(
         seg, offset, bytes, &reps, hvm_access_write, hvmemul_ctxt, &addr);
-    if ( rc != X86EMUL_OKAY )
+    if ( rc != X86EMUL_OKAY || !bytes )
         return rc;
 
     if ( vio->mmio_access.write_access &&
@@ -966,7 +976,7 @@ static int hvmemul_write_io_discard(
 }
 
 static int hvmemul_write_msr_discard(
-    unsigned long reg,
+    unsigned int reg,
     uint64_t val,
     struct x86_emulate_ctxt *ctxt)
 {
@@ -1439,7 +1449,7 @@ static int hvmemul_write_cr(
 }
 
 static int hvmemul_read_msr(
-    unsigned long reg,
+    unsigned int reg,
     uint64_t *val,
     struct x86_emulate_ctxt *ctxt)
 {
@@ -1447,7 +1457,7 @@ static int hvmemul_read_msr(
 }
 
 static int hvmemul_write_msr(
-    unsigned long reg,
+    unsigned int reg,
     uint64_t val,
     struct x86_emulate_ctxt *ctxt)
 {

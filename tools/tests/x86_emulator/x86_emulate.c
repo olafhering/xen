@@ -8,6 +8,8 @@
 
 typedef bool bool_t;
 
+#define is_canonical_address(x) (((int64_t)(x) >> 47) == ((int64_t)(x) >> 63))
+
 #define BUG() abort()
 #define ASSERT assert
 
@@ -15,6 +17,15 @@ typedef bool bool_t;
 #define mark_regs_dirty(r) ((void)(r))
 
 #define __packed __attribute__((packed))
+
+/* For generic assembly code: use macros to define operation/operand sizes. */
+#ifdef __i386__
+# define __OS          "l"  /* Operation Suffix */
+# define __OP          "e"  /* Operand Prefix */
+#else
+# define __OS          "q"  /* Operation Suffix */
+# define __OP          "r"  /* Operand Prefix */
+#endif
 
 #include "x86_emulate/x86_emulate.h"
 

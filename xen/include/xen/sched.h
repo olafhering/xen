@@ -4,6 +4,7 @@
 
 #include <xen/types.h>
 #include <xen/spinlock.h>
+#include <xen/rwlock.h>
 #include <xen/shared.h>
 #include <xen/timer.h>
 #include <xen/rangeset.h>
@@ -463,6 +464,12 @@ struct domain
     /* vNUMA topology accesses are protected by rwlock. */
     rwlock_t vnuma_rwlock;
     struct vnuma_info *vnuma;
+
+    /* Common monitor options */
+    struct {
+        unsigned int guest_request_enabled       : 1;
+        unsigned int guest_request_sync          : 1;
+    } monitor;
 };
 
 /* Protect updates/reads (resp.) of domain_list and domain_hash. */
@@ -483,16 +490,15 @@ extern struct vcpu *idle_vcpu[NR_CPUS];
  */
 static always_inline int get_domain(struct domain *d)
 {
-    atomic_t old, new, seen = d->refcnt;
+    int old, seen = atomic_read(&d->refcnt);
     do
     {
         old = seen;
-        if ( unlikely(_atomic_read(old) & DOMAIN_DESTROYED) )
+        if ( unlikely(old & DOMAIN_DESTROYED) )
             return 0;
-        _atomic_set(&new, _atomic_read(old) + 1);
-        seen = atomic_compareandswap(old, new, &d->refcnt);
+        seen = atomic_cmpxchg(&d->refcnt, old, old + 1);
     }
-    while ( unlikely(_atomic_read(seen) != _atomic_read(old)) );
+    while ( unlikely(seen != old) );
     return 1;
 }
 
@@ -805,6 +811,7 @@ int cpu_disable_scheduler(unsigned int cpu);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
 int vcpu_set_soft_affinity(struct vcpu *v, const cpumask_t *affinity);
 void restore_vcpu_affinity(struct domain *d);
+int vcpu_pin_override(struct vcpu *v, int cpu);
 
 void vcpu_runstate_get(struct vcpu *v, struct vcpu_runstate_info *runstate);
 uint64_t get_cpu_idle_time(unsigned int cpu);

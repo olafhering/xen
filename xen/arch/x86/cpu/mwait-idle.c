@@ -70,8 +70,8 @@
 # define pr_debug(fmt...)
 #endif
 
-static __initdata bool_t no_mwait_idle;
-invbool_param("mwait-idle", no_mwait_idle);
+static __initdata bool_t opt_mwait_idle = 1;
+boolean_param("mwait-idle", opt_mwait_idle);
 
 static unsigned int mwait_substates;
 
@@ -746,7 +746,7 @@ static const struct idle_cpu idle_cpu_avn = {
 };
 
 #define ICPU(model, cpu) \
-    { X86_VENDOR_INTEL, 6, model, X86_FEATURE_MWAIT, \
+    { X86_VENDOR_INTEL, 6, model, X86_FEATURE_MONITOR, \
         &idle_cpu_##cpu}
 
 static const struct x86_cpu_id intel_idle_ids[] __initconst = {
@@ -832,7 +832,7 @@ static int __init mwait_idle_probe(void)
 	    !mwait_substates)
 		return -ENODEV;
 
-	if (!max_cstate || no_mwait_idle) {
+	if (!max_cstate || !opt_mwait_idle) {
 		pr_debug(PREFIX "disabled\n");
 		return -EPERM;
 	}

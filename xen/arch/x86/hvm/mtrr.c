@@ -521,14 +521,12 @@ struct hvm_mem_pinned_cacheattr_range {
 
 static DEFINE_RCU_READ_LOCK(pinned_cacheattr_rcu_lock);
 
-void hvm_init_cacheattr_region_list(
-    struct domain *d)
+void hvm_init_cacheattr_region_list(struct domain *d)
 {
     INIT_LIST_HEAD(&d->arch.hvm_domain.pinned_cacheattr_ranges);
 }
 
-void hvm_destroy_cacheattr_region_list(
-    struct domain *d)
+void hvm_destroy_cacheattr_region_list(struct domain *d)
 {
     struct list_head *head = &d->arch.hvm_domain.pinned_cacheattr_ranges;
     struct hvm_mem_pinned_cacheattr_range *range;
@@ -543,37 +541,30 @@ void hvm_destroy_cacheattr_region_list(
     }
 }
 
-int hvm_get_mem_pinned_cacheattr(
-    struct domain *d,
-    uint64_t guest_fn,
-    unsigned int order,
-    uint32_t *type)
+int hvm_get_mem_pinned_cacheattr(struct domain *d, gfn_t gfn,
+                                 unsigned int order)
 {
     struct hvm_mem_pinned_cacheattr_range *range;
     uint64_t mask = ~(uint64_t)0 << order;
-    int rc = 0;
+    int rc = -ENXIO;
 
-    *type = ~0;
-
-    if ( !is_hvm_domain(d) )
-        return 0;
+    ASSERT(has_hvm_container_domain(d));
 
     rcu_read_lock(&pinned_cacheattr_rcu_lock);
     list_for_each_entry_rcu ( range,
                               &d->arch.hvm_domain.pinned_cacheattr_ranges,
                               list )
     {
-        if ( ((guest_fn & mask) >= range->start) &&
-             ((guest_fn | ~mask) <= range->end) )
+        if ( ((gfn_x(gfn) & mask) >= range->start) &&
+             ((gfn_x(gfn) | ~mask) <= range->end) )
         {
-            *type = range->type;
-            rc = 1;
+            rc = range->type;
             break;
         }
-        if ( ((guest_fn & mask) <= range->end) &&
-             (range->start <= (guest_fn | ~mask)) )
+        if ( ((gfn_x(gfn) & mask) <= range->end) &&
+             ((gfn_x(gfn) | ~mask) >= range->start) )
         {
-            rc = -1;
+            rc = -EADDRNOTAVAIL;
             break;
         }
     }
@@ -587,20 +578,21 @@ static void free_pinned_cacheattr_entry(struct rcu_head *rcu)
     xfree(container_of(rcu, struct hvm_mem_pinned_cacheattr_range, rcu));
 }
 
-int32_t hvm_set_mem_pinned_cacheattr(
-    struct domain *d,
-    uint64_t gfn_start,
-    uint64_t gfn_end,
-    uint32_t  type)
+int hvm_set_mem_pinned_cacheattr(struct domain *d, uint64_t gfn_start,
+                                 uint64_t gfn_end, uint32_t type)
 {
     struct hvm_mem_pinned_cacheattr_range *range;
     int rc = 1;
 
-    if ( !is_hvm_domain(d) || gfn_end < gfn_start )
-        return 0;
+    if ( !is_hvm_domain(d) )
+        return -EOPNOTSUPP;
 
-    if ( type == XEN_DOMCTL_DELETE_MEM_CACHEATTR )
+    if ( gfn_end < gfn_start || (gfn_start | gfn_end) >> paddr_bits )
+        return -EINVAL;
+
+    switch ( type )
     {
+    case XEN_DOMCTL_DELETE_MEM_CACHEATTR:
         /* Remove the requested range. */
         rcu_read_lock(&pinned_cacheattr_rcu_lock);
         list_for_each_entry_rcu ( range,
@@ -613,22 +605,37 @@ int32_t hvm_set_mem_pinned_cacheattr(
                 type = range->type;
                 call_rcu(&range->rcu, free_pinned_cacheattr_entry);
                 p2m_memory_type_changed(d);
-                if ( type != PAT_TYPE_UNCACHABLE )
+                switch ( type )
+                {
+                case PAT_TYPE_UC_MINUS:
+                    /*
+                     * For EPT we can also avoid the flush in this case;
+                     * see epte_get_entry_emt().
+                     */
+                    if ( hap_enabled(d) && cpu_has_vmx )
+                case PAT_TYPE_UNCACHABLE:
+                        break;
+                    /* fall through */
+                default:
                     flush_all(FLUSH_CACHE);
+                    break;
+                }
                 return 0;
             }
         rcu_read_unlock(&pinned_cacheattr_rcu_lock);
         return -ENOENT;
-    }
 
-    if ( !((type == PAT_TYPE_UNCACHABLE) ||
-           (type == PAT_TYPE_WRCOMB) ||
-           (type == PAT_TYPE_WRTHROUGH) ||
-           (type == PAT_TYPE_WRPROT) ||
-           (type == PAT_TYPE_WRBACK) ||
-           (type == PAT_TYPE_UC_MINUS)) ||
-         !is_hvm_domain(d) )
+    case PAT_TYPE_UC_MINUS:
+    case PAT_TYPE_UNCACHABLE:
+    case PAT_TYPE_WRBACK:
+    case PAT_TYPE_WRCOMB:
+    case PAT_TYPE_WRPROT:
+    case PAT_TYPE_WRTHROUGH:
+        break;
+
+    default:
         return -EINVAL;
+    }
 
     rcu_read_lock(&pinned_cacheattr_rcu_lock);
     list_for_each_entry_rcu ( range,
@@ -762,7 +769,6 @@ int epte_get_entry_emt(struct domain *d, unsigned long gfn, mfn_t mfn,
                        unsigned int order, uint8_t *ipat, bool_t direct_mmio)
 {
     int gmtrr_mtype, hmtrr_mtype;
-    uint32_t type;
     struct vcpu *v = current;
 
     *ipat = 0;
@@ -770,26 +776,17 @@ int epte_get_entry_emt(struct domain *d, unsigned long gfn, mfn_t mfn,
     if ( v->domain != d )
         v = d->vcpu ? d->vcpu[0] : NULL;
 
-    if ( !mfn_valid(mfn_x(mfn)) )
+    if ( !mfn_valid(mfn_x(mfn)) ||
+         rangeset_contains_range(mmio_ro_ranges, mfn_x(mfn),
+                                 mfn_x(mfn) + (1UL << order) - 1) )
+    {
+        *ipat = 1;
         return MTRR_TYPE_UNCACHABLE;
+    }
 
-    switch ( hvm_get_mem_pinned_cacheattr(d, gfn, order, &type) )
-    {
-    case 1:
-        *ipat = 1;
-        return type != PAT_TYPE_UC_MINUS ? type : PAT_TYPE_UNCACHABLE;
-    case -1:
+    if ( rangeset_overlaps_range(mmio_ro_ranges, mfn_x(mfn),
+                                 mfn_x(mfn) + (1UL << order) - 1) )
         return -1;
-    }
-
-    if ( !need_iommu(d) && !cache_flush_permitted(d) )
-    {
-        ASSERT(!direct_mmio ||
-               !((mfn_x(mfn) ^ d->arch.hvm_domain.vmx.apic_access_mfn) >>
-                 order));
-        *ipat = 1;
-        return MTRR_TYPE_WRBACK;
-    }
 
     if ( direct_mmio )
     {
@@ -800,6 +797,22 @@ int epte_get_entry_emt(struct domain *d, unsigned long gfn, mfn_t mfn,
         *ipat = 1;
         return MTRR_TYPE_WRBACK;
     }
+
+    if ( !need_iommu(d) && !cache_flush_permitted(d) )
+    {
+        *ipat = 1;
+        return MTRR_TYPE_WRBACK;
+    }
+
+    gmtrr_mtype = hvm_get_mem_pinned_cacheattr(d, _gfn(gfn), order);
+    if ( gmtrr_mtype >= 0 )
+    {
+        *ipat = 1;
+        return gmtrr_mtype != PAT_TYPE_UC_MINUS ? gmtrr_mtype
+                                                : MTRR_TYPE_UNCACHABLE;
+    }
+    if ( gmtrr_mtype == -EADDRNOTAVAIL )
+        return -1;
 
     gmtrr_mtype = is_hvm_domain(d) && v ?
                   get_mtrr_type(&v->arch.hvm_vcpu.mtrr,

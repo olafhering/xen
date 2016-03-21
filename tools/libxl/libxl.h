@@ -123,6 +123,12 @@
 #define LIBXL_HAVE_DOMAIN_NODEAFFINITY 1
 
 /*
+ * LIBXL_HAVE_PVUSB indicates functions for plugging in USB devices
+ * through pvusb -- both hotplug and at domain creation time..
+ */
+#define LIBXL_HAVE_PVUSB 1
+
+/*
  * LIBXL_HAVE_BUILDINFO_HVM_VENDOR_DEVICE indicates that the
  * libxl_vendor_device field is present in the hvm sections of
  * libxl_domain_build_info. This field tells libxl which
@@ -216,6 +222,12 @@
  * in enum libxl_shutdown_reason.
  */
 #define LIBXL_HAVE_SOFT_RESET 1
+
+/*
+ * LIBXL_HAVE_APIC_ASSIST indicates that the 'apic_assist' value
+ * is present in the viridian enlightenment enumeration.
+ */
+#define LIBXL_HAVE_APIC_ASSIST 1
 
 /*
  * libxl ABI compatibility
@@ -883,6 +895,25 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  */
 #define LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE 1
 
+/*
+ * LIBXL_HAVE_CHECKPOINTED_STREAM
+ *
+ * If this is defined, then libxl_checkpointed_stream exists.
+ */
+#define LIBXL_HAVE_CHECKPOINTED_STREAM 1
+
+/*
+ * ERROR_REMUS_XXX error code only exists from Xen 4.5, Xen 4.6 and it
+ * is changed to ERROR_CHECKPOINT_XXX in Xen 4.7
+ */
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION >= 0x040500 \
+                               && LIBXL_API_VERSION < 0x040700
+#define ERROR_REMUS_DEVOPS_DOES_NOT_MATCH \
+        ERROR_CHECKPOINT_DEVOPS_DOES_NOT_MATCH
+#define ERROR_REMUS_DEVICE_NOT_SUPPORTED \
+        ERROR_CHECKPOINT_DEVICE_NOT_SUPPORTED
+#endif
+
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
 int libxl_string_list_length(const libxl_string_list *sl);
@@ -1518,6 +1549,77 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
                        const libxl_asyncop_how *ao_how)
                        LIBXL_EXTERNAL_CALLERS_ONLY;
 
+/*
+ * USB
+ *
+ * For each device removed or added, one of these protocols is available:
+ * - PV (i.e., PVUSB)
+ * - DEVICEMODEL (i.e, qemu)
+ *
+ * PV is available for either PV or HVM domains.  DEVICEMODEL is only
+ * available for HVM domains.  The caller can additionally specify
+ * "AUTO", in which case the library will try to determine the best
+ * protocol automatically.
+ *
+ * At the moment, the only protocol implemented is PV.
+ *
+ * One can add/remove USB controllers to/from guest, and attach/detach USB
+ * devices to/from USB controllers.
+ *
+ * To add USB controllers and USB devices, one can adding USB controllers
+ * first and then attaching USB devices to some USB controller, or adding
+ * USB devices to guest directly, it will automatically create a USB
+ * controller for USB devices to attach.
+ *
+ * To remove USB controllers or USB devices, one can remove USB devices
+ * under USB controller one by one and then remove USB controller, or
+ * remove USB controller directly, it will remove all USB devices under
+ * it automatically.
+ *
+ */
+/* USB Controllers*/
+int libxl_device_usbctrl_add(libxl_ctx *ctx, uint32_t domid,
+                             libxl_device_usbctrl *usbctrl,
+                             const libxl_asyncop_how *ao_how)
+                             LIBXL_EXTERNAL_CALLERS_ONLY;
+
+int libxl_device_usbctrl_remove(libxl_ctx *ctx, uint32_t domid,
+                                libxl_device_usbctrl *usbctrl,
+                                const libxl_asyncop_how *ao_how)
+                                LIBXL_EXTERNAL_CALLERS_ONLY;
+
+int libxl_device_usbctrl_destroy(libxl_ctx *ctx, uint32_t domid,
+                                 libxl_device_usbctrl *usbctrl,
+                                 const libxl_asyncop_how *ao_how)
+                                 LIBXL_EXTERNAL_CALLERS_ONLY;
+
+libxl_device_usbctrl *libxl_device_usbctrl_list(libxl_ctx *ctx,
+                                                uint32_t domid, int *num);
+
+void libxl_device_usbctrl_list_free(libxl_device_usbctrl *list, int nr);
+
+
+int libxl_device_usbctrl_getinfo(libxl_ctx *ctx, uint32_t domid,
+                                 libxl_device_usbctrl *usbctrl,
+                                 libxl_usbctrlinfo *usbctrlinfo);
+
+/* USB Devices */
+
+int libxl_device_usbdev_add(libxl_ctx *ctx, uint32_t domid,
+                            libxl_device_usbdev *usbdev,
+                            const libxl_asyncop_how *ao_how)
+                            LIBXL_EXTERNAL_CALLERS_ONLY;
+
+int libxl_device_usbdev_remove(libxl_ctx *ctx, uint32_t domid,
+                               libxl_device_usbdev *usbdev,
+                               const libxl_asyncop_how *ao_how)
+                               LIBXL_EXTERNAL_CALLERS_ONLY;
+
+libxl_device_usbdev *
+libxl_device_usbdev_list(libxl_ctx *ctx, uint32_t domid, int *num);
+
+void libxl_device_usbdev_list_free(libxl_device_usbdev *list, int nr);
+
 /* Network Interfaces */
 int libxl_device_nic_add(libxl_ctx *ctx, uint32_t domid, libxl_device_nic *nic,
                          const libxl_asyncop_how *ao_how)
@@ -1758,7 +1860,10 @@ int libxl_domain_get_nodeaffinity(libxl_ctx *ctx, uint32_t domid,
                                   libxl_bitmap *nodemap);
 int libxl_set_vcpuonline(libxl_ctx *ctx, uint32_t domid, libxl_bitmap *cpumap);
 
-libxl_scheduler libxl_get_scheduler(libxl_ctx *ctx);
+/* A return value less than 0 should be interpreted as a libxl_error, while a
+ * return value greater than or equal to 0 should be interpreted as a
+ * libxl_scheduler. */
+int libxl_get_scheduler(libxl_ctx *ctx);
 
 /* Per-scheduler parameters */
 int libxl_sched_credit_params_get(libxl_ctx *ctx, uint32_t poolid,

@@ -115,12 +115,17 @@
 #define _HVMPV_hcall_remote_tlb_flush 4
 #define HVMPV_hcall_remote_tlb_flush (1 << _HVMPV_hcall_remote_tlb_flush)
 
+/* Use APIC assist */
+#define _HVMPV_apic_assist 5
+#define HVMPV_apic_assist (1 << _HVMPV_apic_assist)
+
 #define HVMPV_feature_mask \
         (HVMPV_base_freq | \
          HVMPV_no_freq | \
          HVMPV_time_ref_count | \
          HVMPV_reference_tsc | \
-         HVMPV_hcall_remote_tlb_flush)
+         HVMPV_hcall_remote_tlb_flush | \
+         HVMPV_apic_assist)
 
 #endif
 
@@ -210,6 +215,28 @@
 /* Boolean: Enable altp2m */
 #define HVM_PARAM_ALTP2M       35
 
-#define HVM_NR_PARAMS          36
+/*
+ * Size of the x87 FPU FIP/FDP registers that the hypervisor needs to
+ * save/restore.  This is a workaround for a hardware limitation that
+ * does not allow the full FIP/FDP and FCS/FDS to be restored.
+ *
+ * Valid values are:
+ *
+ * 8: save/restore 64-bit FIP/FDP and clear FCS/FDS (default if CPU
+ *    has FPCSDS feature).
+ *
+ * 4: save/restore 32-bit FIP/FDP, FCS/FDS, and clear upper 32-bits of
+ *    FIP/FDP.
+ *
+ * 0: allow hypervisor to choose based on the value of FIP/FDP
+ *    (default if CPU does not have FPCSDS).
+ *
+ * If FPCSDS (bit 13 in CPUID leaf 0x7, subleaf 0x0) is set, the CPU
+ * never saves FCS/FDS and this parameter should be left at the
+ * default of 8.
+ */
+#define HVM_PARAM_X87_FIP_WIDTH 36
+
+#define HVM_NR_PARAMS 37
 
 #endif /* __XEN_PUBLIC_HVM_PARAMS_H__ */

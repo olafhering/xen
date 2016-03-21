@@ -90,9 +90,6 @@ static inline void disable_acpi(void)
 	acpi_noirq = 1;
 }
 
-/* Fixmap pages to reserve for ACPI boot-time tables (see fixmap.h) */
-#define FIX_ACPI_PAGES 4
-
 static inline void acpi_noirq_set(void) { acpi_noirq = 1; }
 
 /* routines for saving/restoring kernel state */
@@ -162,5 +159,7 @@ void hvm_acpi_sleep_button(struct domain *d);
 /* suspend/resume */
 void save_rest_processor_state(void);
 void restore_rest_processor_state(void);
+
+#define ACPI_MAP_MEM_ATTR	PAGE_HYPERVISOR_NOCACHE
 
 #endif /*__X86_ASM_ACPI_H*/

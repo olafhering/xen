@@ -39,7 +39,17 @@
 #define ACPI_MADT_GET_POLARITY(inti)	ACPI_MADT_GET_(POLARITY, inti)
 #define ACPI_MADT_GET_TRIGGER(inti)	ACPI_MADT_GET_(TRIGGER, inti)
 
-#ifdef CONFIG_ACPI_BOOT
+/*
+ * Fixmap pages to reserve for ACPI boot-time tables (see asm-x86/fixmap.h or
+ * asm-arm/config.h)
+ */
+#define NUM_FIXMAP_ACPI_PAGES  4
+
+#define BAD_MADT_ENTRY(entry, end) (                                        \
+                (!(entry)) || (unsigned long)(entry) + sizeof(*(entry)) > (end) ||  \
+                (entry)->header.length < sizeof(*(entry)))
+
+#ifdef CONFIG_ACPI
 
 enum acpi_interrupt_id {
 	ACPI_INTERRUPT_PMI	= 1,
@@ -70,6 +80,8 @@ int acpi_parse_entries(char *id, unsigned long table_size,
 		       int entry_id, unsigned int max_entries);
 int acpi_table_parse_entries(char *id, unsigned long table_size,
 	int entry_id, acpi_table_entry_handler handler, unsigned int max_entries);
+struct acpi_subtable_header *acpi_table_get_entry_madt(enum acpi_madt_type id,
+						      unsigned int entry_index);
 int acpi_table_parse_madt(enum acpi_madt_type id, acpi_table_entry_handler handler, unsigned int max_entries);
 int acpi_table_parse_srat(int id, acpi_madt_entry_handler handler,
 	unsigned int max_entries);
@@ -95,7 +107,7 @@ extern int acpi_mp_config;
 
 extern u32 pci_mmcfg_base_addr;
 
-#else	/*!CONFIG_ACPI_BOOT*/
+#else	/*!CONFIG_ACPI*/
 
 #define acpi_mp_config	0
 
@@ -109,7 +121,7 @@ static inline int acpi_boot_table_init(void)
 	return 0;
 }
 
-#endif 	/*!CONFIG_ACPI_BOOT*/
+#endif 	/*!CONFIG_ACPI*/
 
 int get_cpu_id(u32 acpi_id);
 
