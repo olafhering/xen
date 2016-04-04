@@ -838,7 +838,7 @@ static void vscsictrl_update_json(libxl__egc *egc,
         if (rc) goto out;
 
         /* Replace or append the copy to the domain config */
-        DEVICE_ADD(vscsictrl, vscsictrls, domid, &vscsictrl_saved, COMPARE_VSCSI, &d_config);
+        DEVICE_ADD(vscsictrl, vscsictrls, domid, &vscsictrl_saved, COMPARE_DEVID, &d_config);
     }
 
     fn(egc, aodev, &vscsictrl_saved, &d_config);

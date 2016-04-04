@@ -6874,7 +6874,7 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
 
     MERGE(nic, nics, COMPARE_DEVID, {});
 
-    MERGE(vscsictrl, vscsictrls, COMPARE_VSCSI, {
+    MERGE(vscsictrl, vscsictrls, COMPARE_DEVID, {
             libxl_device_vscsictrl_dispose(dst);
             libxl_device_vscsictrl_copy(CTX, dst, src);
           });
