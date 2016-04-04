@@ -132,24 +132,6 @@ out:
     return rc;
 }
 
-static bool xlu__vscsi_wwn_valid(const char *p)
-{
-    bool ret = true;
-    int i = 0;
-
-    for (i = 0; i < XLU_WWN_LEN; i++, p++) {
-        if (*p >= '0' && *p <= '9')
-            continue;
-        if (*p >= 'a' && *p <= 'f')
-            continue;
-        if (*p >= 'A' && *p <= 'F')
-            continue;
-        ret = false;
-        break;
-    }
-    return ret;
-}
-
 static bool xlu__vscsi_compare_hctl(libxl_vscsi_hctl *a, libxl_vscsi_hctl *b)
 {
     if (a->hst == b->hst &&
@@ -316,9 +298,7 @@ static bool xlu__vscsi_find_target_wwn(struct xlu__vscsi_target *tgt)
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
             continue;
 
-        if (sscanf(de->d_name, "naa.%16c", tgt->wwn) != 1)
-            continue;
-        if (!xlu__vscsi_wwn_valid(tgt->wwn))
+        if (sscanf(de->d_name, "naa.%16[0-9a-fA-F]", tgt->wwn) != 1)
             continue;
 
         snprintf(subdir, sizeof(tgt->path) - path_len, "/%s", de->d_name);
@@ -388,7 +368,7 @@ static int xlu__vscsi_wwn_to_pdev(XLU_Config *cfg, char *str, libxl_vscsi_pdev *
     char wwn[XLU_WWN_LEN + 1];
 
     memset(wwn, 0, sizeof(wwn));
-    if (sscanf(str, "naa.%16c:%llu", wwn, &lun) == 2 && xlu__vscsi_wwn_valid(wwn)) {
+    if (sscanf(str, "naa.%16[0-9a-fA-F]:%llu", wwn, &lun) == 2) {
         libxl_vscsi_pdev_init_type(pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
         pdev->u.wwn.m = strdup(str);
         rc = pdev->u.wwn.m ? 0 : ERROR_NOMEM;

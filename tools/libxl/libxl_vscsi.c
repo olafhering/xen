@@ -44,24 +44,6 @@ static int vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
     return 0;
 }
 
-static bool vscsi_wwn_valid(const char *p)
-{
-    bool ret = true;
-    int i = 0;
-
-    for (i = 0; i < XLU_WWN_LEN; i++, p++) {
-        if (*p >= '0' && *p <= '9')
-            continue;
-        if (*p >= 'a' && *p <= 'f')
-            continue;
-        if (*p >= 'A' && *p <= 'F')
-            continue;
-        ret = false;
-        break;
-    }
-    return ret;
-}
-
 /* Translate p-dev back into pdev.type */
 static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
                              char *c, char *p, char *v)
@@ -78,7 +60,7 @@ static bool vscsi_parse_pdev(libxl__gc *gc, libxl_device_vscsidev *dev,
     if (strncmp(p, "naa.", 4) == 0) {
         /* WWN as understood by pvops */
         memset(wwn, 0, sizeof(wwn));
-        if (sscanf(p, "naa.%16c:%llu", wwn, &lun) == 2 && vscsi_wwn_valid(wwn)) {
+        if (sscanf(p, "naa.%16[0-9a-fA-F]:%llu", wwn, &lun) == 2) {
             libxl_vscsi_pdev_init_type(&dev->pdev, LIBXL_VSCSI_PDEV_TYPE_WWN);
             dev->pdev.u.wwn.m = libxl__strdup(NOGC, p);
             parsed_ok = true;
