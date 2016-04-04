@@ -991,12 +991,6 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/idx", vscsipath));
     vscsiinfo->idx = val ? strtoul(val, NULL, 10) : -1;
 
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", vscsipath));
-    vscsiinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/ring-ref", vscsipath));
-    vscsiinfo->rref = val ? strtoul(val, NULL, 10) : -1;
-
     vscsiinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
                                   GCSPRINTF("%s/frontend", vscsiinfo->backend), NULL);
 

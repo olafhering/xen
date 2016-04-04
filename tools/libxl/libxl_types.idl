@@ -780,8 +780,6 @@ libxl_vscsiinfo = Struct("vscsiinfo", [
     ("scsi_raw_cmds", bool),
     ("vscsictrl_state", integer),
     ("vscsidev_state", integer),
-    ("evtch", integer),
-    ("rref", integer),
     ], dir=DIR_OUT)
 
 libxl_vtpminfo = Struct("vtpminfo", [
