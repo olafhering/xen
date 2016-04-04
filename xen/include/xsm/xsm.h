@@ -23,8 +23,11 @@ DEFINE_XEN_GUEST_HANDLE(xsm_op_t);
 
 /* policy magic number (defined by XSM_MAGIC) */
 typedef u32 xsm_magic_t;
-#ifndef XSM_MAGIC
-#define XSM_MAGIC 0x00000000
+
+#ifdef CONFIG_FLASK
+#define XSM_MAGIC 0xf97cff8c
+#else
+#define XSM_MAGIC 0x0
 #endif
 
 /* These annotations are used by callers and in dummy.h to document the
@@ -193,6 +196,8 @@ struct xsm_operations {
     int (*ioport_mapping) (struct domain *d, uint32_t s, uint32_t e, uint8_t allow);
     int (*pmu_op) (struct domain *d, unsigned int op);
 #endif
+    int (*xen_version) (uint32_t cmd);
+    int (*version_op) (uint32_t cmd);
 };
 
 #ifdef CONFIG_XSM
@@ -730,6 +735,16 @@ static inline int xsm_pmu_op (xsm_default_t def, struct domain *d, unsigned int 
 }
 
 #endif /* CONFIG_X86 */
+
+static inline int xsm_xen_version (xsm_default_t def, uint32_t op)
+{
+    return xsm_ops->xen_version(op);
+}
+
+static inline int xsm_version_op (xsm_default_t def, uint32_t op)
+{
+    return xsm_ops->version_op(op);
+}
 
 #endif /* XSM_NO_WRAPPERS */
 

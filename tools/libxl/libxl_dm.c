@@ -531,6 +531,9 @@ static int libxl__build_device_model_args_old(libxl__gc *gc,
             break;
         case LIBXL_VGA_INTERFACE_TYPE_QXL:
             break;
+        default:
+            LOG(ERROR, "Invalid emulated video card specified");
+            return ERROR_INVAL;
         }
 
         if (b_info->u.hvm.boot) {
@@ -751,6 +754,138 @@ static int libxl__dm_runas_helper(libxl__gc *gc, const char *username)
     }
 }
 
+/* colo mode */
+enum {
+    LIBXL__COLO_NONE = 0,
+    LIBXL__COLO_PRIMARY,
+    LIBXL__COLO_SECONDARY,
+};
+
+static char *qemu_disk_scsi_drive_string(libxl__gc *gc, const char *pdev_path,
+                                         int unit, const char *format,
+                                         const libxl_device_disk *disk,
+                                         int colo_mode)
+{
+    char *drive = NULL;
+    const char *exportname = disk->colo_export;
+    const char *active_disk = disk->active_disk;
+    const char *hidden_disk = disk->hidden_disk;
+
+    switch (colo_mode) {
+    case LIBXL__COLO_NONE:
+        drive = libxl__sprintf
+            (gc, "file=%s,if=scsi,bus=0,unit=%d,format=%s,cache=writeback",
+             pdev_path, unit, format);
+        break;
+    case LIBXL__COLO_PRIMARY:
+        /*
+         * primary:
+         *  -dirve if=scsi,bus=0,unit=x,cache=writeback,driver=quorum,\
+         *  id=exportname,\
+         *  children.0.file.filename=pdev_path,\
+         *  children.0.driver=format,\
+         *  read-pattern=fifo,\
+         *  vote-threshold=1
+         */
+        drive = GCSPRINTF(
+            "if=scsi,bus=0,unit=%d,cache=writeback,driver=quorum,"
+            "id=%s,"
+            "children.0.file.filename=%s,"
+            "children.0.driver=%s,"
+            "read-pattern=fifo,"
+            "vote-threshold=1",
+            unit, exportname, pdev_path, format);
+        break;
+    case LIBXL__COLO_SECONDARY:
+        /*
+         * secondary:
+         *  -drive if=scsi,bus=0,unit=x,cache=writeback,driver=replication,\
+         *  mode=secondary,\
+         *  file.driver=qcow2,\
+         *  file.file.filename=active_disk,\
+         *  file.backing.driver=qcow2,\
+         *  file.backing.file.filename=hidden_disk,\
+         *  file.backing.backing=exportname,
+         */
+        drive = GCSPRINTF(
+            "if=scsi,bus=0,unit=%d,cache=writeback,driver=replication,"
+            "mode=secondary,"
+            "file.driver=qcow2,"
+            "file.file.filename=%s,"
+            "file.backing.driver=qcow2,"
+            "file.backing.file.filename=%s,"
+            "file.backing.backing=%s",
+            unit, active_disk, hidden_disk, exportname);
+    default:
+         abort();
+    }
+
+    return drive;
+}
+
+static char *qemu_disk_ide_drive_string(libxl__gc *gc, const char *pdev_path,
+                                        int unit, const char *format,
+                                        const libxl_device_disk *disk,
+                                        int colo_mode)
+{
+    char *drive = NULL;
+    const char *exportname = disk->colo_export;
+    const char *active_disk = disk->active_disk;
+    const char *hidden_disk = disk->hidden_disk;
+
+    switch (colo_mode) {
+    case LIBXL__COLO_NONE:
+        drive = GCSPRINTF
+            ("file=%s,if=ide,index=%d,media=disk,format=%s,cache=writeback",
+             pdev_path, unit, format);
+        break;
+    case LIBXL__COLO_PRIMARY:
+        /*
+         * primary:
+         *  -dirve if=ide,index=x,media=disk,cache=writeback,driver=quorum,\
+         *  id=exportname,\
+         *  children.0.file.filename=pdev_path,\
+         *  children.0.driver=format,\
+         *  read-pattern=fifo,\
+         *  vote-threshold=1
+         */
+        drive = GCSPRINTF(
+            "if=ide,index=%d,media=disk,cache=writeback,driver=quorum,"
+            "id=%s,"
+            "children.0.file.filename=%s,"
+            "children.0.driver=%s,"
+            "read-pattern=fifo,"
+            "vote-threshold=1",
+             unit, exportname, pdev_path, format);
+        break;
+    case LIBXL__COLO_SECONDARY:
+        /*
+         * secondary:
+         *  -drive if=ide,index=x,media=disk,cache=writeback,driver=replication,\
+         *  mode=secondary,\
+         *  file.driver=qcow2,\
+         *  file.file.filename=active_disk,\
+         *  file.backing.driver=qcow2,\
+         *  file.backing.file.filename=hidden_disk,\
+         *  file.backing.backing=exportname,
+         */
+        drive = GCSPRINTF(
+            "if=ide,index=%d,media=disk,cache=writeback,driver=replication,"
+            "mode=secondary,"
+            "file.driver=qcow2,"
+            "file.file.filename=%s,"
+            "file.backing.driver=qcow2,"
+            "file.backing.file.filename=%s,"
+            "file.backing.backing=%s",
+            unit, active_disk, hidden_disk, exportname);
+        break;
+    default:
+         abort();
+    }
+
+    return drive;
+}
+
 static int libxl__build_device_model_args_new(libxl__gc *gc,
                                         const char *dm, int guest_domid,
                                         const libxl_domain_config *guest_config,
@@ -827,6 +962,12 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
      * defined by xen, since the devices not defined by xen are not usable.
      */
     flexarray_append(dm_args, "-nodefaults");
+
+    /*
+     * Do not use any of the user-provided config files in sysconfdir,
+     * avoiding unkown and uncontrolled configuration.
+     */
+    flexarray_append(dm_args, "-no-user-config");
 
     if (b_info->type == LIBXL_DOMAIN_TYPE_PV) {
         flexarray_append(dm_args, "-xen-attach");
@@ -970,6 +1111,9 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                 GCSPRINTF("qxl-vga,vram_size_mb=%"PRIu64",ram_size_mb=%"PRIu64,
                 (b_info->video_memkb/2/1024), (b_info->video_memkb/2/1024) ) );
             break;
+        default:
+            LOG(ERROR, "Invalid emulated video card specified");
+            return ERROR_INVAL;
         }
 
         if (b_info->u.hvm.boot) {
@@ -1164,6 +1308,7 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
             const char *format = qemu_disk_format_string(disks[i].format);
             char *drive;
             const char *pdev_path;
+            int colo_mode;
 
             if (dev_number == -1) {
                 LOG(WARN, "unable to determine"" disk number for %s",
@@ -1208,10 +1353,29 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                  * For other disks we translate devices 0..3 into
                  * hd[a-d] and ignore the rest.
                  */
+
+                if (libxl_defbool_val(disks[i].colo_enable)) {
+                    if (libxl_defbool_val(disks[i].colo_restore_enable))
+                        colo_mode = LIBXL__COLO_SECONDARY;
+                    else
+                        colo_mode = LIBXL__COLO_PRIMARY;
+                } else {
+                    colo_mode = LIBXL__COLO_NONE;
+                }
+
                 if (strncmp(disks[i].vdev, "sd", 2) == 0) {
-                    drive = libxl__sprintf
-                        (gc, "file=%s,if=scsi,bus=0,unit=%d,format=%s,readonly=%s,cache=writeback",
-                         pdev_path, disk, format, disks[i].readwrite ? "off" : "on");
+                    if (colo_mode == LIBXL__COLO_SECONDARY) {
+                        drive = libxl__sprintf
+                            (gc, "if=none,driver=%s,file=%s,id=%s",
+                             format, pdev_path, disks[i].colo_export);
+
+                        flexarray_append(dm_args, "-drive");
+                        flexarray_append(dm_args, drive);
+                    }
+                    drive = qemu_disk_scsi_drive_string(gc, pdev_path, disk,
+                                                        format,
+                                                        &disks[i],
+                                                        colo_mode);
                 } else if (strncmp(disks[i].vdev, "xvd", 3) == 0) {
                     /*
                      * Do not add any emulated disk when PV disk are
@@ -1234,12 +1398,24 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                         LOG(ERROR, "qemu-xen doesn't support read-only IDE disk drivers");
                         return ERROR_INVAL;
                     }
-                    drive = libxl__sprintf
-                        (gc, "file=%s,if=ide,index=%d,media=disk,format=%s,cache=writeback",
-                         pdev_path, disk, format);
+                    if (colo_mode == LIBXL__COLO_SECONDARY) {
+                        drive = libxl__sprintf
+                            (gc, "if=none,driver=%s,file=%s,id=%s",
+                             format, pdev_path, disks[i].colo_export);
+
+                        flexarray_append(dm_args, "-drive");
+                        flexarray_append(dm_args, drive);
+                    }
+                    drive = qemu_disk_ide_drive_string(gc, pdev_path, disk,
+                                                       format,
+                                                       &disks[i],
+                                                       colo_mode);
                 } else {
                     continue; /* Do not emulate this disk */
                 }
+
+                if (!drive)
+                    continue;
             }
 
             flexarray_append(dm_args, "-drive");

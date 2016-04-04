@@ -87,6 +87,8 @@
 #include "_libxl_types_internal.h"
 #include "_libxl_types_internal_json.h"
 
+#include "libxl_colo.h"
+
 #define LIBXL_INIT_TIMEOUT 10
 #define LIBXL_DESTROY_TIMEOUT 10
 #define LIBXL_HOTPLUG_TIMEOUT 40
@@ -1765,11 +1767,37 @@ _hidden int libxl__qmp_stop(libxl__gc *gc, int domid);
 _hidden int libxl__qmp_resume(libxl__gc *gc, int domid);
 /* Save current QEMU state into fd. */
 _hidden int libxl__qmp_save(libxl__gc *gc, int domid, const char *filename);
+/* Load current QEMU state from file. */
+_hidden int libxl__qmp_restore(libxl__gc *gc, int domid, const char *filename);
 /* Set dirty bitmap logging status */
 _hidden int libxl__qmp_set_global_dirty_log(libxl__gc *gc, int domid, bool enable);
 _hidden int libxl__qmp_insert_cdrom(libxl__gc *gc, int domid, const libxl_device_disk *disk);
 /* Add a virtual CPU */
 _hidden int libxl__qmp_cpu_add(libxl__gc *gc, int domid, int index);
+/* Start NBD server */
+_hidden int libxl__qmp_nbd_server_start(libxl__gc *gc, int domid,
+                                        const char *host, const char *port);
+/* Add a disk to NBD server */
+_hidden int libxl__qmp_nbd_server_add(libxl__gc *gc, int domid,
+                                      const char *disk);
+/* Start replication */
+_hidden int libxl__qmp_start_replication(libxl__gc *gc, int domid,
+                                         bool primary);
+/* Get replication error that occurs when the vm is running */
+_hidden int libxl__qmp_get_replication_error(libxl__gc *gc, int domid);
+/* Do checkpoint */
+_hidden int libxl__qmp_do_checkpoint(libxl__gc *gc, int domid);
+/* Stop replication */
+_hidden int libxl__qmp_stop_replication(libxl__gc *gc, int domid,
+                                        bool primary);
+/* Stop NBD server */
+_hidden int libxl__qmp_nbd_server_stop(libxl__gc *gc, int domid);
+/* Add or remove a child to/from quorum */
+_hidden int libxl__qmp_x_blockdev_change(libxl__gc *gc, int domid,
+                                         const char *parant,
+                                         const char *child, const char *node);
+/* run a hmp command in qmp mode */
+_hidden int libxl__qmp_hmp(libxl__gc *gc, int domid, const char *command_line);
 /* close and free the QMP handler */
 _hidden void libxl__qmp_close(libxl__qmp_handler *qmp);
 /* remove the socket file, if the file has already been removed,
@@ -2820,7 +2848,7 @@ typedef struct libxl__save_helper_state {
 /*
  * The abstract checkpoint device layer exposes a common
  * set of API to [external] libxl for manipulating devices attached to
- * a guest protected by Remus. The device layer also exposes a set of
+ * a guest protected by Remus/COLO. The device layer also exposes a set of
  * [internal] interfaces that every device type must implement.
  *
  * The following API are exposed to libxl:
@@ -2838,7 +2866,7 @@ typedef struct libxl__save_helper_state {
  *  +libxl__checkpoint_devices_commit
  *
  * Each device type needs to implement the interfaces specified in
- * the libxl__checkpoint_device_instance_ops if it wishes to support Remus.
+ * the libxl__checkpoint_device_instance_ops if it wishes to support Remus/COLO.
  *
  * The high-level control flow through the checkpoint device layer is shown
  * below:
@@ -2858,7 +2886,7 @@ typedef struct libxl__checkpoint_device_instance_ops libxl__checkpoint_device_in
 
 /*
  * Interfaces to be implemented by every device subkind that wishes to
- * support Remus. Functions must be implemented unless otherwise
+ * support Remus/COLO. Functions must be implemented unless otherwise
  * stated. Many of these functions are asynchronous. They call
  * dev->aodev.callback when done.  The actual implementations may be
  * synchronous and call dev->aodev.callback directly (as the last
@@ -3035,6 +3063,72 @@ static inline bool libxl__conversion_helper_inuse
                     (const libxl__conversion_helper_state *chs)
 { return libxl__ev_child_inuse(&chs->child); }
 
+/* State for reading a libxl migration v2 stream */
+typedef struct libxl__stream_read_state libxl__stream_read_state;
+
+typedef struct libxl__sr_record_buf {
+    /* private to stream read helper */
+    LIBXL_STAILQ_ENTRY(struct libxl__sr_record_buf) entry;
+    libxl__sr_rec_hdr hdr;
+    void *body; /* iff hdr.length != 0 */
+} libxl__sr_record_buf;
+
+struct libxl__stream_read_state {
+    /* filled by the user */
+    libxl__ao *ao;
+    libxl__domain_create_state *dcs;
+    int fd;
+    bool legacy;
+    bool back_channel;
+    void (*completion_callback)(libxl__egc *egc,
+                                libxl__stream_read_state *srs,
+                                int rc);
+    void (*checkpoint_callback)(libxl__egc *egc,
+                                libxl__stream_read_state *srs,
+                                int rc);
+    /* Private */
+    int rc;
+    bool running;
+    bool in_checkpoint;
+    bool sync_teardown; /* Only used to coordinate shutdown on error path. */
+    bool in_checkpoint_state;
+    libxl__save_helper_state shs;
+    libxl__conversion_helper_state chs;
+
+    /* Main stream-reading data. */
+    libxl__datacopier_state dc; /* Only used when reading a record */
+    libxl__sr_hdr hdr;
+    LIBXL_STAILQ_HEAD(, libxl__sr_record_buf) record_queue; /* NOGC */
+    enum {
+        SRS_PHASE_NORMAL,
+        SRS_PHASE_BUFFERING,
+        SRS_PHASE_UNBUFFERING,
+    } phase;
+    bool recursion_guard;
+
+    /* Only used while actively reading a record from the stream. */
+    libxl__sr_record_buf *incoming_record; /* NOGC */
+
+    /* Both only used when processing an EMULATOR record. */
+    libxl__datacopier_state emu_dc;
+    libxl__carefd *emu_carefd;
+};
+
+_hidden void libxl__stream_read_init(libxl__stream_read_state *stream);
+_hidden void libxl__stream_read_start(libxl__egc *egc,
+                                      libxl__stream_read_state *stream);
+_hidden void libxl__stream_read_start_checkpoint(libxl__egc *egc,
+                                                 libxl__stream_read_state *stream);
+_hidden void libxl__stream_read_checkpoint_state(libxl__egc *egc,
+                                                 libxl__stream_read_state *stream);
+_hidden void libxl__stream_read_abort(libxl__egc *egc,
+                                      libxl__stream_read_state *stream, int rc);
+static inline bool
+libxl__stream_read_inuse(const libxl__stream_read_state *stream)
+{
+    return stream->running;
+}
+
 
 /*----- Domain suspend (save) state structure -----*/
 /*
@@ -3062,6 +3156,7 @@ struct libxl__stream_write_state {
     libxl__ao *ao;
     libxl__domain_save_state *dss;
     int fd;
+    bool back_channel;
     void (*completion_callback)(libxl__egc *egc,
                                 libxl__stream_write_state *sws,
                                 int rc);
@@ -3073,6 +3168,7 @@ struct libxl__stream_write_state {
     bool running;
     bool in_checkpoint;
     bool sync_teardown;  /* Only used to coordinate shutdown on error path. */
+    bool in_checkpoint_state;
     libxl__save_helper_state shs;
 
     /* Main stream-writing data. */
@@ -3096,6 +3192,10 @@ _hidden void libxl__stream_write_start(libxl__egc *egc,
 _hidden void
 libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                      libxl__stream_write_state *stream);
+_hidden void
+libxl__stream_write_checkpoint_state(libxl__egc *egc,
+                                     libxl__stream_write_state *stream,
+                                     libxl_sr_checkpoint_state *srcs);
 _hidden void libxl__stream_write_abort(libxl__egc *egc,
                                        libxl__stream_write_state *stream,
                                        int rc);
@@ -3105,7 +3205,34 @@ libxl__stream_write_inuse(const libxl__stream_write_state *stream)
     return stream->running;
 }
 
+/*----- colo related state structure -----*/
+typedef struct libxl__colo_save_state libxl__colo_save_state;
+struct libxl__colo_save_state {
+    int send_fd;
+    int recv_fd;
+    char *colo_proxy_script;
+
+    /* private */
+    libxl__stream_read_state srs;
+    void (*callback)(libxl__egc *, libxl__colo_save_state *, int);
+    bool svm_running;
+    bool paused;
+
+    /* private, used by qdisk block replication */
+    bool qdisk_used;
+    bool qdisk_setuped;
+
+    /* private, used by colo-proxy */
+    libxl__colo_proxy_state cps;
+    libxl__ev_child child;
+};
+
 typedef struct libxl__logdirty_switch {
+    /* Set by caller of libxl__domain_common_switch_qemu_logdirty */
+    libxl__ao *ao;
+    void (*callback)(libxl__egc *egc, struct libxl__logdirty_switch *lds,
+                     int rc);
+
     const char *cmd;
     const char *cmd_path;
     const char *ret_path;
@@ -3147,6 +3274,7 @@ struct libxl__domain_save_state {
     uint32_t domid;
     int fd;
     int fdfl; /* original flags on fd */
+    int recv_fd;
     libxl_domain_type type;
     int live;
     int debug;
@@ -3157,7 +3285,12 @@ struct libxl__domain_save_state {
     int hvm;
     int xcflags;
     libxl__domain_suspend_state dsps;
-    libxl__remus_state rs;
+    union {
+        /* for Remus */
+        libxl__remus_state rs;
+        /* for COLO */
+        libxl__colo_save_state css;
+    };
     libxl__checkpoint_devices_state cds;
     libxl__stream_write_state sws;
     libxl__logdirty_switch logdirty;
@@ -3416,74 +3549,6 @@ _hidden int libxl__destroy_qdisk_backend(libxl__gc *gc, uint32_t domid);
 
 /*----- Domain creation -----*/
 
-typedef struct libxl__domain_create_state libxl__domain_create_state;
-
-typedef void libxl__domain_create_cb(libxl__egc *egc,
-                                     libxl__domain_create_state*,
-                                     int rc, uint32_t domid);
-
-/* State for manipulating a libxl migration v2 stream */
-typedef struct libxl__stream_read_state libxl__stream_read_state;
-
-typedef struct libxl__sr_record_buf {
-    /* private to stream read helper */
-    LIBXL_STAILQ_ENTRY(struct libxl__sr_record_buf) entry;
-    libxl__sr_rec_hdr hdr;
-    void *body; /* iff hdr.length != 0 */
-} libxl__sr_record_buf;
-
-struct libxl__stream_read_state {
-    /* filled by the user */
-    libxl__ao *ao;
-    libxl__domain_create_state *dcs;
-    int fd;
-    bool legacy;
-    void (*completion_callback)(libxl__egc *egc,
-                                libxl__stream_read_state *srs,
-                                int rc);
-    void (*checkpoint_callback)(libxl__egc *egc,
-                                libxl__stream_read_state *srs,
-                                int rc);
-    /* Private */
-    int rc;
-    bool running;
-    bool in_checkpoint;
-    bool sync_teardown; /* Only used to coordinate shutdown on error path. */
-    libxl__save_helper_state shs;
-    libxl__conversion_helper_state chs;
-
-    /* Main stream-reading data. */
-    libxl__datacopier_state dc; /* Only used when reading a record */
-    libxl__sr_hdr hdr;
-    LIBXL_STAILQ_HEAD(, libxl__sr_record_buf) record_queue; /* NOGC */
-    enum {
-        SRS_PHASE_NORMAL,
-        SRS_PHASE_BUFFERING,
-        SRS_PHASE_UNBUFFERING,
-    } phase;
-    bool recursion_guard;
-
-    /* Only used while actively reading a record from the stream. */
-    libxl__sr_record_buf *incoming_record; /* NOGC */
-
-    /* Both only used when processing an EMULATOR record. */
-    libxl__datacopier_state emu_dc;
-    libxl__carefd *emu_carefd;
-};
-
-_hidden void libxl__stream_read_init(libxl__stream_read_state *stream);
-_hidden void libxl__stream_read_start(libxl__egc *egc,
-                                      libxl__stream_read_state *stream);
-_hidden void libxl__stream_read_start_checkpoint(libxl__egc *egc,
-                                                 libxl__stream_read_state *stream);
-_hidden void libxl__stream_read_abort(libxl__egc *egc,
-                                      libxl__stream_read_state *stream, int rc);
-static inline bool
-libxl__stream_read_inuse(const libxl__stream_read_state *stream)
-{
-    return stream->running;
-}
-
 
 struct libxl__domain_create_state {
     /* filled in by user */
@@ -3492,13 +3557,17 @@ struct libxl__domain_create_state {
     libxl_domain_config guest_config_saved; /* vanilla config */
     int restore_fd, libxc_fd;
     int restore_fdfl; /* original flags of restore_fd */
+    int send_back_fd;
     libxl_domain_restore_params restore_params;
     uint32_t domid_soft_reset;
     libxl__domain_create_cb *callback;
     libxl_asyncprogress_how aop_console_how;
     /* private to domain_create */
     int guest_domid;
+    const char *colo_proxy_script;
     libxl__domain_build_state build_state;
+    libxl__colo_restore_state crs;
+    libxl__checkpoint_devices_state cds;
     libxl__bootloader_state bl;
     libxl__stub_dm_spawn_state dmss;
         /* If we're not doing stubdom, we use only dmss.dm,
@@ -3536,6 +3605,9 @@ void libxl__xc_domain_saverestore_async_callback_done(libxl__egc *egc,
 
 _hidden void libxl__domain_suspend_common_switch_qemu_logdirty
                                (int domid, unsigned int enable, void *data);
+_hidden void libxl__domain_common_switch_qemu_logdirty(libxl__egc *egc,
+                                               int domid, unsigned enable,
+                                               libxl__logdirty_switch *lds);
 _hidden int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
                                                char **buf, uint32_t *len);
 _hidden int libxl__restore_emulator_xenstore_data

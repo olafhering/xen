@@ -269,6 +269,12 @@ static void generic_identify(struct cpuinfo_x86 *c)
 
 	if (c->extended_cpuid_level >= 0x80000004)
 		get_model_name(c); /* Default name */
+	if (c->extended_cpuid_level >= 0x80000007)
+		c->x86_capability[cpufeat_word(X86_FEATURE_ITSC)]
+			= cpuid_edx(0x80000007);
+	if (c->extended_cpuid_level >= 0x80000008)
+		c->x86_capability[cpufeat_word(X86_FEATURE_CLZERO)]
+			= cpuid_ebx(0x80000008);
 
 	/* Intel-defined flags: level 0x00000007 */
 	if ( c->cpuid_level >= 0x00000007 )
@@ -335,6 +341,8 @@ void identify_cpu(struct cpuinfo_x86 *c)
 	 * The vendor-specific functions might have changed features.  Now
 	 * we do "generic changes."
 	 */
+	for (i = 0; i < FSCAPINTS; ++i)
+		c->x86_capability[i] &= known_features[i];
 
 	for (i = 0 ; i < NCAPINTS ; ++i)
 		c->x86_capability[i] &= ~cleared_caps[i];

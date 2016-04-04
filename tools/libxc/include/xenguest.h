@@ -68,6 +68,15 @@ struct save_callbacks {
      * 1: take another checkpoint */
     int (*checkpoint)(void* data);
 
+    /*
+     * Called after the checkpoint callback.
+     *
+     * returns:
+     * 0: terminate checkpointing gracefully
+     * 1: take another checkpoint
+     */
+    int (*wait_checkpoint)(void* data);
+
     /* Enable qemu-dm logging dirty pages to xen */
     int (*switch_qemu_logdirty)(int domid, unsigned enable, void *data); /* HVM only */
 
@@ -78,6 +87,7 @@ struct save_callbacks {
 typedef enum {
     XC_MIG_STREAM_NONE, /* plain stream */
     XC_MIG_STREAM_REMUS,
+    XC_MIG_STREAM_COLO,
 } xc_migration_stream_t;
 
 /**
@@ -93,16 +103,43 @@ typedef enum {
 int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom, uint32_t max_iters,
                    uint32_t max_factor, uint32_t flags /* XCFLAGS_xxx */,
                    struct save_callbacks* callbacks, int hvm,
-                   xc_migration_stream_t stream_type);
+                   xc_migration_stream_t stream_type, int recv_fd);
 
 /* callbacks provided by xc_domain_restore */
 struct restore_callbacks {
+    /* Called after a new checkpoint to suspend the guest.
+     */
+    int (*suspend)(void* data);
+
+    /* Called after the secondary vm is ready to resume.
+     * Callback function resumes the guest & the device model,
+     * returns to xc_domain_restore.
+     */
+    int (*postcopy)(void* data);
+
     /* A checkpoint record has been found in the stream.
      * returns: */
 #define XGR_CHECKPOINT_ERROR    0 /* Terminate processing */
 #define XGR_CHECKPOINT_SUCCESS  1 /* Continue reading more data from the stream */
 #define XGR_CHECKPOINT_FAILOVER 2 /* Failover and resume VM */
     int (*checkpoint)(void* data);
+
+    /*
+     * Called after the checkpoint callback.
+     *
+     * returns:
+     * 0: terminate checkpointing gracefully
+     * 1: take another checkpoint
+     */
+    int (*wait_checkpoint)(void* data);
+
+    /*
+     * callback to send store gfn and console gfn to xl
+     * if we want to resume vm before xc_domain_save()
+     * exits.
+     */
+    void (*restore_results)(xen_pfn_t store_gfn, xen_pfn_t console_gfn,
+                            void *data);
 
     /* to be provided as the last argument to each callback function */
     void* data;
@@ -132,7 +169,7 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
                       unsigned long *console_mfn, domid_t console_domid,
                       unsigned int hvm, unsigned int pae, int superpages,
                       xc_migration_stream_t stream_type,
-                      struct restore_callbacks *callbacks);
+                      struct restore_callbacks *callbacks, int send_back_fd);
 
 /**
  * This function will create a domain for a paravirtualized Linux

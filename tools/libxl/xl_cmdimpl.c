@@ -158,7 +158,9 @@ struct domain_create {
     const char *config_file;
     char *extra_config; /* extra config string */
     const char *restore_file;
+    char *colo_proxy_script;
     int migrate_fd; /* -1 means none */
+    int send_back_fd; /* -1 means none */
     char **migration_domname_r; /* from malloc */
 };
 
@@ -1052,6 +1054,8 @@ static int parse_nic_config(libxl_device_nic *nic, XLU_Config **config, char *to
         replace_string(&nic->model, oparg);
     } else if (MATCH_OPTION("rate", token, oparg)) {
         parse_vif_rate(config, oparg, nic);
+    } else if (MATCH_OPTION("forwarddev", token, oparg)) {
+        replace_string(&nic->coloft_forwarddev, oparg);
     } else if (MATCH_OPTION("accel", token, oparg)) {
         fprintf(stderr, "the accel parameter for vifs is currently not supported\n");
     } else {
@@ -2807,6 +2811,7 @@ static uint32_t create_domain(struct domain_create *dom_info)
     int config_len = 0;
     int restore_fd = -1;
     int restore_fd_to_close = -1;
+    int send_back_fd = -1;
     const libxl_asyncprogress_how *autoconnect_console_how;
     struct save_file_header hdr;
     uint32_t domid_soft_reset = INVALID_DOMID;
@@ -2824,6 +2829,7 @@ static uint32_t create_domain(struct domain_create *dom_info)
         if (migrate_fd >= 0) {
             restore_source = "<incoming migration stream>";
             restore_fd = migrate_fd;
+            send_back_fd = dom_info->send_back_fd;
         } else {
             restore_source = restore_file;
             restore_fd = open(restore_file, O_RDONLY);
@@ -3009,10 +3015,11 @@ start:
         params.checkpointed_stream = dom_info->checkpointed_stream;
         params.stream_version =
             (hdr.mandatory_flags & XL_MANDATORY_FLAG_STREAMv2) ? 2 : 1;
+        params.colo_proxy_script = dom_info->colo_proxy_script;
 
         ret = libxl_domain_create_restore(ctx, &d_config,
                                           &domid, restore_fd,
-                                          &params,
+                                          send_back_fd, &params,
                                           0, autoconnect_console_how);
 
         libxl_domain_restore_params_dispose(&params);
@@ -3391,7 +3398,6 @@ static int def_getopt(int argc, char * const argv[],
 static int set_memory_max(uint32_t domid, const char *mem)
 {
     int64_t memorykb;
-    int rc;
 
     memorykb = parse_mem_size_kb(mem);
     if (memorykb == -1) {
@@ -3399,9 +3405,12 @@ static int set_memory_max(uint32_t domid, const char *mem)
         exit(3);
     }
 
-    rc = libxl_domain_setmaxmem(ctx, domid, memorykb);
+    if (libxl_domain_setmaxmem(ctx, domid, memorykb)) {
+        fprintf(stderr, "cannot set domid %d static max memory to : %s\n", domid, mem);
+        return EXIT_FAILURE;
+    }
 
-    return rc;
+    return EXIT_SUCCESS;
 }
 
 int main_memmax(int argc, char **argv)
@@ -3409,7 +3418,6 @@ int main_memmax(int argc, char **argv)
     uint32_t domid;
     int opt = 0;
     char *mem;
-    int rc;
 
     SWITCH_FOREACH_OPT(opt, "", NULL, "mem-max", 2) {
         /* No options */
@@ -3418,18 +3426,12 @@ int main_memmax(int argc, char **argv)
     domid = find_domain(argv[optind]);
     mem = argv[optind + 1];
 
-    rc = set_memory_max(domid, mem);
-    if (rc) {
-        fprintf(stderr, "cannot set domid %d static max memory to : %s\n", domid, mem);
-        return 1;
-    }
-
-    return 0;
+    return set_memory_max(domid, mem);
 }
 
-static void set_memory_target(uint32_t domid, const char *mem)
+static int set_memory_target(uint32_t domid, const char *mem)
 {
-    long long int memorykb;
+    int64_t memorykb;
 
     memorykb = parse_mem_size_kb(mem);
     if (memorykb == -1)  {
@@ -3437,7 +3439,12 @@ static void set_memory_target(uint32_t domid, const char *mem)
         exit(3);
     }
 
-    libxl_set_memory_target(ctx, domid, memorykb, 0, /* enforce */ 1);
+    if (libxl_set_memory_target(ctx, domid, memorykb, 0, /* enforce */ 1)) {
+        fprintf(stderr, "cannot set domid %d dynamic max memory to : %s\n", domid, mem);
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }
 
 int main_memset(int argc, char **argv)
@@ -3453,8 +3460,7 @@ int main_memset(int argc, char **argv)
     domid = find_domain(argv[optind]);
     mem = argv[optind + 1];
 
-    set_memory_target(domid, mem);
-    return 0;
+    return set_memory_target(domid, mem);
 }
 
 static int cd_insert(uint32_t domid, const char *virtdev, char *phys)
@@ -3463,7 +3469,7 @@ static int cd_insert(uint32_t domid, const char *virtdev, char *phys)
     char *buf = NULL;
     XLU_Config *config = 0;
     struct stat b;
-    int rc = 0;
+    int r;
 
     xasprintf(&buf, "vdev=%s,access=r,devtype=cdrom,target=%s",
               virtdev, phys ? phys : "");
@@ -3479,18 +3485,22 @@ static int cd_insert(uint32_t domid, const char *virtdev, char *phys)
         && stat(disk.pdev_path, &b)) {
         fprintf(stderr, "Cannot stat file: %s\n",
                 disk.pdev_path);
-        rc = 1;
+        r = EXIT_FAILURE;
         goto out;
     }
 
-    if (libxl_cdrom_insert(ctx, domid, &disk, NULL))
-        rc=1;
+    if (libxl_cdrom_insert(ctx, domid, &disk, NULL)) {
+        r = EXIT_FAILURE;
+        goto out;
+    }
+
+    r = EXIT_SUCCESS;
 
 out:
     libxl_device_disk_dispose(&disk);
     free(buf);
 
-    return rc;
+    return r;
 }
 
 int main_cd_eject(int argc, char **argv)
@@ -3524,8 +3534,7 @@ int main_cd_insert(int argc, char **argv)
     virtdev = argv[optind + 1];
     file = argv[optind + 2];
 
-    cd_insert(domid, virtdev, file);
-    return 0;
+    return cd_insert(domid, virtdev, file);
 }
 
 int main_usbctrl_attach(int argc, char **argv)
@@ -4741,13 +4750,16 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 
 static void migrate_receive(int debug, int daemonize, int monitor,
                             int send_fd, int recv_fd,
-                            libxl_checkpointed_stream checkpointed)
+                            libxl_checkpointed_stream checkpointed,
+                            char *colo_proxy_script)
 {
     uint32_t domid;
     int rc, rc2;
     char rc_buf;
     char *migration_domname;
     struct domain_create dom_info;
+    const char *ha = checkpointed == LIBXL_CHECKPOINTED_STREAM_COLO ?
+                     "COLO" : "Remus";
 
     signal(SIGPIPE, SIG_IGN);
     /* if we get SIGPIPE we'd rather just have it as an error */
@@ -4765,8 +4777,10 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     dom_info.monitor = monitor;
     dom_info.paused = 1;
     dom_info.migrate_fd = recv_fd;
+    dom_info.send_back_fd = send_fd;
     dom_info.migration_domname_r = &migration_domname;
     dom_info.checkpointed_stream = checkpointed;
+    dom_info.colo_proxy_script = colo_proxy_script;
 
     rc = create_domain(&dom_info);
     if (rc < 0) {
@@ -4779,11 +4793,12 @@ static void migrate_receive(int debug, int daemonize, int monitor,
 
     switch (checkpointed) {
     case LIBXL_CHECKPOINTED_STREAM_REMUS:
+    case LIBXL_CHECKPOINTED_STREAM_COLO:
         /* If we are here, it means that the sender (primary) has crashed.
          * TODO: Split-Brain Check.
          */
-        fprintf(stderr, "migration target: Remus Failover for domain %u\n",
-                domid);
+        fprintf(stderr, "migration target: %s Failover for domain %u\n",
+                ha, domid);
 
         /*
          * If domain renaming fails, lets just continue (as we need the domain
@@ -4799,16 +4814,20 @@ static void migrate_receive(int debug, int daemonize, int monitor,
             rc = libxl_domain_rename(ctx, domid, migration_domname,
                                      common_domname);
             if (rc)
-                fprintf(stderr, "migration target (Remus): "
+                fprintf(stderr, "migration target (%s): "
                         "Failed to rename domain from %s to %s:%d\n",
-                        migration_domname, common_domname, rc);
+                        ha, migration_domname, common_domname, rc);
         }
+
+        if (checkpointed == LIBXL_CHECKPOINTED_STREAM_COLO)
+            /* The guest is running after failover in COLO mode */
+            exit(rc ? -ERROR_FAIL: 0);
 
         rc = libxl_domain_unpause(ctx, domid);
         if (rc)
-            fprintf(stderr, "migration target (Remus): "
+            fprintf(stderr, "migration target (%s): "
                     "Failed to unpause domain %s (id: %u):%d\n",
-                    common_domname, domid, rc);
+                    ha, common_domname, domid, rc);
 
         exit(rc ? -ERROR_FAIL: 0);
     default:
@@ -4938,6 +4957,7 @@ int main_restore(int argc, char **argv)
     dom_info.config_file = config_file;
     dom_info.restore_file = checkpoint_file;
     dom_info.migrate_fd = -1;
+    dom_info.send_back_fd = -1;
     dom_info.vnc = vnc;
     dom_info.vncautopass = vncautopass;
     dom_info.console_autoconnect = console_autoconnect;
@@ -4954,8 +4974,15 @@ int main_migrate_receive(int argc, char **argv)
     int debug = 0, daemonize = 1, monitor = 1;
     libxl_checkpointed_stream checkpointed = LIBXL_CHECKPOINTED_STREAM_NONE;
     int opt;
+    char *script = NULL;
+    static struct option opts[] = {
+        {"colo", 0, 0, 0x100},
+        /* It is a shame that the management code for disk is not here. */
+        {"coloft-script", 1, 0, 0x200},
+        COMMON_LONG_OPTS
+    };
 
-    SWITCH_FOREACH_OPT(opt, "Fedr", NULL, "migrate-receive", 0) {
+    SWITCH_FOREACH_OPT(opt, "Fedr", opts, "migrate-receive", 0) {
     case 'F':
         daemonize = 0;
         break;
@@ -4969,6 +4996,12 @@ int main_migrate_receive(int argc, char **argv)
     case 'r':
         checkpointed = LIBXL_CHECKPOINTED_STREAM_REMUS;
         break;
+    case 0x100:
+        checkpointed = LIBXL_CHECKPOINTED_STREAM_COLO;
+        break;
+    case 0x200:
+        script = optarg;
+        break;
     }
 
     if (argc-optind != 0) {
@@ -4977,7 +5010,7 @@ int main_migrate_receive(int argc, char **argv)
     }
     migrate_receive(debug, daemonize, monitor,
                     STDOUT_FILENO, STDIN_FILENO,
-                    checkpointed);
+                    checkpointed, script);
 
     return 0;
 }
@@ -5405,6 +5438,7 @@ int main_create(int argc, char **argv)
     dom_info.quiet = quiet;
     dom_info.config_file = filename;
     dom_info.migrate_fd = -1;
+    dom_info.send_back_fd = -1;
     dom_info.vnc = vnc;
     dom_info.vncautopass = vncautopass;
     dom_info.console_autoconnect = console_autoconnect;
@@ -5650,6 +5684,10 @@ int main_vcpulist(int argc, char **argv)
 
 int main_vcpupin(int argc, char **argv)
 {
+    static struct option opts[] = {
+        {"force", 0, 0, 'f'},
+        COMMON_LONG_OPTS
+    };
     libxl_vcpuinfo *vcpuinfo;
     libxl_bitmap cpumap_hard, cpumap_soft;;
     libxl_bitmap *soft = &cpumap_soft, *hard = &cpumap_hard;
@@ -5662,12 +5700,17 @@ int main_vcpupin(int argc, char **argv)
     const char *vcpu, *hard_str, *soft_str;
     char *endptr;
     int opt, nb_cpu, nb_vcpu, rc = EXIT_FAILURE;
+    bool force = false;
 
     libxl_bitmap_init(&cpumap_hard);
     libxl_bitmap_init(&cpumap_soft);
 
-    SWITCH_FOREACH_OPT(opt, "", NULL, "vcpu-pin", 3) {
-        /* No options */
+    SWITCH_FOREACH_OPT(opt, "f", opts, "vcpu-pin", 3) {
+    case 'f':
+        force = true;
+        break;
+    default:
+        break;
     }
 
     domid = find_domain(argv[optind]);
@@ -5680,6 +5723,10 @@ int main_vcpupin(int argc, char **argv)
     if (vcpu == endptr || vcpuid < 0) {
         if (strcmp(vcpu, "all")) {
             fprintf(stderr, "Error: Invalid argument %s as VCPU.\n", vcpu);
+            goto out;
+        }
+        if (force) {
+            fprintf(stderr, "Error: --force and 'all' as VCPU not allowed.\n");
             goto out;
         }
         vcpuid = -1;
@@ -5743,7 +5790,14 @@ int main_vcpupin(int argc, char **argv)
         goto out;
     }
 
-    if (vcpuid != -1) {
+    if (force) {
+        if (libxl_set_vcpuaffinity_force(ctx, domid, vcpuid, hard, soft)) {
+            fprintf(stderr, "Could not set affinity for vcpu `%ld'.\n",
+                    vcpuid);
+            goto out;
+        }
+    }
+    else if (vcpuid != -1) {
         if (libxl_set_vcpuaffinity(ctx, domid, vcpuid, hard, soft)) {
             fprintf(stderr, "Could not set affinity for vcpu `%ld'.\n",
                     vcpuid);
@@ -8234,8 +8288,10 @@ int main_cpupoolcpuremove(int argc, char **argv)
         goto out;
     }
 
-    if (libxl_cpupool_cpuremove_cpumap(ctx, poolid, &cpumap))
-        fprintf(stderr, "some cpus may not have been removed from %s\n", pool);
+    if (libxl_cpupool_cpuremove_cpumap(ctx, poolid, &cpumap)) {
+        fprintf(stderr, "Some cpus may have not or only partially been removed from '%s'.\n", pool);
+        fprintf(stderr, "If a cpu can't be added to another cpupool, add it to '%s' again and retry.\n", pool);
+    }
 
     rc = EXIT_SUCCESS;
 
@@ -8555,11 +8611,8 @@ int main_remus(int argc, char **argv)
     int config_len;
 
     memset(&r_info, 0, sizeof(libxl_domain_remus_info));
-    /* Defaults */
-    r_info.interval = 200;
-    libxl_defbool_setdefault(&r_info.blackhole, false);
 
-    SWITCH_FOREACH_OPT(opt, "Fbundi:s:N:e", NULL, "remus", 2) {
+    SWITCH_FOREACH_OPT(opt, "Fbundi:s:N:ec", NULL, "remus", 2) {
     case 'i':
         r_info.interval = atoi(optarg);
         break;
@@ -8587,13 +8640,40 @@ int main_remus(int argc, char **argv)
     case 'e':
         daemonize = 0;
         break;
+    case 'c':
+        libxl_defbool_set(&r_info.colo, true);
     }
 
     domid = find_domain(argv[optind]);
     host = argv[optind + 1];
 
-    if (!r_info.netbufscript)
-        r_info.netbufscript = default_remus_netbufscript;
+    /* Defaults */
+    libxl_defbool_setdefault(&r_info.blackhole, false);
+    libxl_defbool_setdefault(&r_info.colo, false);
+    if (!libxl_defbool_val(r_info.colo) && !r_info.interval)
+        r_info.interval = 200;
+
+    if (libxl_defbool_val(r_info.colo)) {
+        if (r_info.interval || libxl_defbool_val(r_info.blackhole) ||
+            !libxl_defbool_is_default(r_info.netbuf) ||
+            !libxl_defbool_is_default(r_info.diskbuf)) {
+            perror("option -c is conflict with -i, -d, -n or -b");
+            exit(-1);
+        }
+
+        if (libxl_defbool_is_default(r_info.compression)) {
+            perror("COLO can't be used with memory compression. "
+                   "Disable memory checkpoint compression now...");
+            libxl_defbool_set(&r_info.compression, false);
+        }
+    }
+
+    if (!r_info.netbufscript) {
+        if (libxl_defbool_val(r_info.colo))
+            r_info.netbufscript = default_colo_proxy_script;
+        else
+            r_info.netbufscript = default_remus_netbufscript;
+    }
 
     if (libxl_defbool_val(r_info.blackhole)) {
         send_fd = open("/dev/null", O_RDWR, 0644);
@@ -8606,9 +8686,19 @@ int main_remus(int argc, char **argv)
         if (!ssh_command[0]) {
             rune = host;
         } else {
-            xasprintf(&rune, "exec %s %s xl migrate-receive -r %s",
-                      ssh_command, host,
-                      daemonize ? "" : " -e");
+            if (!libxl_defbool_val(r_info.colo)) {
+                xasprintf(&rune, "exec %s %s xl migrate-receive %s %s",
+                          ssh_command, host,
+                          "-r",
+                          daemonize ? "" : " -e");
+            } else {
+                xasprintf(&rune, "exec %s %s xl migrate-receive %s %s %s %s",
+                          ssh_command, host,
+                          "--colo",
+                          r_info.netbufscript ? "--coloft-script" : "",
+                          r_info.netbufscript ? r_info.netbufscript : "",
+                          daemonize ? "" : " -e");
+            }
         }
 
         save_domain_core_begin(domid, NULL, &config_data, &config_len);
@@ -8635,7 +8725,8 @@ int main_remus(int argc, char **argv)
      * domain to force failover
      */
     if (libxl_domain_info(ctx, 0, domid)) {
-        fprintf(stderr, "Remus: Primary domain has been destroyed.\n");
+        fprintf(stderr, "%s: Primary domain has been destroyed.\n",
+                libxl_defbool_val(r_info.colo) ? "COLO" : "Remus");
         close(send_fd);
         return 0;
     }
@@ -8647,7 +8738,8 @@ int main_remus(int argc, char **argv)
     if (rc == ERROR_GUEST_TIMEDOUT)
         fprintf(stderr, "Failed to suspend domain at primary.\n");
     else {
-        fprintf(stderr, "Remus: Backup failed? resuming domain at primary.\n");
+        fprintf(stderr, "%s: Backup failed? resuming domain at primary.\n",
+                libxl_defbool_val(r_info.colo) ? "COLO" : "Remus");
         libxl_domain_resume(ctx, domid, 1, 0);
     }
 

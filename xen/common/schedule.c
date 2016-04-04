@@ -1235,10 +1235,19 @@ long sched_adjust(struct domain *d, struct xen_domctl_scheduler_op *op)
     if ( ret )
         return ret;
 
-    if ( (op->sched_id != DOM2OP(d)->sched_id) ||
-         ((op->cmd != XEN_DOMCTL_SCHEDOP_putinfo) &&
-          (op->cmd != XEN_DOMCTL_SCHEDOP_getinfo)) )
+    if ( op->sched_id != DOM2OP(d)->sched_id )
         return -EINVAL;
+
+    switch ( op->cmd )
+    {
+    case XEN_DOMCTL_SCHEDOP_putinfo:
+    case XEN_DOMCTL_SCHEDOP_getinfo:
+    case XEN_DOMCTL_SCHEDOP_putvcpuinfo:
+    case XEN_DOMCTL_SCHEDOP_getvcpuinfo:
+        break;
+    default:
+        return -EINVAL;
+    }
 
     /* NB: the pluggable scheduler code needs to take care
      * of locking by itself. */
@@ -1517,10 +1526,15 @@ static int cpu_schedule_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
+    struct scheduler *sched = per_cpu(scheduler, cpu);
+    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
     int rc = 0;
 
     switch ( action )
     {
+    case CPU_STARTING:
+        SCHED_OP(sched, init_pdata, sd->sched_priv, cpu);
+        break;
     case CPU_UP_PREPARE:
         rc = cpu_schedule_up(cpu);
         break;
@@ -1597,6 +1611,7 @@ void __init scheduler_init(void)
     if ( ops.alloc_pdata &&
          !(this_cpu(schedule_data).sched_priv = ops.alloc_pdata(&ops, 0)) )
         BUG();
+    SCHED_OP(&ops, init_pdata, this_cpu(schedule_data).sched_priv, 0);
 }
 
 /*
@@ -1640,6 +1655,7 @@ int schedule_cpu_switch(unsigned int cpu, struct cpupool *c)
     ppriv = SCHED_OP(new_ops, alloc_pdata, cpu);
     if ( ppriv == NULL )
         return -ENOMEM;
+    SCHED_OP(new_ops, init_pdata, ppriv, cpu);
     vpriv = SCHED_OP(new_ops, alloc_vdata, idle, idle->domain->sched_priv);
     if ( vpriv == NULL )
     {

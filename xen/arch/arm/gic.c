@@ -739,6 +739,16 @@ int gic_make_hwdom_dt_node(const struct domain *d,
     return gic_hw_ops->make_hwdom_dt_node(d, gic, fdt);
 }
 
+int gic_make_hwdom_madt(const struct domain *d, u32 offset)
+{
+    return gic_hw_ops->make_hwdom_madt(d, offset);
+}
+
+int gic_iomem_deny_access(const struct domain *d)
+{
+    return gic_hw_ops->iomem_deny_access(d);
+}
+
 /*
  * Local variables:
  * mode: C

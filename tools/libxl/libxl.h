@@ -154,6 +154,12 @@
 #define LIBXL_HAVE_VCPUINFO_SOFT_AFFINITY 1
 
 /*
+ * LIBXL_HAVE_SET_VCPUAFFINITY_FORCE indicates that the
+ * libxl_set_vcpuaffinity_force() library call is available.
+ */
+#define LIBXL_HAVE_SET_VCPUAFFINITY_FORCE 1
+
+/*
  * LIBXL_HAVE_DEVICE_DISK_DIRECT_IO_SAFE indicates that a
  * 'direct_io_safe' field (of boolean type) is present in
  * libxl_device_disk.
@@ -651,6 +657,15 @@ typedef struct libxl__ctx libxl_ctx;
 #define LIBXL_HAVE_DOMAIN_CREATE_RESTORE_PARAMS 1
 
 /*
+ * LIBXL_HAVE_DOMAIN_CREATE_RESTORE_SEND_BACK_FD 1
+ *
+ * If this is defined, libxl_domain_create_restore()'s API includes the
+ * send_back_fd param. This is used only with COLO, for the libxl migration
+ * back channel; other callers should pass -1.
+ */
+#define LIBXL_HAVE_DOMAIN_CREATE_RESTORE_SEND_BACK_FD 1
+
+/*
  * LIBXL_HAVE_CREATEINFO_PVH
  * If this is defined, then libxl supports creation of a PVH guest.
  */
@@ -913,6 +928,16 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
 #define ERROR_REMUS_DEVICE_NOT_SUPPORTED \
         ERROR_CHECKPOINT_DEVICE_NOT_SUPPORTED
 #endif
+
+/*
+ * LIBXL_HAVE_VGA_INTERFACE_TYPE_UNKNOWN
+ *
+ * In the case that LIBXL_HAVE_VGA_INTERFACE_TYPE_UNKNOWN is set the
+ * libxl_vga_interface_type enumeration type contains a
+ * LIBXL_VGA_INTERFACE_TYPE_UNKNOWN identifier. This is used to signal
+ * that a libxl_vga_interface_type type has not been initialized yet.
+ */
+#define LIBXL_HAVE_VGA_INTERFACE_TYPE_UNKNOWN 1
 
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
@@ -1184,6 +1209,7 @@ int libxl_domain_create_new(libxl_ctx *ctx, libxl_domain_config *d_config,
                             LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
                                 uint32_t *domid, int restore_fd,
+                                int send_back_fd,
                                 const libxl_domain_restore_params *params,
                                 const libxl_asyncop_how *ao_how,
                                 const libxl_asyncprogress_how *aop_console_how)
@@ -1204,13 +1230,30 @@ int static inline libxl_domain_create_restore_0x040200(
     libxl_domain_restore_params_init(&params);
 
     ret = libxl_domain_create_restore(
-        ctx, d_config, domid, restore_fd, &params, ao_how, aop_console_how);
+        ctx, d_config, domid, restore_fd, -1, &params, ao_how, aop_console_how);
 
     libxl_domain_restore_params_dispose(&params);
     return ret;
 }
 
 #define libxl_domain_create_restore libxl_domain_create_restore_0x040200
+
+#elif defined(LIBXL_API_VERSION) && LIBXL_API_VERSION >= 0x040400 \
+                                 && LIBXL_API_VERSION < 0x040700
+
+int static inline libxl_domain_create_restore_0x040400(
+    libxl_ctx *ctx, libxl_domain_config *d_config,
+    uint32_t *domid, int restore_fd,
+    const libxl_domain_restore_params *params,
+    const libxl_asyncop_how *ao_how,
+    const libxl_asyncprogress_how *aop_console_how)
+    LIBXL_EXTERNAL_CALLERS_ONLY
+{
+    return libxl_domain_create_restore(ctx, d_config, domid, restore_fd,
+                                       -1, params, ao_how, aop_console_how);
+}
+
+#define libxl_domain_create_restore libxl_domain_create_restore_0x040400
 
 #endif
 
@@ -1840,6 +1883,10 @@ int libxl_get_physinfo(libxl_ctx *ctx, libxl_physinfo *physinfo);
 int libxl_set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid, uint32_t vcpuid,
                            const libxl_bitmap *cpumap_hard,
                            const libxl_bitmap *cpumap_soft);
+int libxl_set_vcpuaffinity_force(libxl_ctx *ctx, uint32_t domid,
+                                 uint32_t vcpuid,
+                                 const libxl_bitmap *cpumap_hard,
+                                 const libxl_bitmap *cpumap_soft);
 int libxl_set_vcpuaffinity_all(libxl_ctx *ctx, uint32_t domid,
                                unsigned int max_vcpus,
                                const libxl_bitmap *cpumap_hard,

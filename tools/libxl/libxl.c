@@ -834,7 +834,6 @@ out:
 static void remus_failover_cb(libxl__egc *egc,
                               libxl__domain_save_state *dss, int rc);
 
-/* TODO: Explicit Checkpoint acknowledgements via recv_fd. */
 int libxl_domain_remus_start(libxl_ctx *ctx, libxl_domain_remus_info *info,
                              uint32_t domid, int send_fd, int recv_fd,
                              const libxl_asyncop_how *ao_how)
@@ -849,11 +848,26 @@ int libxl_domain_remus_start(libxl_ctx *ctx, libxl_domain_remus_info *info,
         goto out;
     }
 
+    /* The caller must set this defbool */
+    if (libxl_defbool_is_default(info->colo)) {
+        LOG(ERROR, "colo mode must be enabled/disabled");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
     libxl_defbool_setdefault(&info->allow_unsafe, false);
     libxl_defbool_setdefault(&info->blackhole, false);
-    libxl_defbool_setdefault(&info->compression, true);
+    libxl_defbool_setdefault(&info->compression,
+                             !libxl_defbool_val(info->colo));
     libxl_defbool_setdefault(&info->netbuf, true);
     libxl_defbool_setdefault(&info->diskbuf, true);
+
+    if (libxl_defbool_val(info->colo) &&
+        libxl_defbool_val(info->compression)) {
+            LOG(ERROR, "cannot use memory checkpoint compression in COLO mode");
+            rc = ERROR_FAIL;
+            goto out;
+    }
 
     if (!libxl_defbool_val(info->allow_unsafe) &&
         (libxl_defbool_val(info->blackhole) ||
@@ -871,17 +885,23 @@ int libxl_domain_remus_start(libxl_ctx *ctx, libxl_domain_remus_info *info,
     dss->callback = remus_failover_cb;
     dss->domid = domid;
     dss->fd = send_fd;
-    /* TODO do something with recv_fd */
+    dss->recv_fd = recv_fd;
     dss->type = type;
     dss->live = 1;
     dss->debug = 0;
     dss->remus = info;
-    dss->checkpointed_stream = LIBXL_CHECKPOINTED_STREAM_REMUS;
+    if (libxl_defbool_val(info->colo))
+        dss->checkpointed_stream = LIBXL_CHECKPOINTED_STREAM_COLO;
+    else
+        dss->checkpointed_stream = LIBXL_CHECKPOINTED_STREAM_REMUS;
 
     assert(info);
 
     /* Point of no return */
-    libxl__remus_setup(egc, &dss->rs);
+    if (libxl_defbool_val(info->colo))
+        libxl__colo_save_setup(egc, &dss->css);
+    else
+        libxl__remus_setup(egc, &dss->rs);
     return AO_INPROGRESS;
 
  out:
@@ -2286,6 +2306,8 @@ int libxl__device_disk_setdefault(libxl__gc *gc, libxl_device_disk *disk)
     int rc;
 
     libxl_defbool_setdefault(&disk->discard_enable, !!disk->readwrite);
+    libxl_defbool_setdefault(&disk->colo_enable, false);
+    libxl_defbool_setdefault(&disk->colo_restore_enable, false);
 
     rc = libxl__resolve_domid(gc, disk->backend_domname, &disk->backend_domid);
     if (rc < 0) return rc;
@@ -2484,6 +2506,18 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
                 flexarray_append(back, "params");
                 flexarray_append(back, GCSPRINTF("%s:%s",
                               libxl__device_disk_string_of_format(disk->format), disk->pdev_path));
+                if (libxl_defbool_val(disk->colo_enable)) {
+                    flexarray_append(back, "colo-host");
+                    flexarray_append(back, libxl__sprintf(gc, "%s", disk->colo_host));
+                    flexarray_append(back, "colo-port");
+                    flexarray_append(back, libxl__sprintf(gc, "%d", disk->colo_port));
+                    flexarray_append(back, "colo-export");
+                    flexarray_append(back, libxl__sprintf(gc, "%s", disk->colo_export));
+                    flexarray_append(back, "active-disk");
+                    flexarray_append(back, libxl__sprintf(gc, "%s", disk->active_disk));
+                    flexarray_append(back, "hidden-disk");
+                    flexarray_append(back, libxl__sprintf(gc, "%s", disk->hidden_disk));
+                }
                 assert(device->backend_kind == LIBXL__DEVICE_KIND_QDISK);
                 break;
             default:
@@ -2599,7 +2633,12 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
         goto cleanup;
     }
 
-    /* "params" may not be present; but everything else must be. */
+    /*
+     * "params" may not be present; but everything else must be.
+     * colo releated entries(colo-host, colo-port, colo-export,
+     * active-disk and hidden-disk) are present only if colo is
+     * enabled.
+     */
     tmp = xs_read(ctx->xsh, XBT_NULL,
                   GCSPRINTF("%s/params", be_path), &len);
     if (tmp && strchr(tmp, ':')) {
@@ -2609,6 +2648,36 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
         disk->pdev_path = tmp;
     }
 
+    tmp = xs_read(ctx->xsh, XBT_NULL,
+                  GCSPRINTF("%s/colo-host", be_path), &len);
+    if (tmp) {
+        libxl_defbool_set(&disk->colo_enable, true);
+        disk->colo_host = tmp;
+
+        tmp = xs_read(ctx->xsh, XBT_NULL,
+                      GCSPRINTF("%s/colo-port", be_path), &len);
+        if (!tmp) {
+            LOG(ERROR, "Missing xenstore node %s/colo-port", be_path);
+            goto cleanup;
+        }
+        disk->colo_port = atoi(tmp);
+
+#define XS_READ_COLO(param, item) do {                                  \
+        tmp = xs_read(ctx->xsh, XBT_NULL,                               \
+                      GCSPRINTF("%s/"#param"", be_path), &len);         \
+        if (!tmp) {                                                     \
+            LOG(ERROR, "Missing xenstore node %s/"#param"", be_path);   \
+            goto cleanup;                                               \
+        }                                                               \
+        disk->item = tmp;                                               \
+} while (0)
+        XS_READ_COLO(colo-export, colo_export);
+        XS_READ_COLO(active-disk, active_disk);
+        XS_READ_COLO(hidden-disk, hidden_disk);
+#undef XS_READ_COLO
+    } else {
+        libxl_defbool_set(&disk->colo_enable, false);
+    }
 
     tmp = libxl__xs_read(gc, XBT_NULL,
                          GCSPRINTF("%s/type", be_path));
@@ -3309,6 +3378,11 @@ void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
         flexarray_append(back, nic->ifname);
     }
 
+    if (nic->coloft_forwarddev) {
+        flexarray_append(back, "forwarddev");
+        flexarray_append(back, nic->coloft_forwarddev);
+    }
+
     flexarray_append(back, "mac");
     flexarray_append(back,GCSPRINTF(LIBXL_MAC_FMT, LIBXL_MAC_BYTES(nic->mac)));
     if (nic->ip) {
@@ -3431,6 +3505,7 @@ static int libxl__device_nic_from_xs_be(libxl__gc *gc,
     nic->ip = READ_BACKEND(NOGC, "ip");
     nic->bridge = READ_BACKEND(NOGC, "bridge");
     nic->script = READ_BACKEND(NOGC, "script");
+    nic->coloft_forwarddev = READ_BACKEND(NOGC, "forwarddev");
 
     /* vif_ioemu nics use the same xenstore entries as vif interfaces */
     tmp = READ_BACKEND(gc, "type");
@@ -4814,11 +4889,6 @@ retry_transaction:
 
     libxl__xs_printf(gc, t, GCSPRINTF("%s/memory/target", dompath),
                      "%"PRIu32, new_target_memkb);
-    rc = xc_domain_getinfolist(ctx->xch, domid, 1, &info);
-    if (rc != 1 || info.domain != domid) {
-        abort_transaction = 1;
-        goto out;
-    }
 
     libxl_dominfo_init(&ptr);
     xcinfo2xlinfo(ctx, &info, &ptr);
@@ -5216,50 +5286,71 @@ libxl_numainfo *libxl_get_numainfo(libxl_ctx *ctx, int *nr)
     return ret;
 }
 
+
+static int libxl__xc_version_wrapper(libxl__gc *gc, unsigned int cmd,
+                                     char *buf, ssize_t len, char **dst)
+{
+    int r;
+
+    r = xc_version(CTX->xch, cmd, buf, len);
+    if ( r == -EPERM ) {
+        buf[0] = '\0';
+    } else if ( r < 0 ) {
+        return r;
+    }
+    *dst = libxl__strdup(NOGC, buf);
+    return 0;
+}
+
 const libxl_version_info* libxl_get_version_info(libxl_ctx *ctx)
 {
     GC_INIT(ctx);
-    union {
-        xen_extraversion_t xen_extra;
-        xen_compile_info_t xen_cc;
-        xen_changeset_info_t xen_chgset;
-        xen_capabilities_info_t xen_caps;
-        xen_platform_parameters_t p_parms;
-        xen_commandline_t xen_commandline;
-    } u;
-    long xen_version;
+    char *buf;
+    xen_version_op_val_t val = 0;
     libxl_version_info *info = &ctx->version_info;
 
     if (info->xen_version_extra != NULL)
         goto out;
 
-    xen_version = xc_version(ctx->xch, XENVER_version, NULL);
-    info->xen_version_major = xen_version >> 16;
-    info->xen_version_minor = xen_version & 0xFF;
+    if (xc_version(CTX->xch, XEN_VERSION_pagesize, &val, sizeof(val)) < 0)
+        goto out;
 
-    xc_version(ctx->xch, XENVER_extraversion, &u.xen_extra);
-    info->xen_version_extra = libxl__strdup(NOGC, u.xen_extra);
+    info->pagesize = val;
+    /* 4K buffer. */
+    buf = libxl__zalloc(gc, info->pagesize);
 
-    xc_version(ctx->xch, XENVER_compile_info, &u.xen_cc);
-    info->compiler = libxl__strdup(NOGC, u.xen_cc.compiler);
-    info->compile_by = libxl__strdup(NOGC, u.xen_cc.compile_by);
-    info->compile_domain = libxl__strdup(NOGC, u.xen_cc.compile_domain);
-    info->compile_date = libxl__strdup(NOGC, u.xen_cc.compile_date);
+    val = 0;
+    if (xc_version(CTX->xch, XEN_VERSION_version, &val, sizeof(val)) < 0)
+        goto out;
+    info->xen_version_major = val >> 16;
+    info->xen_version_minor = val & 0xFF;
 
-    xc_version(ctx->xch, XENVER_capabilities, &u.xen_caps);
-    info->capabilities = libxl__strdup(NOGC, u.xen_caps);
+    if (libxl__xc_version_wrapper(gc, XEN_VERSION_extraversion, buf,
+                                  info->pagesize, &info->xen_version_extra) < 0)
+        goto out;
 
-    xc_version(ctx->xch, XENVER_changeset, &u.xen_chgset);
-    info->changeset = libxl__strdup(NOGC, u.xen_chgset);
+    info->compiler = libxl__strdup(NOGC, "");
+    info->compile_by = libxl__strdup(NOGC, "");
+    info->compile_domain = libxl__strdup(NOGC, "");
+    info->compile_date = libxl__strdup(NOGC, "");
 
-    xc_version(ctx->xch, XENVER_platform_parameters, &u.p_parms);
-    info->virt_start = u.p_parms.virt_start;
+    if (libxl__xc_version_wrapper(gc, XEN_VERSION_capabilities, buf,
+                                  info->pagesize, &info->capabilities) < 0)
+        goto out;
 
-    info->pagesize = xc_version(ctx->xch, XENVER_pagesize, NULL);
+    if (libxl__xc_version_wrapper(gc, XEN_VERSION_changeset, buf,
+                                  info->pagesize, &info->changeset) < 0)
+        goto out;
 
-    xc_version(ctx->xch, XENVER_commandline, &u.xen_commandline);
-    info->commandline = libxl__strdup(NOGC, u.xen_commandline);
+    val = 0;
+    if (xc_version(CTX->xch, XEN_VERSION_platform_parameters, &val,
+                   sizeof(val)) < 0)
+        goto out;
 
+    info->virt_start = val;
+
+    (void)libxl__xc_version_wrapper(gc, XEN_VERSION_commandline, buf,
+                                    info->pagesize, &info->commandline);
  out:
     GC_FREE;
     return info;
@@ -5326,18 +5417,20 @@ err:
     return NULL;
 }
 
-int libxl_set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid, uint32_t vcpuid,
-                           const libxl_bitmap *cpumap_hard,
-                           const libxl_bitmap *cpumap_soft)
+static int libxl__set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid,
+                                   uint32_t vcpuid,
+                                   const libxl_bitmap *cpumap_hard,
+                                   const libxl_bitmap *cpumap_soft,
+                                   unsigned flags)
 {
     GC_INIT(ctx);
     libxl_bitmap hard, soft;
-    int rc, flags = 0;
+    int rc;
 
     libxl_bitmap_init(&hard);
     libxl_bitmap_init(&soft);
 
-    if (!cpumap_hard && !cpumap_soft) {
+    if (!cpumap_hard && !cpumap_soft && !flags) {
         rc = ERROR_INVAL;
         goto out;
     }
@@ -5352,7 +5445,7 @@ int libxl_set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid, uint32_t vcpuid,
             goto out;
 
         libxl__bitmap_copy_best_effort(gc, &hard, cpumap_hard);
-        flags = XEN_VCPUAFFINITY_HARD;
+        flags |= XEN_VCPUAFFINITY_HARD;
     }
     if (cpumap_soft) {
         rc = libxl_cpu_bitmap_alloc(ctx, &soft, 0);
@@ -5401,6 +5494,23 @@ int libxl_set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid, uint32_t vcpuid,
     libxl_bitmap_dispose(&soft);
     GC_FREE;
     return rc;
+}
+
+int libxl_set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid, uint32_t vcpuid,
+                           const libxl_bitmap *cpumap_hard,
+                           const libxl_bitmap *cpumap_soft)
+{
+    return libxl__set_vcpuaffinity(ctx, domid, vcpuid, cpumap_hard,
+                                   cpumap_soft, 0);
+}
+
+int libxl_set_vcpuaffinity_force(libxl_ctx *ctx, uint32_t domid,
+                                 uint32_t vcpuid,
+                                 const libxl_bitmap *cpumap_hard,
+                                 const libxl_bitmap *cpumap_soft)
+{
+    return libxl__set_vcpuaffinity(ctx, domid, vcpuid, cpumap_hard,
+                                   cpumap_soft, XEN_VCPUAFFINITY_FORCE);
 }
 
 int libxl_set_vcpuaffinity_all(libxl_ctx *ctx, uint32_t domid,

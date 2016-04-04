@@ -196,6 +196,15 @@ static int disk_try_backend(disk_try_backend_args *a,
             goto bad_format;
         }
 
+        if (libxl_defbool_val(a->disk->colo_enable))
+            goto bad_colo;
+
+        if (a->disk->format == LIBXL_DISK_FORMAT_EMPTY) {
+            LOG(DEBUG, "Disk vdev=%s is empty, skipping physical device check",
+                a->disk->vdev);
+            return backend;
+        }
+
         if (a->disk->backend_domid != LIBXL_TOOLSTACK_DOMID) {
             LOG(DEBUG, "Disk vdev=%s, is using a storage driver domain, "
                        "skipping physical device check", a->disk->vdev);
@@ -217,6 +226,9 @@ static int disk_try_backend(disk_try_backend_args *a,
 
     case LIBXL_DISK_BACKEND_TAP:
         if (a->disk->script) goto bad_script;
+
+        if (libxl_defbool_val(a->disk->colo_enable))
+            goto bad_colo;
 
         if (a->disk->is_cdrom) {
             LOG(DEBUG, "Disk vdev=%s, backend tap unsuitable for cdroms",
@@ -256,6 +268,11 @@ static int disk_try_backend(disk_try_backend_args *a,
     LOG(DEBUG, "Disk vdev=%s, backend %s not compatible with script=...",
         a->disk->vdev, libxl_disk_backend_to_string(backend));
     return 0;
+
+ bad_colo:
+    LOG(DEBUG, "Disk vdev=%s, backend %s not compatible with colo",
+        a->disk->vdev, libxl_disk_backend_to_string(backend));
+    return 0;
 }
 
 int libxl__device_disk_set_backend(libxl__gc *gc, libxl_device_disk *disk) {
@@ -271,6 +288,12 @@ int libxl__device_disk_set_backend(libxl__gc *gc, libxl_device_disk *disk) {
     if (disk->format == LIBXL_DISK_FORMAT_EMPTY) {
         if (!disk->is_cdrom) {
             LOG(ERROR, "Disk vdev=%s is empty but not cdrom", disk->vdev);
+            return ERROR_INVAL;
+        }
+        if (disk->pdev_path != NULL && strcmp(disk->pdev_path, "")) {
+            LOG(ERROR,
+                "Disk vdev=%s is empty but an image has been provided: %s",
+                disk->vdev, disk->pdev_path);
             return ERROR_INVAL;
         }
         memset(&a.stab, 0, sizeof(a.stab));

@@ -204,11 +204,12 @@ libxl_shutdown_reason = Enumeration("shutdown_reason", [
     ], init_val = "LIBXL_SHUTDOWN_REASON_UNKNOWN")
 
 libxl_vga_interface_type = Enumeration("vga_interface_type", [
+    (0, "UNKNOWN"),
     (1, "CIRRUS"),
     (2, "STD"),
     (3, "NONE"),
     (4, "QXL"),
-    ], init_val = "LIBXL_VGA_INTERFACE_TYPE_CIRRUS")
+    ], init_val = "LIBXL_VGA_INTERFACE_TYPE_UNKNOWN")
 
 libxl_vendor_device = Enumeration("vendor_device", [
     (0, "NONE"),
@@ -233,6 +234,7 @@ libxl_hdtype = Enumeration("hdtype", [
 libxl_checkpointed_stream = Enumeration("checkpointed_stream", [
     (0, "NONE"),
     (1, "REMUS"),
+    (2, "COLO"),
     ])
 
 #
@@ -385,6 +387,7 @@ libxl_domain_create_info = Struct("domain_create_info",[
 libxl_domain_restore_params = Struct("domain_restore_params", [
     ("checkpointed_stream", integer),
     ("stream_version", uint32, {'init_val': '1'}),
+    ("colo_proxy_script", string),
     ])
 
 libxl_domain_sched_params = Struct("domain_sched_params",[
@@ -575,6 +578,15 @@ libxl_device_disk = Struct("device_disk", [
     ("is_cdrom", integer),
     ("direct_io_safe", bool),
     ("discard_enable", libxl_defbool),
+    # Note that the COLO configuration settings should be considered unstable.
+    # They may change incompatibly in future versions of Xen.
+    ("colo_enable", libxl_defbool),
+    ("colo_restore_enable", libxl_defbool),
+    ("colo_host", string),
+    ("colo_port", integer),
+    ("colo_export", string),
+    ("active_disk", string),
+    ("hidden_disk", string)
     ])
 
 libxl_device_nic = Struct("device_nic", [
@@ -592,6 +604,9 @@ libxl_device_nic = Struct("device_nic", [
     ("rate_bytes_per_interval", uint64),
     ("rate_interval_usecs", uint32),
     ("gatewaydev", string),
+    # Note that the COLO configuration settings should be considered unstable.
+    # They may change incompatibly in future versions of Xen.
+    ("coloft_forwarddev", string)
     ])
 
 libxl_device_pci = Struct("device_pci", [
@@ -864,6 +879,7 @@ libxl_domain_remus_info = Struct("domain_remus_info",[
     ("netbuf",       libxl_defbool),
     ("netbufscript", string),
     ("diskbuf",      libxl_defbool),
+    ("colo",         libxl_defbool)
     ])
 
 libxl_event_type = Enumeration("event_type", [

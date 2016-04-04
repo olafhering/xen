@@ -78,12 +78,6 @@
 #define __STR(...) #__VA_ARGS__
 #define STR(...) __STR(__VA_ARGS__)
 
-#ifdef CONFIG_FLASK
-#define XSM_MAGIC 0xf97cff8c
-/* Maintain statistics on the access vector cache */
-#define FLASK_AVC_STATS 1
-#endif
-
 /* allow existing code to work with Kconfig variable */
 #define NR_CPUS CONFIG_NR_CPUS
 

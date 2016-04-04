@@ -358,12 +358,18 @@ struct gic_hw_operations {
     /* Create GIC node for the hardware domain */
     int (*make_hwdom_dt_node)(const struct domain *d,
                               const struct dt_device_node *gic, void *fdt);
+    /* Create MADT table for the hardware domain */
+    int (*make_hwdom_madt)(const struct domain *d, u32 offset);
+    /* Deny access to GIC regions */
+    int (*iomem_deny_access)(const struct domain *d);
 };
 
 void register_gic_ops(const struct gic_hw_operations *ops);
 int gic_make_hwdom_dt_node(const struct domain *d,
                            const struct dt_device_node *gic,
                            void *fdt);
+int gic_make_hwdom_madt(const struct domain *d, u32 offset);
+int gic_iomem_deny_access(const struct domain *d);
 
 #endif /* __ASSEMBLY__ */
 #endif

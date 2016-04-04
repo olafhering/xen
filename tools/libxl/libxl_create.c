@@ -222,8 +222,12 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         if (b_info->u.hvm.mmio_hole_memkb == LIBXL_MEMKB_DEFAULT)
             b_info->u.hvm.mmio_hole_memkb = 0;
 
-        if (!b_info->u.hvm.vga.kind)
-            b_info->u.hvm.vga.kind = LIBXL_VGA_INTERFACE_TYPE_CIRRUS;
+        if (b_info->u.hvm.vga.kind == LIBXL_VGA_INTERFACE_TYPE_UNKNOWN) {
+            if (b_info->device_model_version == LIBXL_DEVICE_MODEL_VERSION_NONE)
+                b_info->u.hvm.vga.kind = LIBXL_VGA_INTERFACE_TYPE_NONE;
+            else
+                b_info->u.hvm.vga.kind = LIBXL_VGA_INTERFACE_TYPE_CIRRUS;
+        }
 
         if (!b_info->u.hvm.hdtype)
             b_info->u.hvm.hdtype = LIBXL_HDTYPE_IDE;
@@ -257,6 +261,11 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
             }
             break;
         case LIBXL_DEVICE_MODEL_VERSION_NONE:
+            if (b_info->u.hvm.vga.kind != LIBXL_VGA_INTERFACE_TYPE_NONE) {
+                LOG(ERROR,
+        "guests without a device model cannot have an emulated video card");
+                return ERROR_INVAL;
+            }
             b_info->video_memkb = 0;
             break;
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
@@ -987,6 +996,23 @@ static void domcreate_console_available(libxl__egc *egc,
                                         dcs->aop_console_how.for_event));
 }
 
+static void libxl__colo_restore_setup_done(libxl__egc *egc,
+                                           libxl__colo_restore_state *crs,
+                                           int rc)
+{
+    libxl__domain_create_state *dcs = CONTAINER_OF(crs, *dcs, crs);
+
+    EGC_GC;
+
+    if (rc) {
+        LOG(ERROR, "colo restore setup fails: %d", rc);
+        domcreate_stream_done(egc, &dcs->srs, rc);
+        return;
+    }
+
+    libxl__stream_read_start(egc, &dcs->srs);
+}
+
 static void domcreate_bootloader_done(libxl__egc *egc,
                                       libxl__bootloader_state *bl,
                                       int rc)
@@ -1000,6 +1026,10 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     const int restore_fd = dcs->restore_fd;
     libxl__domain_build_state *const state = &dcs->build_state;
     const int checkpointed_stream = dcs->restore_params.checkpointed_stream;
+    libxl__colo_restore_state *const crs = &dcs->crs;
+    libxl_domain_build_info *const info = &d_config->b_info;
+    libxl__srm_restore_autogen_callbacks *const callbacks =
+        &dcs->srs.shs.callbacks.restore.a;
 
     if (rc) {
         domcreate_rebuild_done(egc, dcs, rc);
@@ -1027,6 +1057,23 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     }
 
     /* Restore */
+    callbacks->restore_results = libxl__srm_callout_callback_restore_results;
+
+    /* COLO only supports HVM now because it does not work very
+     * well with pv drivers:
+     * 1. We need to resume vm in the slow path. In this case we
+     *    need to disconnect/reconnect backend and frontend. It
+     *    will take too much time and the performance is very slow.
+     * 2. PV disk cannot reuse block replication that is implemented
+     *    in QEMU.
+     */
+    if (info->type != LIBXL_DOMAIN_TYPE_HVM &&
+        checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_COLO) {
+        LOG(ERROR, "COLO only supports HVM, unable to restore domain %d",
+            domid);
+        rc = ERROR_FAIL;
+        goto out;
+    }
 
     rc = libxl__build_pre(gc, domid, d_config, state);
     if (rc)
@@ -1036,10 +1083,21 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     dcs->srs.dcs = dcs;
     dcs->srs.fd = restore_fd;
     dcs->srs.legacy = (dcs->restore_params.stream_version == 1);
+    dcs->srs.back_channel = false;
     dcs->srs.completion_callback = domcreate_stream_done;
 
     if (restore_fd >= 0) {
         switch (checkpointed_stream) {
+        case LIBXL_CHECKPOINTED_STREAM_COLO:
+            /* colo restore setup */
+            crs->ao = ao;
+            crs->domid = domid;
+            crs->send_back_fd = dcs->send_back_fd;
+            crs->recv_fd = restore_fd;
+            crs->hvm = (info->type == LIBXL_DOMAIN_TYPE_HVM);
+            crs->callback = libxl__colo_restore_setup_done;
+            libxl__colo_restore_setup(egc, crs);
+            break;
         case LIBXL_CHECKPOINTED_STREAM_REMUS:
             libxl__remus_restore_setup(egc, dcs);
             /* fall through */
@@ -1674,8 +1732,9 @@ static void domain_create_cb(libxl__egc *egc,
                              int rc, uint32_t domid);
 
 static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
-                            uint32_t *domid, int restore_fd,
+                            uint32_t *domid, int restore_fd, int send_back_fd,
                             const libxl_domain_restore_params *params,
+                            const char *colo_proxy_script,
                             const libxl_asyncop_how *ao_how,
                             const libxl_asyncprogress_how *aop_console_how)
 {
@@ -1689,6 +1748,7 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
     libxl_domain_config_init(&cdcs->dcs.guest_config_saved);
     libxl_domain_config_copy(ctx, &cdcs->dcs.guest_config_saved, d_config);
     cdcs->dcs.restore_fd = cdcs->dcs.libxc_fd = restore_fd;
+    cdcs->dcs.send_back_fd = send_back_fd;
     if (restore_fd > -1) {
         cdcs->dcs.restore_params = *params;
         rc = libxl__fd_flags_modify_save(gc, cdcs->dcs.restore_fd,
@@ -1698,6 +1758,7 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
     }
     cdcs->dcs.callback = domain_create_cb;
     cdcs->dcs.domid_soft_reset = INVALID_DOMID;
+    cdcs->dcs.colo_proxy_script = colo_proxy_script;
     libxl__ao_progress_gethow(&cdcs->dcs.aop_console_how, aop_console_how);
     cdcs->domid_out = domid;
 
@@ -1861,24 +1922,52 @@ static void domain_create_cb(libxl__egc *egc,
 
     libxl__ao_complete(egc, ao, rc);
 }
-    
+
+
+static void set_disk_colo_restore(libxl_domain_config *d_config)
+{
+    int i;
+
+    for (i = 0; i < d_config->num_disks; i++)
+        libxl_defbool_set(&d_config->disks[i].colo_restore_enable, true);
+}
+
+static void unset_disk_colo_restore(libxl_domain_config *d_config)
+{
+    int i;
+
+    for (i = 0; i < d_config->num_disks; i++)
+        libxl_defbool_set(&d_config->disks[i].colo_restore_enable, false);
+}
+
 int libxl_domain_create_new(libxl_ctx *ctx, libxl_domain_config *d_config,
                             uint32_t *domid,
                             const libxl_asyncop_how *ao_how,
                             const libxl_asyncprogress_how *aop_console_how)
 {
-    return do_domain_create(ctx, d_config, domid, -1, NULL,
+    unset_disk_colo_restore(d_config);
+    return do_domain_create(ctx, d_config, domid, -1, -1, NULL, NULL,
                             ao_how, aop_console_how);
 }
 
 int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
                                 uint32_t *domid, int restore_fd,
+                                int send_back_fd,
                                 const libxl_domain_restore_params *params,
                                 const libxl_asyncop_how *ao_how,
                                 const libxl_asyncprogress_how *aop_console_how)
 {
-    return do_domain_create(ctx, d_config, domid, restore_fd, params,
-                            ao_how, aop_console_how);
+    char *colo_proxy_script = NULL;
+
+    if (params->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_COLO) {
+        colo_proxy_script = params->colo_proxy_script;
+        set_disk_colo_restore(d_config);
+    } else {
+        unset_disk_colo_restore(d_config);
+    }
+
+    return do_domain_create(ctx, d_config, domid, restore_fd, send_back_fd,
+                            params, colo_proxy_script, ao_how, aop_console_how);
 }
 
 int libxl_domain_soft_reset(libxl_ctx *ctx,

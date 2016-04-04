@@ -447,11 +447,57 @@ Print huge (!) amount of debug during the migration process.
 
 =item B<remus> [I<OPTIONS>] I<domain-id> I<host>
 
-Enable Remus HA for domain. By default B<xl> relies on ssh as a transport
-mechanism between the two hosts.
+Enable Remus HA or COLO HA for domain. By default B<xl> relies on ssh as a
+transport mechanism between the two hosts.
 
-N.B: Remus support in xl is still in experimental (proof-of-concept) phase.
-     Disk replication support is limited to DRBD disks.
+B<NOTES>
+
+=over 4
+
+Remus support in xl is still in experimental (proof-of-concept) phase.
+Disk replication support is limited to DRBD disks.
+
+COLO support in xl is still in experimental (proof-of-concept)
+phase. All options are subject to change in the future.
+
+=back
+
+COLO disk configuration looks like:
+
+  disk = ['...,colo,colo-host=xxx,colo-port=xxx,colo-export=xxx,active-disk=xxx,hidden-disk=xxx...']
+
+The supported options are:
+
+=over 4
+
+=item B<colo-host>      :Secondary host's ip address.
+
+=item B<colo-port>      :Secondary host's port, we will run a nbd server on
+secondary host, and the nbd server will listen this port.
+
+=item B<colo-export>    :Nbd server's disk export name of secondary host.
+
+=item B<active-disk>    :Secondary's guest write will be buffered in this disk,
+and it's used by secondary.
+
+=item B<hidden-disk>    :Primary's modified contents will be buffered in this
+disk, and it's used by secondary.
+
+=back
+
+COLO network configuration looks like:
+
+  vif = [ '...,forwarddev=xxx,...']
+
+The supported options are:
+
+=over 4
+
+=item B<forwarddev>     :Forward devices for primary and secondary, they are
+directly connected.
+
+
+=back
 
 B<OPTIONS>
 
@@ -497,6 +543,11 @@ Disable network output buffering. Requires enabling unsafe mode.
 =item B<-d>
 
 Disable disk replication. Requires enabling unsafe mode.
+
+=item B<-c>
+
+Enable COLO HA. This conflicts with B<-i> and B<-b>, and memory
+checkpoint compression must be disabled.
 
 =back
 
@@ -689,7 +740,7 @@ after B<vcpu-set>, go to B<SEE ALSO> section for information.
 Lists VCPU information for a specific domain.  If no domain is
 specified, VCPU information for all domains will be provided.
 
-=item B<vcpu-pin> I<domain-id> I<vcpu> I<cpus hard> I<cpus soft>
+=item B<vcpu-pin> [I<-f|--force>] I<domain-id> I<vcpu> I<cpus hard> I<cpus soft>
 
 Set hard and soft affinity for a I<vcpu> of <domain-id>. Normally VCPUs
 can float between available CPUs whenever Xen deems a different run state
@@ -715,6 +766,11 @@ leaving its hard affinity untouched. On the othe hand:
 
 will set both hard and soft affinity, the former to pCPUs 3 and 4, the
 latter to pCPUs 6,7,8, and 9.
+
+Specifying I<-f> or I<--force> will remove a temporary pinning done by the
+operating system (normally this should be done by the operating system).
+In case a temporary pinning is active for a vcpu the affinity of this vcpu
+can't be changed without this option.
 
 =item B<vm-list>
 

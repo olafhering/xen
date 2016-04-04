@@ -9,7 +9,7 @@
 static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
 {
     xc_interface *xch = ctx->xch;
-    int32_t xen_version = xc_version(xch, XENVER_version, NULL);
+    xen_version_op_val_t xen_version;
     struct xc_sr_ihdr ihdr =
         {
             .marker  = IHDR_MARKER,
@@ -21,15 +21,16 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
         {
             .type       = guest_type,
             .page_shift = XC_PAGE_SHIFT,
-            .xen_major  = (xen_version >> 16) & 0xffff,
-            .xen_minor  = (xen_version)       & 0xffff,
         };
 
-    if ( xen_version < 0 )
+    if ( xc_version(xch, XEN_VERSION_version, &xen_version,
+                    sizeof(xen_version)) < 0 )
     {
         PERROR("Unable to obtain Xen Version");
         return -1;
     }
+    dhdr.xen_major = (xen_version >> 16) & 0xffff;
+    dhdr.xen_minor = (xen_version)       & 0xffff;
 
     if ( write_exact(ctx->fd, &ihdr, sizeof(ihdr)) )
     {
@@ -517,6 +518,58 @@ static int send_memory_live(struct xc_sr_context *ctx)
     return rc;
 }
 
+static int colo_merge_secondary_dirty_bitmap(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_record rec;
+    uint64_t *pfns = NULL;
+    uint64_t pfn;
+    unsigned count, i;
+    int rc;
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    rc = read_record(ctx, ctx->save.recv_fd, &rec);
+    if ( rc )
+        goto err;
+
+    if ( rec.type != REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST )
+    {
+        PERROR("Expect dirty bitmap record, but received %u", rec.type );
+        rc = -1;
+        goto err;
+    }
+
+    if ( rec.length % sizeof(*pfns) )
+    {
+        PERROR("Invalid dirty pfn list record length %u", rec.length );
+        rc = -1;
+        goto err;
+    }
+
+    count = rec.length / sizeof(*pfns);
+    pfns = rec.data;
+
+    for ( i = 0; i < count; i++ )
+    {
+        pfn = pfns[i];
+        if (pfn > ctx->save.p2m_size)
+        {
+            PERROR("Invalid pfn 0x%" PRIx64, pfn);
+            rc = -1;
+            goto err;
+        }
+
+        set_bit(pfn, dirty_bitmap);
+    }
+
+    rc = 0;
+
+ err:
+    free(rec.data);
+    return rc;
+}
+
 /*
  * Suspend the domain and send dirty memory.
  * This is the last iteration of the live migration and the
@@ -557,6 +610,16 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
         xc_set_progress_prefix(xch, "Checkpointed save");
 
     bitmap_or(dirty_bitmap, ctx->save.deferred_pages, ctx->save.p2m_size);
+
+    if ( !ctx->save.live && ctx->save.checkpointed == XC_MIG_STREAM_COLO )
+    {
+        rc = colo_merge_secondary_dirty_bitmap(ctx);
+        if ( rc )
+        {
+            PERROR("Failed to get secondary vm's dirty pages");
+            goto out;
+        }
+    }
 
     rc = send_dirty_pages(ctx, stats.dirty_count + ctx->save.nr_deferred_pages);
     if ( rc )
@@ -791,13 +854,39 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
             if ( rc )
                 goto err;
 
+            if ( ctx->save.checkpointed == XC_MIG_STREAM_COLO )
+            {
+                rc = ctx->save.callbacks->checkpoint(ctx->save.callbacks->data);
+                if ( !rc )
+                {
+                    rc = -1;
+                    goto err;
+                }
+            }
+
             rc = ctx->save.callbacks->postcopy(ctx->save.callbacks->data);
             if ( rc <= 0 )
                 goto err;
 
-            rc = ctx->save.callbacks->checkpoint(ctx->save.callbacks->data);
-            if ( rc <= 0 )
+            if ( ctx->save.checkpointed == XC_MIG_STREAM_COLO )
+            {
+                rc = ctx->save.callbacks->wait_checkpoint(
+                    ctx->save.callbacks->data);
+                if ( rc <= 0 )
+                    goto err;
+            }
+            else if ( ctx->save.checkpointed == XC_MIG_STREAM_REMUS )
+            {
+                rc = ctx->save.callbacks->checkpoint(ctx->save.callbacks->data);
+                if ( rc <= 0 )
+                    goto err;
+            }
+            else
+            {
+                ERROR("Unknown checkpointed stream");
+                rc = -1;
                 goto err;
+            }
         }
     } while ( ctx->save.checkpointed != XC_MIG_STREAM_NONE );
 
@@ -830,7 +919,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
 int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
                    uint32_t max_iters, uint32_t max_factor, uint32_t flags,
                    struct save_callbacks* callbacks, int hvm,
-                   xc_migration_stream_t stream_type)
+                   xc_migration_stream_t stream_type, int recv_fd)
 {
     struct xc_sr_context ctx =
         {
@@ -843,10 +932,12 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.save.live  = !!(flags & XCFLAGS_LIVE);
     ctx.save.debug = !!(flags & XCFLAGS_DEBUG);
     ctx.save.checkpointed = stream_type;
+    ctx.save.recv_fd = recv_fd;
 
     /* If altering migration_stream update this assert too. */
     assert(stream_type == XC_MIG_STREAM_NONE ||
-           stream_type == XC_MIG_STREAM_REMUS);
+           stream_type == XC_MIG_STREAM_REMUS ||
+           stream_type == XC_MIG_STREAM_COLO);
 
     /*
      * TODO: Find some time to better tweak the live migration algorithm.
@@ -862,6 +953,8 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
         assert(callbacks->switch_qemu_logdirty);
     if ( ctx.save.checkpointed )
         assert(callbacks->checkpoint && callbacks->postcopy);
+    if ( ctx.save.checkpointed == XC_MIG_STREAM_COLO )
+        assert(callbacks->wait_checkpoint);
 
     DPRINTF("fd %d, dom %u, max_iters %u, max_factor %u, flags %u, hvm %d",
             io_fd, dom, max_iters, max_factor, flags, hvm);

@@ -13,6 +13,7 @@
 #include <xen/nmi.h>
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
+#include <xsm/xsm.h>
 #include <asm/current.h>
 #include <public/nmi.h>
 #include <public/version.h>
@@ -220,12 +221,55 @@ void __init do_initcalls(void)
 
 #endif
 
+static int get_features(struct domain *d, xen_feature_info_t *fi)
+{
+    switch ( fi->submap_idx )
+    {
+    case 0:
+        fi->submap = (1U << XENFEAT_memory_op_vnode_supported);
+        if ( paging_mode_translate(d) )
+            fi->submap |=
+                (1U << XENFEAT_writable_page_tables) |
+                (1U << XENFEAT_auto_translated_physmap);
+        if ( is_hardware_domain(d) )
+            fi->submap |= 1U << XENFEAT_dom0;
+#ifdef CONFIG_X86
+        if ( VM_ASSIST(d, pae_extended_cr3) )
+            fi->submap |= (1U << XENFEAT_pae_pgdir_above_4gb);
+        switch ( d->guest_type )
+        {
+        case guest_type_pv:
+            fi->submap |= (1U << XENFEAT_mmu_pt_update_preserve_ad) |
+                          (1U << XENFEAT_highmem_assist) |
+                          (1U << XENFEAT_gnttab_map_avail_bits);
+            break;
+        case guest_type_pvh:
+            fi->submap |= (1U << XENFEAT_hvm_safe_pvclock) |
+                          (1U << XENFEAT_supervisor_mode_kernel) |
+                          (1U << XENFEAT_hvm_callback_vector);
+            break;
+        case guest_type_hvm:
+            fi->submap |= (1U << XENFEAT_hvm_safe_pvclock) |
+                          (1U << XENFEAT_hvm_callback_vector) |
+                          (1U << XENFEAT_hvm_pirqs);
+           break;
+        }
+#endif
+        break;
+    default:
+        return -EINVAL;
+    }
+    return 0;
+}
+
 /*
  * Simple hypercalls.
  */
 
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
+    bool_t deny = !!xsm_xen_version(XSM_OTHER, cmd);
+
     switch ( cmd )
     {
     case XENVER_version:
@@ -236,7 +280,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         xen_extraversion_t extraversion;
 
         memset(extraversion, 0, sizeof(extraversion));
-        safe_strcpy(extraversion, xen_extra_version());
+        safe_strcpy(extraversion, deny ? xen_deny() : xen_extra_version());
         if ( copy_to_guest(arg, extraversion, ARRAY_SIZE(extraversion)) )
             return -EFAULT;
         return 0;
@@ -247,10 +291,10 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         xen_compile_info_t info;
 
         memset(&info, 0, sizeof(info));
-        safe_strcpy(info.compiler,       xen_compiler());
-        safe_strcpy(info.compile_by,     xen_compile_by());
-        safe_strcpy(info.compile_domain, xen_compile_domain());
-        safe_strcpy(info.compile_date,   xen_compile_date());
+        safe_strcpy(info.compiler,       deny ? xen_deny() : xen_compiler());
+        safe_strcpy(info.compile_by,     deny ? xen_deny() : xen_compile_by());
+        safe_strcpy(info.compile_domain, deny ? xen_deny() : xen_compile_domain());
+        safe_strcpy(info.compile_date,   deny ? xen_deny() : xen_compile_date());
         if ( copy_to_guest(arg, &info, 1) )
             return -EFAULT;
         return 0;
@@ -261,7 +305,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         xen_capabilities_info_t info;
 
         memset(info, 0, sizeof(info));
-        arch_get_xen_caps(&info);
+        if ( !deny )
+            arch_get_xen_caps(&info);
 
         if ( copy_to_guest(arg, info, ARRAY_SIZE(info)) )
             return -EFAULT;
@@ -285,7 +330,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         xen_changeset_info_t chgset;
 
         memset(chgset, 0, sizeof(chgset));
-        safe_strcpy(chgset, xen_changeset());
+        safe_strcpy(chgset, deny ? xen_deny() : xen_changeset());
         if ( copy_to_guest(arg, chgset, ARRAY_SIZE(chgset)) )
             return -EFAULT;
         return 0;
@@ -294,47 +339,14 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENVER_get_features:
     {
         xen_feature_info_t fi;
-        struct domain *d = current->domain;
+        int rc;
 
         if ( copy_from_guest(&fi, arg, 1) )
             return -EFAULT;
 
-        switch ( fi.submap_idx )
-        {
-        case 0:
-            fi.submap = (1U << XENFEAT_memory_op_vnode_supported);
-            if ( VM_ASSIST(d, pae_extended_cr3) )
-                fi.submap |= (1U << XENFEAT_pae_pgdir_above_4gb);
-            if ( paging_mode_translate(d) )
-                fi.submap |= 
-                    (1U << XENFEAT_writable_page_tables) |
-                    (1U << XENFEAT_auto_translated_physmap);
-            if ( is_hardware_domain(d) )
-                fi.submap |= 1U << XENFEAT_dom0;
-#ifdef CONFIG_X86
-            switch ( d->guest_type )
-            {
-            case guest_type_pv:
-                fi.submap |= (1U << XENFEAT_mmu_pt_update_preserve_ad) |
-                             (1U << XENFEAT_highmem_assist) |
-                             (1U << XENFEAT_gnttab_map_avail_bits);
-                break;
-            case guest_type_pvh:
-                fi.submap |= (1U << XENFEAT_hvm_safe_pvclock) |
-                             (1U << XENFEAT_supervisor_mode_kernel) |
-                             (1U << XENFEAT_hvm_callback_vector);
-                break;
-            case guest_type_hvm:
-                fi.submap |= (1U << XENFEAT_hvm_safe_pvclock) |
-                             (1U << XENFEAT_hvm_callback_vector) |
-                             (1U << XENFEAT_hvm_pirqs);
-                break;
-            }
-#endif
-            break;
-        default:
-            return -EINVAL;
-        }
+        rc = get_features(current->domain, &fi);
+        if ( rc )
+            return rc;
 
         if ( __copy_to_guest(arg, &fi, 1) )
             return -EFAULT;
@@ -342,21 +354,155 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     }
 
     case XENVER_pagesize:
+        if ( deny )
+            return 0;
         return (!guest_handle_is_null(arg) ? -EINVAL : PAGE_SIZE);
 
     case XENVER_guest_handle:
-        if ( copy_to_guest(arg, current->domain->handle,
-                           ARRAY_SIZE(current->domain->handle)) )
-            return -EFAULT;
-        return 0;
+    {
+        xen_domain_handle_t hdl;
 
-    case XENVER_commandline:
-        if ( copy_to_guest(arg, saved_cmdline, ARRAY_SIZE(saved_cmdline)) )
+        if ( deny )
+            memset(&hdl, 0, ARRAY_SIZE(hdl));
+
+        BUILD_BUG_ON(ARRAY_SIZE(current->domain->handle) != ARRAY_SIZE(hdl));
+
+        if ( copy_to_guest(arg, deny ? hdl : current->domain->handle,
+                           ARRAY_SIZE(hdl) ) )
             return -EFAULT;
         return 0;
     }
 
+    case XENVER_commandline:
+    {
+        size_t len = ARRAY_SIZE(saved_cmdline);
+
+        if ( deny )
+            len = strlen(xen_deny()) + 1;
+
+        if ( copy_to_guest(arg, deny ? xen_deny() : saved_cmdline, len) )
+            return -EFAULT;
+        return 0;
+    }
+    }
+
     return -ENOSYS;
+}
+
+/* Computed by capabilities_cache_init. */
+static xen_capabilities_info_t __read_mostly cached_cap;
+static unsigned int __read_mostly cached_cap_len;
+
+/*
+ * Similar to HYPERVISOR_xen_version but with a sane interface
+ * (has a length, one can probe for the length) and with one less sub-ops:
+ * missing XENVER_compile_info.
+ */
+DO(version_op)(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) arg,
+               unsigned int len)
+{
+    union {
+        xen_version_op_val_t val;
+        xen_feature_info_t fi;
+    } u = {};
+    unsigned int sz = 0;
+    const void *ptr = NULL;
+    int rc = xsm_version_op(XSM_OTHER, cmd);
+
+    if ( rc )
+        return rc;
+
+    /*
+     * The HYPERVISOR_xen_version sub-ops differ in that some return the value,
+     * and some copy it on back on argument. We follow the same rule for all
+     * sub-ops: return the number of bytes written, or negative errno on
+     * failure, and always copy the result in arg. Yeey sanity!
+     */
+    switch ( cmd )
+    {
+    case XEN_VERSION_version:
+        sz = sizeof(xen_version_op_val_t);
+        u.val = (xen_major_version() << 16) | xen_minor_version();
+        break;
+
+    case XEN_VERSION_extraversion:
+        sz = strlen(xen_extra_version()) + 1;
+        ptr = xen_extra_version();
+        break;
+
+    case XEN_VERSION_capabilities:
+        sz = cached_cap_len;
+        ptr = cached_cap;
+        break;
+
+    case XEN_VERSION_changeset:
+        sz = strlen(xen_changeset()) + 1;
+        ptr = xen_changeset();
+        break;
+
+    case XEN_VERSION_platform_parameters:
+        sz = sizeof(xen_version_op_val_t);
+        u.val = HYPERVISOR_VIRT_START;
+        break;
+
+    case XEN_VERSION_get_features:
+        sz = sizeof(xen_feature_info_t);
+
+        if ( guest_handle_is_null(arg) )
+            break;
+
+        if ( copy_from_guest(&u.fi, arg, 1) )
+        {
+            rc = -EFAULT;
+            break;
+        }
+        rc = get_features(current->domain, &u.fi);
+        break;
+
+    case XEN_VERSION_pagesize:
+        sz = sizeof(xen_version_op_val_t);
+        u.val = PAGE_SIZE;
+        break;
+
+    case XEN_VERSION_guest_handle:
+        sz = ARRAY_SIZE(current->domain->handle);
+        ptr = current->domain->handle;
+        break;
+
+    case XEN_VERSION_commandline:
+        sz = strlen(saved_cmdline) + 1;
+        ptr = saved_cmdline;
+        break;
+
+    default:
+        rc = -ENOSYS;
+    }
+
+    if ( rc )
+        return rc;
+
+    /*
+     * This hypercall also allows the client to probe. If it provides
+     * a NULL arg we will return the size of the space it has to
+     * allocate for the specific sub-op.
+     */
+    ASSERT(sz);
+    if ( guest_handle_is_null(arg) )
+        return sz;
+
+    if ( !rc )
+    {
+        unsigned int bytes = min(sz, len);
+
+        if ( copy_to_guest(arg, ptr ? : &u, bytes) )
+            rc = -EFAULT;
+
+        /* We return len (truncate) worth of data even if we fail. */
+        if ( !rc && sz > len )
+            rc = -ENOBUFS;
+    }
+
+    return rc == 0 ? sz : rc;
 }
 
 DO(nmi_op)(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
@@ -395,6 +541,20 @@ DO(ni_hypercall)(void)
     /* No-op hypercall. */
     return -ENOSYS;
 }
+
+static int __init capabilities_cache_init(void)
+{
+    /*
+     * Pre-populate the cache so we do not have to worry about
+     * simultaneous invocations on safe_strcat by guests and the cache
+     * data becoming garbage.
+     */
+    arch_get_xen_caps(&cached_cap);
+    cached_cap_len = strlen(cached_cap) + 1;
+
+    return 0;
+}
+__initcall(capabilities_cache_init);
 
 /*
  * Local variables:

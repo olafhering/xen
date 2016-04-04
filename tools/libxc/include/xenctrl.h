@@ -27,6 +27,7 @@
 #define __XEN_TOOLS__ 1
 #endif
 
+#include <unistd.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -564,6 +565,56 @@ int xc_domain_destroy(xc_interface *xch,
 /**
  * This function resumes a suspended domain. The domain should have
  * been previously suspended.
+ *
+ * Note that there are 'xc_domain_suspend' as suspending a domain
+ * is quite the endeavour.
+ *
+ * For the purpose of this explanation there are three guests:
+ * PV (using hypercalls for privilgied operations), HVM
+ * (fully hardware virtualized guests using emulated devices for everything),
+ * and PVHVM (PV aware with hardware virtualisation).
+ *
+ * HVM guest are the simplest - they suspend via S3 / S4 and resume from
+ * S3 / S4. Upon resume they have to re-negotiate with the emulated devices.
+ *
+ * PV and PVHVM communicate via hypercalls for suspend (and resume).
+ * For suspend the toolstack initiates the process by writing an value
+ * in XenBus "control/shutdown" with the string "suspend".
+ *
+ * The PV guest stashes anything it deems neccessary in 'struct
+ * start_info' in case of failure (PVHVM may ignore this) and calls
+ * the SCHEDOP_shutdown::SHUTDOWN_suspend hypercall (for PV as
+ * argument it passes the MFN to 'struct start_info').
+ *
+ * And then the guest is suspended.
+ *
+ * The checkpointing or notifying a guest that the suspend failed or
+ * cancelled (in case of checkpoint) is by having the
+ * SCHEDOP_shutdown::SHUTDOWN_suspend hypercall return a non-zero
+ * value.
+ *
+ * The PV and PVHVM resume path are similar. For PV it would be
+ * similar to bootup - figure out where the 'struct start_info' is (or
+ * if the suspend was cancelled aka checkpointed - reuse the saved
+ * values).
+ *
+ * From here on they differ depending whether the guest is PV or PVHVM
+ * in specifics but follow overall the same path:
+ *  - PV: Bringing up the vCPUS,
+ *  - PVHVM: Setup vector callback,
+ *  - Bring up vCPU runstates,
+ *  - Remap the grant tables if checkpointing or setup from scratch,
+ *
+ *
+ * If the resume was not checkpointing (or if suspend was succesful) we would
+ * setup the PV timers and the different PV events. Lastly the PV drivers
+ * re-negotiate with the backend.
+ *
+ * This function would return before the guest started resuming. That is
+ * the guest would be in non-running state and its vCPU context would be
+ * in the the SCHEDOP_shutdown::SHUTDOWN_suspend hypercall return path
+ * (for PV and PVHVM). For HVM it would be in would be in QEMU emulated
+ * BIOS handling S3 suspend.
  *
  * @parm xch a handle to an open hypervisor interface
  * @parm domid the domain id to resume
@@ -1477,7 +1528,37 @@ int xc_tbuf_set_evt_mask(xc_interface *xch, uint32_t mask);
 int xc_domctl(xc_interface *xch, struct xen_domctl *domctl);
 int xc_sysctl(xc_interface *xch, struct xen_sysctl *sysctl);
 
-int xc_version(xc_interface *xch, int cmd, void *arg);
+/**
+ * This function returns the size of buffer to be allocated for
+ * the cmd. The cmd are XEN_VERSION_*.
+ */
+ssize_t xc_version_len(xc_interface *xch, unsigned int cmd);
+
+/**
+ * This function retrieves the information from the version_op hypercall.
+ * The len is the size of the arg buffer. If arg is NULL, will not
+ * perform hypercall - instead will just return the size of arg
+ * buffer that is needed.
+ *
+ * Note that prior to Xen 4.7 this would return 0 for success and
+ * negative value (-1) for error (with the error in errno). In Xen 4.7
+ * and later for success it will return an positive value which is the
+ * number of bytes copied in arg.
+ *
+ * It can also return -1 with various errno values:
+ *  - EPERM - not permitted.
+ *  - ENOBUFS - the len was to short, output in arg truncated.
+ *  - ENOSYS - not implemented.
+ *
+ * @parm xch a handle to an open hypervisor interface
+ * @parm cmd XEN_VERSION_* value
+ * @param arg Pointer to xen_version_op_buf_t or xen_version_op_val_t
+ * @param len Size of arg
+ * @return size of bytes copied in arg on success, -1 on failure (and
+ * errno will contain the error)
+ *
+ */
+int xc_version(xc_interface *xch, unsigned int cmd, void *arg, size_t len);
 
 int xc_flask_op(xc_interface *xch, xen_flask_op_t *op);
 

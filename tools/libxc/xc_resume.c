@@ -56,7 +56,8 @@ static int modify_returncode(xc_interface *xch, uint32_t domid)
             return 0;
 
         /* HVM guests have host address width. */
-        if ( xc_version(xch, XENVER_capabilities, &caps) != 0 )
+        if ( xc_version(xch, XEN_VERSION_capabilities, caps,
+                        sizeof(caps)) < 0 )
         {
             PERROR("Could not get Xen capabilities");
             return -1;
@@ -108,6 +109,28 @@ static int xc_domain_resume_cooperative(xc_interface *xch, uint32_t domid)
     return do_domctl(xch, &domctl);
 }
 
+#if defined(__i386__) || defined(__x86_64__)
+static int xc_domain_resume_hvm(xc_interface *xch, uint32_t domid)
+{
+    DECLARE_DOMCTL;
+
+    /*
+     * The domctl XEN_DOMCTL_resumedomain unpause each vcpu. After
+     * the domctl, the guest will run.
+     *
+     * If it is PVHVM, the guest called the hypercall
+     *    SCHEDOP_shutdown:SHUTDOWN_suspend
+     * to suspend itself. We don't modify the return code, so the PV driver
+     * will disconnect and reconnect.
+     *
+     * If it is a HVM, the guest will continue running.
+     */
+    domctl.cmd = XEN_DOMCTL_resumedomain;
+    domctl.domain = domid;
+    return do_domctl(xch, &domctl);
+}
+#endif
+
 static int xc_domain_resume_any(xc_interface *xch, uint32_t domid)
 {
     DECLARE_DOMCTL;
@@ -137,10 +160,7 @@ static int xc_domain_resume_any(xc_interface *xch, uint32_t domid)
      */
 #if defined(__i386__) || defined(__x86_64__)
     if ( info.hvm )
-    {
-        ERROR("Cannot resume uncooperative HVM guests");
-        return rc;
-    }
+        return xc_domain_resume_hvm(xch, domid);
 
     if ( xc_domain_get_guest_width(xch, domid, &dinfo->guest_width) != 0 )
     {

@@ -184,6 +184,8 @@ struct xc_sr_context
     {
         struct /* Save data. */
         {
+            int recv_fd;
+
             struct xc_sr_save_ops ops;
             struct save_callbacks *callbacks;
 
@@ -214,6 +216,10 @@ struct xc_sr_context
             struct xc_sr_restore_ops ops;
             struct restore_callbacks *callbacks;
 
+            int send_back_fd;
+            unsigned long p2m_size;
+            xc_hypercall_buffer_t dirty_bitmap_hbuf;
+
             /* From Image Header. */
             uint32_t format_version;
 
@@ -222,13 +228,13 @@ struct xc_sr_context
             uint32_t guest_page_size;
 
             /* Plain VM, or checkpoints over time. */
-            bool checkpointed;
+            int checkpointed;
 
             /* Currently buffering records between a checkpoint */
             bool buffer_all_records;
 
 /*
- * With Remus, we buffer the records sent by the primary at checkpoint,
+ * With Remus/COLO, we buffer the records sent by the primary at checkpoint,
  * in case the primary will fail, we can recover from the last
  * checkpoint state.
  * This should be enough for most of the cases because primary only send
@@ -370,6 +376,20 @@ static inline int write_record(struct xc_sr_context *ctx,
 {
     return write_split_record(ctx, rec, NULL, 0);
 }
+
+/*
+ * Reads a record from the stream, and fills in the record structure.
+ *
+ * Returns 0 on success and non-0 on failure.
+ *
+ * On success, the records type and size shall be valid.
+ * - If size is 0, data shall be NULL.
+ * - If size is non-0, data shall be a buffer allocated by malloc() which must
+ *   be passed to free() by the caller.
+ *
+ * On failure, the contents of the record structure are undefined.
+ */
+int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 
 /*
  * This would ideally be private in restore.c, but is needed by

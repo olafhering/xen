@@ -119,95 +119,6 @@ let do_getperms con t domains cons data =
 	let perms = Transaction.getperms t (Connection.get_perm con) path in
 	Perms.Node.to_string perms ^ "\000"
 
-let do_watch con t rid domains cons data =
-	let (node, token) = 
-		match (split None '\000' data) with
-		| [node; token; ""]   -> node, token
-		| _                   -> raise Invalid_Cmd_Args
-		in
-	let watch = Connections.add_watch cons con node token in
-	Connection.send_ack con (Transaction.get_id t) rid Xenbus.Xb.Op.Watch;
-	Connection.fire_single_watch watch
-
-let do_unwatch con t domains cons data =
-	let (node, token) =
-		match (split None '\000' data) with
-		| [node; token; ""]   -> node, token
-		| _                   -> raise Invalid_Cmd_Args
-		in
-	Connections.del_watch cons con node token
-
-let do_transaction_start con t domains cons data =
-	if Transaction.get_id t <> Transaction.none then
-		raise Transaction_nested;
-	let store = Transaction.get_store t in
-	string_of_int (Connection.start_transaction con store) ^ "\000"
-
-let do_transaction_end con t domains cons data =
-	let commit =
-		match (split None '\000' data) with
-		| "T" :: _ -> true
-		| "F" :: _ -> false
-		| x :: _   -> raise (Invalid_argument x)
-		| _        -> raise Invalid_Cmd_Args
-		in
-	let success =
-		Connection.end_transaction con (Transaction.get_id t) commit in
-	if not success then
-		raise Transaction_again;
-	if commit then
-		process_watch (List.rev (Transaction.get_ops t)) cons
-
-let do_introduce con t domains cons data =
-	if not (Connection.is_dom0 con)
-	then raise Define.Permission_denied;
-	let (domid, mfn, port) =
-		match (split None '\000' data) with
-		| domid :: mfn :: port :: _ ->
-			int_of_string domid, Nativeint.of_string mfn, int_of_string port
-		| _                         -> raise Invalid_Cmd_Args;
-		in
-	let dom =
-		if Domains.exist domains domid then
-			Domains.find domains domid
-		else try
-			let ndom = Xenctrl.with_intf (fun xc ->
-				Domains.create xc domains domid mfn port) in
-			Connections.add_domain cons ndom;
-			Connections.fire_spec_watches cons "@introduceDomain";
-			ndom
-		with _ -> raise Invalid_Cmd_Args
-	in
-	if (Domain.get_remote_port dom) <> port || (Domain.get_mfn dom) <> mfn then
-		raise Domain_not_match
-
-let do_release con t domains cons data =
-	if not (Connection.is_dom0 con)
-	then raise Define.Permission_denied;
-	let domid =
-		match (split None '\000' data) with
-		| [domid;""] -> int_of_string domid
-		| _          -> raise Invalid_Cmd_Args
-		in
-	let fire_spec_watches = Domains.exist domains domid in
-	Domains.del domains domid;
-	Connections.del_domain cons domid;
-	if fire_spec_watches 
-	then Connections.fire_spec_watches cons "@releaseDomain"
-	else raise Invalid_Cmd_Args
-
-let do_resume con t domains cons data =
-	if not (Connection.is_dom0 con)
-	then raise Define.Permission_denied;
-	let domid =
-		match (split None '\000' data) with
-		| domid :: _ -> int_of_string domid
-		| _          -> raise Invalid_Cmd_Args
-		in
-	if Domains.exist domains domid
-	then Domains.resume domains domid
-	else raise Invalid_Cmd_Args
-
 let do_getdomainpath con t domains cons data =
 	let domid =
 		match (split None '\000' data) with
@@ -289,55 +200,69 @@ let do_set_target con t domains cons data =
 		| _                           -> raise Invalid_Cmd_Args
 
 (*------------- Generic handling of ty ------------------*)
-let reply_ack fct ty con t rid doms cons data =
+let send_response ty con t rid response =
+	match response with
+	| Packet.Ack f ->
+		Connection.send_ack con (Transaction.get_id t) rid ty;
+		(* Now do any necessary follow-up actions *)
+		f ()
+	| Packet.Reply ret ->
+		Connection.send_reply con (Transaction.get_id t) rid ty ret
+	| Packet.Error e ->
+		Connection.send_error con (Transaction.get_id t) rid e
+
+let reply_ack fct con t doms cons data =
 	fct con t doms cons data;
-	Connection.send_ack con (Transaction.get_id t) rid ty;
-	if Transaction.get_id t = Transaction.none then
-		process_watch (Transaction.get_ops t) cons
+	Packet.Ack (fun () ->
+		if Transaction.get_id t = Transaction.none then
+			process_watch (Transaction.get_paths t) cons
+	)
 
-let reply_data fct ty con t rid doms cons data =
+let reply_data fct con t doms cons data =
 	let ret = fct con t doms cons data in
-	Connection.send_reply con (Transaction.get_id t) rid ty ret
+	Packet.Reply ret
 
-let reply_data_or_ack fct ty con t rid doms cons data =
+let reply_data_or_ack fct con t doms cons data =
 	match fct con t doms cons data with
-		| Some ret -> Connection.send_reply con (Transaction.get_id t) rid ty ret
-		| None -> Connection.send_ack con (Transaction.get_id t) rid ty
+		| Some ret -> Packet.Reply ret
+		| None -> Packet.Ack (fun () -> ())
 
-let reply_none fct ty con t rid doms cons data =
+let reply_none fct con t doms cons data =
 	(* let the function reply *)
-	fct con t rid doms cons data
+	fct con t doms cons data
 
-let function_of_type ty =
+(* Functions for 'simple' operations that cannot be part of a transaction *)
+let function_of_type_simple_op ty =
 	match ty with
-	| Xenbus.Xb.Op.Debug             -> reply_data_or_ack do_debug
+	| Xenbus.Xb.Op.Debug
+	| Xenbus.Xb.Op.Watch
+	| Xenbus.Xb.Op.Unwatch
+	| Xenbus.Xb.Op.Transaction_start
+	| Xenbus.Xb.Op.Transaction_end
+	| Xenbus.Xb.Op.Introduce
+	| Xenbus.Xb.Op.Release
+	| Xenbus.Xb.Op.Isintroduced
+	| Xenbus.Xb.Op.Resume
+	| Xenbus.Xb.Op.Set_target
+	| Xenbus.Xb.Op.Restrict
+	| Xenbus.Xb.Op.Reset_watches
+	| Xenbus.Xb.Op.Invalid           -> error "called function_of_type_simple_op on operation %s" (Xenbus.Xb.Op.to_string ty);
+	                                    raise (Invalid_argument (Xenbus.Xb.Op.to_string ty))
 	| Xenbus.Xb.Op.Directory         -> reply_data do_directory
 	| Xenbus.Xb.Op.Read              -> reply_data do_read
 	| Xenbus.Xb.Op.Getperms          -> reply_data do_getperms
-	| Xenbus.Xb.Op.Watch             -> reply_none do_watch
-	| Xenbus.Xb.Op.Unwatch           -> reply_ack do_unwatch
-	| Xenbus.Xb.Op.Transaction_start -> reply_data do_transaction_start
-	| Xenbus.Xb.Op.Transaction_end   -> reply_ack do_transaction_end
-	| Xenbus.Xb.Op.Introduce         -> reply_ack do_introduce
-	| Xenbus.Xb.Op.Release           -> reply_ack do_release
 	| Xenbus.Xb.Op.Getdomainpath     -> reply_data do_getdomainpath
 	| Xenbus.Xb.Op.Write             -> reply_ack do_write
 	| Xenbus.Xb.Op.Mkdir             -> reply_ack do_mkdir
 	| Xenbus.Xb.Op.Rm                -> reply_ack do_rm
 	| Xenbus.Xb.Op.Setperms          -> reply_ack do_setperms
-	| Xenbus.Xb.Op.Isintroduced      -> reply_data do_isintroduced
-	| Xenbus.Xb.Op.Resume            -> reply_ack do_resume
-	| Xenbus.Xb.Op.Set_target        -> reply_ack do_set_target
-	| Xenbus.Xb.Op.Restrict          -> reply_ack do_restrict
-	| Xenbus.Xb.Op.Reset_watches     -> reply_ack do_reset_watches
-	| Xenbus.Xb.Op.Invalid           -> reply_ack do_error
 	| _                              -> reply_ack do_error
 
-let input_handle_error ~cons ~doms ~fct ~ty ~con ~t ~rid ~data =
+let input_handle_error ~cons ~doms ~fct ~con ~t ~req =
 	let reply_error e =
-		Connection.send_error con (Transaction.get_id t) rid e in
+		Packet.Error e in
 	try
-		fct ty con t rid doms cons data
+		fct con t doms cons req.Packet.data
 	with
 	| Define.Invalid_path          -> reply_error "EINVAL"
 	| Define.Already_exist         -> reply_error "EEXIST"
@@ -356,10 +281,165 @@ let input_handle_error ~cons ~doms ~fct ~ty ~con ~t ~rid ~data =
 	| (Failure "int_of_string")    -> reply_error "EINVAL"
 	| Define.Unknown_operation     -> reply_error "ENOSYS"
 
+let write_access_log ~ty ~tid ~con ~data =
+	Logging.xb_op ~ty ~tid ~con data
+
+let write_answer_log ~ty ~tid ~con ~data =
+	Logging.xb_answer ~ty ~tid ~con data
+
+let write_response_log ~ty ~tid ~con ~response =
+	match response with
+	| Packet.Ack _   -> write_answer_log ~ty ~tid ~con ~data:""
+	| Packet.Reply x -> write_answer_log ~ty ~tid ~con ~data:x
+	| Packet.Error e -> write_answer_log ~ty:(Xenbus.Xb.Op.Error) ~tid ~con ~data:e
+
+(* Replay a stored transaction against a fresh store, check the responses are
+   all equivalent: if so, commit the transaction. Otherwise send the abort to
+   the client. *)
+let transaction_replay c t doms cons =
+	match t.Transaction.ty with
+	| Transaction.No ->
+		error "attempted to replay a non-full transaction";
+		false
+	| Transaction.Full(id, oldroot, cstore) ->
+		let tid = Connection.start_transaction c cstore in
+		let new_t = Transaction.make tid cstore in
+		let con = sprintf "r(%d):%s" id (Connection.get_domstr c) in
+		let perform_exn (request, response) =
+			write_access_log ~ty:request.Packet.ty ~tid ~con ~data:request.Packet.data;
+			let fct = function_of_type_simple_op request.Packet.ty in
+			let response' = input_handle_error ~cons ~doms ~fct ~con:c ~t:new_t ~req:request in
+			write_response_log ~ty:request.Packet.ty ~tid ~con ~response:response';
+			if not(Packet.response_equal response response') then raise Transaction_again in
+		finally
+		(fun () ->
+			try
+				Logging.start_transaction ~con ~tid;
+				List.iter perform_exn (Transaction.get_operations t);
+				Logging.end_transaction ~con ~tid;
+
+				Transaction.commit ~con new_t
+			with e ->
+				info "transaction_replay %d caught: %s" tid (Printexc.to_string e);
+				false
+			)
+		(fun () ->
+			Connection.end_transaction c tid None
+		)
+
+let do_watch con t domains cons data =
+	let (node, token) = 
+		match (split None '\000' data) with
+		| [node; token; ""]   -> node, token
+		| _                   -> raise Invalid_Cmd_Args
+		in
+	let watch = Connections.add_watch cons con node token in
+	Packet.Ack (fun () -> Connection.fire_single_watch watch)
+
+let do_unwatch con t domains cons data =
+	let (node, token) =
+		match (split None '\000' data) with
+		| [node; token; ""]   -> node, token
+		| _                   -> raise Invalid_Cmd_Args
+		in
+	Connections.del_watch cons con node token
+
+let do_transaction_start con t domains cons data =
+	if Transaction.get_id t <> Transaction.none then
+		raise Transaction_nested;
+	let store = Transaction.get_store t in
+	string_of_int (Connection.start_transaction con store) ^ "\000"
+
+let do_transaction_end con t domains cons data =
+	let commit =
+		match (split None '\000' data) with
+		| "T" :: _ -> true
+		| "F" :: _ -> false
+		| x :: _   -> raise (Invalid_argument x)
+		| _        -> raise Invalid_Cmd_Args
+		in
+	let success =
+		let commit = if commit then Some (fun con trans -> transaction_replay con trans domains cons) else None in
+		Connection.end_transaction con (Transaction.get_id t) commit in
+	if not success then
+		raise Transaction_again;
+	if commit then
+		process_watch (List.rev (Transaction.get_paths t)) cons
+
+let do_introduce con t domains cons data =
+	if not (Connection.is_dom0 con)
+	then raise Define.Permission_denied;
+	let (domid, mfn, port) =
+		match (split None '\000' data) with
+		| domid :: mfn :: port :: _ ->
+			int_of_string domid, Nativeint.of_string mfn, int_of_string port
+		| _                         -> raise Invalid_Cmd_Args;
+		in
+	let dom =
+		if Domains.exist domains domid then
+			Domains.find domains domid
+		else try
+			let ndom = Xenctrl.with_intf (fun xc ->
+				Domains.create xc domains domid mfn port) in
+			Connections.add_domain cons ndom;
+			Connections.fire_spec_watches cons "@introduceDomain";
+			ndom
+		with _ -> raise Invalid_Cmd_Args
+	in
+	if (Domain.get_remote_port dom) <> port || (Domain.get_mfn dom) <> mfn then
+		raise Domain_not_match
+
+let do_release con t domains cons data =
+	if not (Connection.is_dom0 con)
+	then raise Define.Permission_denied;
+	let domid =
+		match (split None '\000' data) with
+		| [domid;""] -> int_of_string domid
+		| _          -> raise Invalid_Cmd_Args
+		in
+	let fire_spec_watches = Domains.exist domains domid in
+	Domains.del domains domid;
+	Connections.del_domain cons domid;
+	if fire_spec_watches 
+	then Connections.fire_spec_watches cons "@releaseDomain"
+	else raise Invalid_Cmd_Args
+
+let do_resume con t domains cons data =
+	if not (Connection.is_dom0 con)
+	then raise Define.Permission_denied;
+	let domid =
+		match (split None '\000' data) with
+		| domid :: _ -> int_of_string domid
+		| _          -> raise Invalid_Cmd_Args
+		in
+	if Domains.exist domains domid
+	then Domains.resume domains domid
+	else raise Invalid_Cmd_Args
+
+let function_of_type ty =
+	match ty with
+	| Xenbus.Xb.Op.Debug             -> reply_data_or_ack do_debug
+	| Xenbus.Xb.Op.Watch             -> reply_none do_watch
+	| Xenbus.Xb.Op.Unwatch           -> reply_ack do_unwatch
+	| Xenbus.Xb.Op.Transaction_start -> reply_data do_transaction_start
+	| Xenbus.Xb.Op.Transaction_end   -> reply_ack do_transaction_end
+	| Xenbus.Xb.Op.Introduce         -> reply_ack do_introduce
+	| Xenbus.Xb.Op.Release           -> reply_ack do_release
+	| Xenbus.Xb.Op.Isintroduced      -> reply_data do_isintroduced
+	| Xenbus.Xb.Op.Resume            -> reply_ack do_resume
+	| Xenbus.Xb.Op.Set_target        -> reply_ack do_set_target
+	| Xenbus.Xb.Op.Restrict          -> reply_ack do_restrict
+	| Xenbus.Xb.Op.Reset_watches     -> reply_ack do_reset_watches
+	| Xenbus.Xb.Op.Invalid           -> reply_ack do_error
+	| _                              -> function_of_type_simple_op ty
+
 (**
  * Nothrow guarantee.
  *)
-let process_packet ~store ~cons ~doms ~con ~tid ~rid ~ty ~data =
+let process_packet ~store ~cons ~doms ~con ~req =
+	let ty = req.Packet.ty in
+	let tid = req.Packet.tid in
+	let rid = req.Packet.rid in
 	try
 		let fct = function_of_type ty in
 		let t =
@@ -368,16 +448,22 @@ let process_packet ~store ~cons ~doms ~con ~tid ~rid ~ty ~data =
 			else
 				Connection.get_transaction con tid
 			in
-		input_handle_error ~cons ~doms ~fct ~ty ~con ~t ~rid ~data;
+		let response = input_handle_error ~cons ~doms ~fct ~con ~t ~req in
+
+		let response = try
+			if tid <> Transaction.none then
+				(* Remember the request and response for this operation in case we need to replay the transaction *)
+				Transaction.add_operation ~perm:(Connection.get_perm con) t req response;
+			response
+		with Quota.Limit_reached ->
+			Packet.Error "EQUOTA"
+		in
+
+		(* Put the response on the wire *)
+		send_response ty con t rid response
 	with exn ->
 		error "process packet: %s" (Printexc.to_string exn);
 		Connection.send_error con tid rid "EIO"
-
-let write_access_log ~ty ~tid ~con ~data =
-	Logging.xb_op ~ty ~tid ~con:(Connection.get_domstr con) data
-
-let write_answer_log ~ty ~tid ~con ~data =
-	Logging.xb_answer ~ty ~tid ~con:(Connection.get_domstr con) data
 
 let do_input store cons doms con =
 	let newpacket =
@@ -398,12 +484,14 @@ let do_input store cons doms con =
 	if newpacket then (
 		let packet = Connection.pop_in con in
 		let tid, rid, ty, data = Xenbus.Xb.Packet.unpack packet in
+		let req = {Packet.tid=tid; Packet.rid=rid; Packet.ty=ty; Packet.data=data} in
+
 		(* As we don't log IO, do not call an unnecessary sanitize_data 
 		   info "[%s] -> [%d] %s \"%s\""
 		         (Connection.get_domstr con) tid
 		         (Xenbus.Xb.Op.to_string ty) (sanitize_data data); *)
-		process_packet ~store ~cons ~doms ~con ~tid ~rid ~ty ~data;
-		write_access_log ~ty ~tid ~con ~data;
+		process_packet ~store ~cons ~doms ~con ~req;
+		write_access_log ~ty ~tid ~con:(Connection.get_domstr con) ~data;
 		Connection.incr_ops con;
 	)
 
@@ -416,7 +504,7 @@ let do_output store cons doms con =
 			   info "[%s] <- %s \"%s\""
 			         (Connection.get_domstr con)
 			         (Xenbus.Xb.Op.to_string ty) (sanitize_data data);*)
-			write_answer_log ~ty ~tid ~con ~data;
+			write_answer_log ~ty ~tid ~con:(Connection.get_domstr con) ~data;
 		);
 		try
 			ignore (Connection.do_output con)
