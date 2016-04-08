@@ -117,27 +117,34 @@ static bool vscsi_fill_dev(libxl__gc *gc,
 }
 
 static bool vscsi_fill_ctrl(libxl__gc *gc,
+                            uint32_t tgt_domid,
                             xs_transaction_t t,
                             const char *fe_path,
                             const char *dir,
                             libxl_device_vscsictrl *ctrl)
 {
     libxl_device_vscsidev dev;
-    char *tmp, *be_path, *devs_path;
+    char *tmp, *devs_path;
+    const char *be_path;
     char **dev_dirs;
     unsigned int ndev_dirs, dev_dir;
+    uint32_t be_domid, fe_domid;
+    char be_type[16];
+    int r;
     bool ok;
 
     ctrl->devid = atoi(dir);
 
-    be_path = libxl__xs_read(gc, t, GCSPRINTF("%s/%s/backend", fe_path, dir));
-    if (!be_path)
+    tmp = GCSPRINTF("%s/%s/backend", fe_path, dir);
+    r = libxl__xs_read_checked(gc, t, tmp, &be_path);
+    if (r || !be_path)
         goto out;
 
-    tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/%s/backend-id", fe_path, dir));
-    if (!tmp)
+    r = sscanf(be_path, "/local/domain/%u/backend/%15[^/]/%u",
+               &be_domid, be_type, &fe_domid);
+    if (r != 3 || fe_domid != tgt_domid)
         goto out;
-    ctrl->backend_domid = atoi(tmp);
+    ctrl->backend_domid = be_domid;
 
     tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/idx", be_path));
     if (!tmp)
@@ -205,7 +212,7 @@ static int vscsi_collect_ctrls(libxl__gc *gc,
             libxl_device_vscsictrl_init(*ctrls + dir);
 
             libxl_device_vscsictrl_init(&ctrl);
-            if (vscsi_fill_ctrl(gc, t, fe_path, dirs[dir], &ctrl)) {
+            if (vscsi_fill_ctrl(gc, domid, t, fe_path, dirs[dir], &ctrl)) {
                 libxl_device_vscsictrl_copy(CTX, *ctrls + *num, &ctrl);
                 (*num)++;
             }
