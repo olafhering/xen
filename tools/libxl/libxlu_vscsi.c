@@ -465,7 +465,8 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str,
                        libxl_device_vscsictrl *ctrl,
                        libxl_device_vscsidev *dev,
-                       libxl_device_vscsictrl **existing)
+                       libxl_device_vscsictrl *existing,
+                       bool *found_existing)
 {
     libxl_device_vscsictrl *vscsictrls = NULL, *tmp;
     int rc, found_ctrl = -1, i;
@@ -488,8 +489,9 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
     }
 
     if (found_ctrl == -1) {
-        *existing = NULL;
+        *found_existing = false;
     } else {
+        *found_existing = true;
         tmp = vscsictrls + found_ctrl;
 
         /* Check if the vdev address is already taken */
@@ -515,7 +517,7 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
             goto out;
         }
 
-        libxl_device_vscsictrl_copy(ctx, *existing, tmp);
+        libxl_device_vscsictrl_copy(ctx, existing, tmp);
     }
 
     rc = 0;
@@ -631,7 +633,8 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str,
                        libxl_device_vscsictrl *ctrl,
                        libxl_device_vscsidev *dev,
-                       libxl_device_vscsictrl **existing)
+                       libxl_device_vscsictrl *existing,
+                       bool *found_existing)
 {
     return ERROR_INVAL;
 }

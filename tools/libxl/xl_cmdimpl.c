@@ -7423,8 +7423,9 @@ int main_vscsiattach(int argc, char **argv)
     uint32_t domid;
     int opt, rc;
     XLU_Config *config = NULL;
-    libxl_device_vscsictrl ctrl, *existing = NULL;
+    libxl_device_vscsictrl ctrl, existing;
     libxl_device_vscsidev dev;
+    bool found_existing = false;
     char *str = NULL, *feat_buf = NULL;
     char *json;
 
@@ -7457,8 +7458,7 @@ int main_vscsiattach(int argc, char **argv)
         goto out;;
     }
 
-    existing = xmalloc(sizeof(*existing));
-    libxl_device_vscsictrl_init(existing);
+    libxl_device_vscsictrl_init(&existing);
     libxl_device_vscsictrl_init(&ctrl);
     libxl_device_vscsidev_init(&dev);
 
@@ -7470,13 +7470,14 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Parse config string and store result */
-    rc = xlu_vscsi_get_ctrl(config, ctx, domid, str, &ctrl, &dev, &existing);
+    rc = xlu_vscsi_get_ctrl(config, ctx, domid, str, &ctrl, &dev, &existing, &found_existing);
     if (rc < 0)
         goto out;
 
     if (dryrun_only) {
-        libxl_device_vscsictrl_append_vscsidev(ctx, existing ? : &ctrl, &dev);
-        json = libxl_device_vscsictrl_to_json(ctx, existing ? : &ctrl);
+        libxl_device_vscsictrl *tmp = found_existing ? &existing : &ctrl;
+        libxl_device_vscsictrl_append_vscsidev(ctx, tmp , &dev);
+        json = libxl_device_vscsictrl_to_json(ctx, tmp);
         printf("vscsi: %s\n", json);
         free(json);
         if (ferror(stdout) || fflush(stdout)) { perror("stdout"); exit(-1); }
@@ -7485,7 +7486,7 @@ int main_vscsiattach(int argc, char **argv)
     }
 
     /* Finally add the device */
-    if (existing) {
+    if (found_existing) {
         if (libxl_device_vscsidev_add(ctx, domid, &dev, NULL)) {
             fprintf(stderr, "libxl_device_vscsidev_add failed\n");
             rc = 1;
@@ -7504,10 +7505,9 @@ int main_vscsiattach(int argc, char **argv)
 out:
     if (config)
         xlu_cfg_destroy(config);
-    libxl_device_vscsictrl_dispose(existing);
+    libxl_device_vscsictrl_dispose(&existing);
     libxl_device_vscsictrl_dispose(&ctrl);
     libxl_device_vscsidev_dispose(&dev);
-    free(existing);
     free(str);
     free(feat_buf);
     return rc;

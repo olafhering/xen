@@ -123,7 +123,8 @@ int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
                        const char *str,
                        libxl_device_vscsictrl *ctrl,
                        libxl_device_vscsidev *dev,
-                       libxl_device_vscsictrl **existing);
+                       libxl_device_vscsictrl *existing,
+                       bool *found_existing);
 /* Parse config string and fill provided vscsi ctrl and vscsi device */
 int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
                     libxl_device_vscsictrl *new_ctrl,
