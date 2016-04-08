@@ -1111,8 +1111,8 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     domcreate_stream_done(egc, &dcs->srs, rc);
 }
 
-void libxl__srm_callout_callback_restore_results(unsigned long store_mfn,
-          unsigned long console_mfn, void *user)
+void libxl__srm_callout_callback_restore_results(xen_pfn_t store_mfn,
+          xen_pfn_t console_mfn, void *user)
 {
     libxl__save_helper_state *shs = user;
     libxl__domain_create_state *dcs = shs->caller_state;
@@ -1364,7 +1364,6 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
     }
     case LIBXL_DOMAIN_TYPE_PV:
     {
-        int need_qemu = 0;
         libxl__device_console console;
         libxl__device device;
 
@@ -1374,17 +1373,14 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         }
 
         init_console_info(gc, &console, 0);
-
-        need_qemu = libxl__need_xenpv_qemu(gc, 1, &console,
-                d_config->num_vfbs, d_config->vfbs,
-                d_config->num_disks, &d_config->disks[0],
-                d_config->num_channels, &d_config->channels[0]);
-
         console.backend_domid = state->console_domid;
         libxl__device_console_add(gc, domid, &console, state, &device);
         libxl__device_console_dispose(&console);
 
-        if (need_qemu) {
+        ret = libxl__need_xenpv_qemu(gc, d_config);
+        if (ret < 0)
+            goto error_out;
+        if (ret) {
             dcs->dmss.dm.guest_domid = domid;
             libxl__spawn_local_dm(egc, &dcs->dmss.dm);
             return;

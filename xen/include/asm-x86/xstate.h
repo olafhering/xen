@@ -44,11 +44,13 @@
 #define XSTATE_NONLAZY (XSTATE_LWP | XSTATE_BNDREGS | XSTATE_BNDCSR | \
                         XSTATE_PKRU)
 #define XSTATE_LAZY    (XSTATE_ALL & ~XSTATE_NONLAZY)
+#define XSTATE_XSAVES_ONLY         0
 #define XSTATE_COMPACTION_ENABLED  (1ULL << 63)
 
 #define XSTATE_ALIGN64 (1U << 1)
 
 extern u64 xfeature_mask;
+extern u64 xstate_align;
 extern unsigned int *xstate_sizes;
 
 /* extended state save area */

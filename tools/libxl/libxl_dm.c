@@ -761,7 +761,7 @@ enum {
     LIBXL__COLO_SECONDARY,
 };
 
-static char *qemu_disk_scsi_drive_string(libxl__gc *gc, const char *pdev_path,
+static char *qemu_disk_scsi_drive_string(libxl__gc *gc, const char *target_path,
                                          int unit, const char *format,
                                          const libxl_device_disk *disk,
                                          int colo_mode)
@@ -775,14 +775,14 @@ static char *qemu_disk_scsi_drive_string(libxl__gc *gc, const char *pdev_path,
     case LIBXL__COLO_NONE:
         drive = libxl__sprintf
             (gc, "file=%s,if=scsi,bus=0,unit=%d,format=%s,cache=writeback",
-             pdev_path, unit, format);
+             target_path, unit, format);
         break;
     case LIBXL__COLO_PRIMARY:
         /*
          * primary:
          *  -dirve if=scsi,bus=0,unit=x,cache=writeback,driver=quorum,\
          *  id=exportname,\
-         *  children.0.file.filename=pdev_path,\
+         *  children.0.file.filename=target_path,\
          *  children.0.driver=format,\
          *  read-pattern=fifo,\
          *  vote-threshold=1
@@ -794,7 +794,7 @@ static char *qemu_disk_scsi_drive_string(libxl__gc *gc, const char *pdev_path,
             "children.0.driver=%s,"
             "read-pattern=fifo,"
             "vote-threshold=1",
-            unit, exportname, pdev_path, format);
+            unit, exportname, target_path, format);
         break;
     case LIBXL__COLO_SECONDARY:
         /*
@@ -816,14 +816,15 @@ static char *qemu_disk_scsi_drive_string(libxl__gc *gc, const char *pdev_path,
             "file.backing.file.filename=%s,"
             "file.backing.backing=%s",
             unit, active_disk, hidden_disk, exportname);
+        break;
     default:
-         abort();
+        abort();
     }
 
     return drive;
 }
 
-static char *qemu_disk_ide_drive_string(libxl__gc *gc, const char *pdev_path,
+static char *qemu_disk_ide_drive_string(libxl__gc *gc, const char *target_path,
                                         int unit, const char *format,
                                         const libxl_device_disk *disk,
                                         int colo_mode)
@@ -837,14 +838,14 @@ static char *qemu_disk_ide_drive_string(libxl__gc *gc, const char *pdev_path,
     case LIBXL__COLO_NONE:
         drive = GCSPRINTF
             ("file=%s,if=ide,index=%d,media=disk,format=%s,cache=writeback",
-             pdev_path, unit, format);
+             target_path, unit, format);
         break;
     case LIBXL__COLO_PRIMARY:
         /*
          * primary:
          *  -dirve if=ide,index=x,media=disk,cache=writeback,driver=quorum,\
          *  id=exportname,\
-         *  children.0.file.filename=pdev_path,\
+         *  children.0.file.filename=target_path,\
          *  children.0.driver=format,\
          *  read-pattern=fifo,\
          *  vote-threshold=1
@@ -856,7 +857,7 @@ static char *qemu_disk_ide_drive_string(libxl__gc *gc, const char *pdev_path,
             "children.0.driver=%s,"
             "read-pattern=fifo,"
             "vote-threshold=1",
-             unit, exportname, pdev_path, format);
+             unit, exportname, target_path, format);
         break;
     case LIBXL__COLO_SECONDARY:
         /*
@@ -1305,9 +1306,9 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
             int disk, part;
             int dev_number =
                 libxl__device_disk_dev_number(disks[i].vdev, &disk, &part);
-            const char *format = qemu_disk_format_string(disks[i].format);
+            const char *format;
             char *drive;
-            const char *pdev_path;
+            const char *target_path = NULL;
             int colo_mode;
 
             if (dev_number == -1) {
@@ -1316,37 +1317,64 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                 continue;
             }
 
-            if (disks[i].is_cdrom) {
-                if (disks[i].format == LIBXL_DISK_FORMAT_EMPTY)
-                    drive = libxl__sprintf
-                        (gc, "if=ide,index=%d,readonly=%s,media=cdrom,cache=writeback,id=ide-%i",
-                         disk, disks[i].readwrite ? "off" : "on", dev_number);
-                else
-                    drive = libxl__sprintf
-                        (gc, "file=%s,if=ide,index=%d,readonly=%s,media=cdrom,format=%s,cache=writeback,id=ide-%i",
-                         disks[i].pdev_path, disk, disks[i].readwrite ? "off" : "on", format, dev_number);
-            } else {
-                if (disks[i].format == LIBXL_DISK_FORMAT_EMPTY) {
-                    LOG(WARN, "cannot support"" empty disk format for %s",
+            /* 
+             * If qemu isn't doing the interpreting, the parameter is
+             * always raw
+             */
+            if (disks[i].backend == LIBXL_DISK_BACKEND_QDISK)
+                format = qemu_disk_format_string(disks[i].format);
+            else
+                format = qemu_disk_format_string(LIBXL_DISK_FORMAT_RAW);
+
+            if (disks[i].format == LIBXL_DISK_FORMAT_EMPTY) {
+                if (!disks[i].is_cdrom) {
+                    LOG(WARN, "Cannot support empty disk format for %s",
                         disks[i].vdev);
                     continue;
                 }
-
+            } else {
                 if (format == NULL) {
                     LOG(WARN,
-                        "unable to determine"" disk image format %s",
+                        "Unable to determine disk image format: %s\n"
+                        "Disk will be available via PV drivers but not as an"
+                        "emulated disk.",
                         disks[i].vdev);
                     continue;
                 }
 
-                if (disks[i].backend == LIBXL_DISK_BACKEND_TAP) {
-                    format = qemu_disk_format_string(LIBXL_DISK_FORMAT_RAW);
-                    pdev_path = libxl__blktap_devpath(gc, disks[i].pdev_path,
-                                                      disks[i].format);
-                } else {
-                    pdev_path = disks[i].pdev_path;
-                }
+                /* 
+                 * We can't call libxl__blktap_devpath from
+                 * libxl__device_disk_find_local_path for now because
+                 * the bootloader is called before the disks are set
+                 * up, so this function would set up a blktap node,
+                 * but there's no TAP tear-down on error conditions in
+                 * the bootloader path.
+                 */
+                if (disks[i].backend == LIBXL_DISK_BACKEND_TAP)
+                    target_path = libxl__blktap_devpath(gc, disks[i].pdev_path,
+                                                        disks[i].format);
+                else
+                    target_path = libxl__device_disk_find_local_path(gc,
+                                                 guest_domid, &disks[i], true);
 
+                if (!target_path) {
+                    LOG(WARN, "No way to get local access disk to image: %s\n"
+                        "Disk will be available via PV drivers but not as an"
+                        "emulated disk.",
+                        disks[i].vdev);
+                    continue;
+                }
+            }
+
+            if (disks[i].is_cdrom) {
+                drive = libxl__sprintf(gc,
+                         "if=ide,index=%d,readonly=%s,media=cdrom,cache=writeback,id=ide-%i",
+                         disk, disks[i].readwrite ? "off" : "on", dev_number);
+
+                if (target_path)
+                    drive = libxl__sprintf(gc, "%s,file=%s,format=%s",
+                                           drive, target_path, format);
+            } else {
                 /*
                  * Explicit sd disks are passed through as is.
                  *
@@ -1367,12 +1395,12 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                     if (colo_mode == LIBXL__COLO_SECONDARY) {
                         drive = libxl__sprintf
                             (gc, "if=none,driver=%s,file=%s,id=%s",
-                             format, pdev_path, disks[i].colo_export);
+                             format, target_path, disks[i].colo_export);
 
                         flexarray_append(dm_args, "-drive");
                         flexarray_append(dm_args, drive);
                     }
-                    drive = qemu_disk_scsi_drive_string(gc, pdev_path, disk,
+                    drive = qemu_disk_scsi_drive_string(gc, target_path, disk,
                                                         format,
                                                         &disks[i],
                                                         colo_mode);
@@ -1389,7 +1417,7 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                     }
                     flexarray_vappend(dm_args, "-drive",
                         GCSPRINTF("file=%s,if=none,id=ahcidisk-%d,format=%s,cache=writeback",
-                        pdev_path, disk, format),
+                        target_path, disk, format),
                         "-device", GCSPRINTF("ide-hd,bus=ahci0.%d,unit=0,drive=ahcidisk-%d",
                         disk, disk), NULL);
                     continue;
@@ -1401,12 +1429,12 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                     if (colo_mode == LIBXL__COLO_SECONDARY) {
                         drive = libxl__sprintf
                             (gc, "if=none,driver=%s,file=%s,id=%s",
-                             format, pdev_path, disks[i].colo_export);
+                             format, target_path, disks[i].colo_export);
 
                         flexarray_append(dm_args, "-drive");
                         flexarray_append(dm_args, drive);
                     }
-                    drive = qemu_disk_ide_drive_string(gc, pdev_path, disk,
+                    drive = qemu_disk_ide_drive_string(gc, target_path, disk,
                                                        format,
                                                        &disks[i],
                                                        colo_mode);
@@ -2090,6 +2118,25 @@ out:
         device_model_spawn_outcome(egc, dmss, rc);
 }
 
+bool libxl__query_qemu_backend(libxl__gc *gc, uint32_t domid,
+                               uint32_t backend_id, const char *type, bool def)
+{
+    char *path;
+    char **dir;
+    unsigned int n;
+
+    path = GCSPRINTF("%s/device-model/%u/backends",
+                     libxl__xs_get_dompath(gc, backend_id), domid);
+    dir = libxl__xs_directory(gc, XBT_NULL, path, &n);
+    if (!dir)
+        return def;
+
+    path = GCSPRINTF("%s/device-model/%u/backends/%s",
+                     libxl__xs_get_dompath(gc, backend_id), domid, type);
+    dir = libxl__xs_directory(gc, XBT_NULL, path, &n);
+
+    return !!dir;
+}
 
 static void device_model_confirm(libxl__egc *egc, libxl__spawn_state *spawn,
                                  const char *xsdata)
@@ -2283,66 +2330,83 @@ int libxl__destroy_device_model(libxl__gc *gc, uint32_t domid)
                 GCSPRINTF("/local/domain/%d/image/device-model-pid", domid));
 }
 
-int libxl__need_xenpv_qemu(libxl__gc *gc,
-        int nr_consoles, libxl__device_console *consoles,
-        int nr_vfbs, libxl_device_vfb *vfbs,
-        int nr_disks, libxl_device_disk *disks,
-        int nr_channels, libxl_device_channel *channels)
+/* Return 0 if no dm needed, 1 if needed and <0 if error. */
+int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
 {
-    int i, ret = 0;
+    int i, ret;
     uint32_t domid;
 
-    /*
-     * qemu is required in order to support 2 or more consoles. So switch all
-     * backends to qemu if this is the case
-     */
-    if (nr_consoles > 1) {
-        for (i = 0; i < nr_consoles; i++)
-            consoles[i].consback = LIBXL__CONSOLE_BACKEND_IOEMU;
+    ret = libxl__get_domid(gc, &domid);
+    if (ret) {
+        LOG(ERROR, "unable to get domain id");
+        goto out;
+    }
+
+    if (d_config->num_vfbs > 0) {
         ret = 1;
         goto out;
     }
 
-    for (i = 0; i < nr_consoles; i++) {
-        if (consoles[i].consback == LIBXL__CONSOLE_BACKEND_IOEMU) {
+    for (i = 0; i < d_config->num_disks; i++) {
+        if (d_config->disks[i].backend == LIBXL_DISK_BACKEND_QDISK &&
+            d_config->disks[i].backend_domid == domid) {
             ret = 1;
             goto out;
         }
     }
 
-    if (nr_vfbs > 0) {
-        ret = 1;
-        goto out;
-    }
-
-    if (nr_disks > 0) {
-        ret = libxl__get_domid(gc, &domid);
-        if (ret) goto out;
-        for (i = 0; i < nr_disks; i++) {
-            if (disks[i].backend == LIBXL_DISK_BACKEND_QDISK &&
-                disks[i].backend_domid == domid) {
-                ret = 1;
-                goto out;
-            }
+    for (i = 0; i < d_config->num_channels; i++) {
+        if (d_config->channels[i].backend_domid == domid) {
+            /* xenconsoled is limited to the first console only.
+               Until this restriction is removed we must use qemu for
+               secondary consoles which includes all channels. */
+            ret = 1;
+            goto out;
         }
     }
 
-    if (nr_channels > 0) {
-        ret = libxl__get_domid(gc, &domid);
-        if (ret) goto out;
-        for (i = 0; i < nr_channels; i++) {
-            if (channels[i].backend_domid == domid) {
-                /* xenconsoled is limited to the first console only.
-                   Until this restriction is removed we must use qemu for
-                   secondary consoles which includes all channels. */
-                ret = 1;
-                goto out;
-            }
+    for (i = 0; i < d_config->num_usbctrls; i++) {
+       if (d_config->usbctrls[i].type == LIBXL_USBCTRL_TYPE_QUSB &&
+           d_config->usbctrls[i].backend_domid == domid) {
+            ret = 1;
+            goto out;
         }
     }
 
 out:
     return ret;
+}
+
+int libxl__dm_active(libxl__gc *gc, uint32_t domid)
+{
+    char *pid, *path;
+
+    path = GCSPRINTF("/local/domain/%d/image/device-model-pid", domid);
+    pid = libxl__xs_read(gc, XBT_NULL, path);
+
+    return pid != NULL;
+}
+
+int libxl__dm_check_start(libxl__gc *gc, libxl_domain_config *d_config,
+                          uint32_t domid)
+{
+    int rc;
+
+    if (libxl__dm_active(gc, domid))
+        return 0;
+
+    rc = libxl__need_xenpv_qemu(gc, d_config);
+    if (rc < 0)
+        goto out;
+
+    if (!rc)
+        return 0;
+
+    LOG(ERROR, "device model required but not running");
+    rc = ERROR_FAIL;
+
+out:
+    return rc;
 }
 
 /*

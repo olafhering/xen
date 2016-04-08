@@ -87,8 +87,6 @@
 #include "_libxl_types_internal.h"
 #include "_libxl_types_internal_json.h"
 
-#include "libxl_colo.h"
-
 #define LIBXL_INIT_TIMEOUT 10
 #define LIBXL_DESTROY_TIMEOUT 10
 #define LIBXL_HOTPLUG_TIMEOUT 40
@@ -183,6 +181,17 @@ typedef struct libxl__ao libxl__ao;
 typedef struct libxl__aop_occurred libxl__aop_occurred;
 typedef struct libxl__osevent_hook_nexus libxl__osevent_hook_nexus;
 typedef struct libxl__osevent_hook_nexi libxl__osevent_hook_nexi;
+
+typedef struct libxl__domain_create_state libxl__domain_create_state;
+typedef void libxl__domain_create_cb(struct libxl__egc *egc,
+                                     libxl__domain_create_state *dcs,
+                                     int rc, uint32_t domid);
+
+typedef struct libxl__colo_device_nic libxl__colo_device_nic;
+typedef struct libxl__colo_qdisk libxl__colo_qdisk;
+typedef struct libxl__colo_proxy_state libxl__colo_proxy_state;
+typedef struct libxl__colo_save_state libxl__colo_save_state;
+typedef struct libxl__colo_restore_state libxl__colo_restore_state;
 
 _hidden void libxl__alloc_failed(libxl_ctx *, const char *func,
                          size_t nmemb, size_t size) __attribute__((noreturn));
@@ -489,6 +498,7 @@ typedef struct {
 #define QEMU_BACKEND(dev) (\
     (dev)->backend_kind == LIBXL__DEVICE_KIND_QDISK || \
     (dev)->backend_kind == LIBXL__DEVICE_KIND_VFB || \
+    (dev)->backend_kind == LIBXL__DEVICE_KIND_QUSB || \
     (dev)->backend_kind == LIBXL__DEVICE_KIND_VKBD)
 
 #define XC_PCI_BDF             "0x%x, 0x%x, 0x%x, 0x%x"
@@ -1158,6 +1168,7 @@ _hidden int libxl__device_disk_set_backend(libxl__gc*, libxl_device_disk*);
 _hidden int libxl__device_physdisk_major_minor(const char *physpath, int *major, int *minor);
 _hidden int libxl__device_disk_dev_number(const char *virtpath,
                                           int *pdisk, int *ppartition);
+_hidden char *libxl__devid_to_vdev(libxl__gc *gc, int devid);
 
 _hidden int libxl__device_console_add(libxl__gc *gc, uint32_t domid,
                                       libxl__device_console *console,
@@ -1618,10 +1629,16 @@ _hidden int libxl__domain_build(libxl__gc *gc,
 _hidden const char *libxl__domain_device_model(libxl__gc *gc,
                                         const libxl_domain_build_info *info);
 _hidden int libxl__need_xenpv_qemu(libxl__gc *gc,
-        int nr_consoles, libxl__device_console *consoles,
-        int nr_vfbs, libxl_device_vfb *vfbs,
-        int nr_disks, libxl_device_disk *disks,
-        int nr_channels, libxl_device_channel *channels);
+                                   libxl_domain_config *d_config);
+_hidden bool libxl__query_qemu_backend(libxl__gc *gc,
+                                       uint32_t domid,
+                                       uint32_t backend_id,
+                                       const char *type,
+                                       bool def);
+_hidden int libxl__dm_active(libxl__gc *gc, uint32_t domid);
+_hidden int libxl__dm_check_start(libxl__gc *gc,
+                                  libxl_domain_config *d_config,
+                                  uint32_t domid);
 
 /*
  * This function will fix reserved device memory conflict
@@ -1714,7 +1731,7 @@ _hidden char *libxl__blktap_devpath(libxl__gc *gc,
 _hidden int libxl__device_destroy_tapdisk(libxl__gc *gc, const char *params);
 
 _hidden int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
-                                   libxl_device_disk *disk,
+                                   const libxl_device_disk *disk,
                                    libxl__device *device);
 
 /* Calls poll() again - useful to check whether a signaled condition
@@ -2720,6 +2737,15 @@ static inline void libxl__device_disk_local_init(libxl__disk_local_state *dls)
     dls->rc = 0;
 }
 
+/* 
+ * See if we can find a way to access a disk locally
+ */
+_hidden char * libxl__device_disk_find_local_path(libxl__gc *gc, 
+                                                  libxl_domid guest_domid,
+                                                  const libxl_device_disk *disk,
+                                                  bool qdisk_direct);
+
+
 /* Make a disk available in this (the control) domain. Always calls
  * dls->callback when finished.
  * State Idle -> Attaching
@@ -3129,6 +3155,7 @@ libxl__stream_read_inuse(const libxl__stream_read_state *stream)
     return stream->running;
 }
 
+#include "libxl_colo.h"
 
 /*----- Domain suspend (save) state structure -----*/
 /*
@@ -3204,28 +3231,6 @@ libxl__stream_write_inuse(const libxl__stream_write_state *stream)
 {
     return stream->running;
 }
-
-/*----- colo related state structure -----*/
-typedef struct libxl__colo_save_state libxl__colo_save_state;
-struct libxl__colo_save_state {
-    int send_fd;
-    int recv_fd;
-    char *colo_proxy_script;
-
-    /* private */
-    libxl__stream_read_state srs;
-    void (*callback)(libxl__egc *, libxl__colo_save_state *, int);
-    bool svm_running;
-    bool paused;
-
-    /* private, used by qdisk block replication */
-    bool qdisk_used;
-    bool qdisk_setuped;
-
-    /* private, used by colo-proxy */
-    libxl__colo_proxy_state cps;
-    libxl__ev_child child;
-};
 
 typedef struct libxl__logdirty_switch {
     /* Set by caller of libxl__domain_common_switch_qemu_logdirty */

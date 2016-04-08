@@ -23,6 +23,7 @@
 #include <xen/errno.h>
 #include <xen/keyhandler.h>
 #include <xen/trace.h>
+#include <xen/err.h>
 
 
 /*
@@ -526,21 +527,27 @@ static void *
 csched_alloc_pdata(const struct scheduler *ops, int cpu)
 {
     struct csched_pcpu *spc;
-    struct csched_private *prv = CSCHED_PRIV(ops);
-    unsigned long flags;
 
     /* Allocate per-PCPU info */
     spc = xzalloc(struct csched_pcpu);
     if ( spc == NULL )
-        return NULL;
+        return ERR_PTR(-ENOMEM);
 
     if ( !alloc_cpumask_var(&spc->balance_mask) )
     {
         xfree(spc);
-        return NULL;
+        return ERR_PTR(-ENOMEM);
     }
 
-    spin_lock_irqsave(&prv->lock, flags);
+    return spc;
+}
+
+static void
+init_pdata(struct csched_private *prv, struct csched_pcpu *spc, int cpu)
+{
+    ASSERT(spin_is_locked(&prv->lock));
+    /* cpu data needs to be allocated, but STILL uninitialized. */
+    ASSERT(spc && spc->runq.next == NULL && spc->runq.prev == NULL);
 
     /* Initialize/update system-wide config */
     prv->credit += prv->credits_per_tslice;
@@ -560,16 +567,21 @@ csched_alloc_pdata(const struct scheduler *ops, int cpu)
     INIT_LIST_HEAD(&spc->runq);
     spc->runq_sort_last = prv->runq_sort;
     spc->idle_bias = nr_cpu_ids - 1;
-    if ( per_cpu(schedule_data, cpu).sched_priv == NULL )
-        per_cpu(schedule_data, cpu).sched_priv = spc;
 
     /* Start off idling... */
     BUG_ON(!is_idle_vcpu(curr_on_cpu(cpu)));
     cpumask_set_cpu(cpu, prv->idlers);
+}
 
+static void
+csched_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
+{
+    unsigned long flags;
+    struct csched_private *prv = CSCHED_PRIV(ops);
+
+    spin_lock_irqsave(&prv->lock, flags);
+    init_pdata(prv, pdata, cpu);
     spin_unlock_irqrestore(&prv->lock, flags);
-
-    return spc;
 }
 
 #ifndef NDEBUG
@@ -1075,6 +1087,7 @@ csched_dom_cntl(
     struct csched_dom * const sdom = CSCHED_DOM(d);
     struct csched_private *prv = CSCHED_PRIV(ops);
     unsigned long flags;
+    int rc = 0;
 
     /* Protect both get and put branches with the pluggable scheduler
      * lock. Runq lock not needed anywhere in here. */
@@ -1101,12 +1114,13 @@ csched_dom_cntl(
             sdom->cap = op->u.credit.cap;
         break;
     default:
-        return -EINVAL;
+        rc = -EINVAL;
+        break;
     }
 
     spin_unlock_irqrestore(&prv->lock, flags);
 
-    return 0;
+    return rc;
 }
 
 static inline void
@@ -2051,6 +2065,7 @@ static const struct scheduler sched_credit_def = {
     .alloc_vdata    = csched_alloc_vdata,
     .free_vdata     = csched_free_vdata,
     .alloc_pdata    = csched_alloc_pdata,
+    .init_pdata     = csched_init_pdata,
     .free_pdata     = csched_free_pdata,
     .alloc_domdata  = csched_alloc_domdata,
     .free_domdata   = csched_free_domdata,

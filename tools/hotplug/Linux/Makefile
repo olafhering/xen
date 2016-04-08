@@ -18,7 +18,7 @@ XEN_SCRIPTS += vif-nat
 XEN_SCRIPTS += vif-openvswitch
 XEN_SCRIPTS += vif2
 XEN_SCRIPTS += vif-setup
-XEN_SCRIPTS-$(CONFIG_REMUS_NETBUF) += remus-netbuf-setup
+XEN_SCRIPTS-$(CONFIG_LIBNL) += remus-netbuf-setup
 XEN_SCRIPTS += block
 XEN_SCRIPTS += block-enbd block-nbd
 XEN_SCRIPTS += xen-hotplug-cleanup
@@ -27,6 +27,7 @@ XEN_SCRIPTS += vscsi
 XEN_SCRIPTS += block-iscsi
 XEN_SCRIPTS += block-tap
 XEN_SCRIPTS += block-drbd-probe
+XEN_SCRIPTS += block-dummy
 XEN_SCRIPTS += $(XEN_SCRIPTS-y)
 XEN_SCRIPTS += colo-proxy-setup
 

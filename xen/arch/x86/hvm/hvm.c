@@ -621,6 +621,8 @@ int hvm_domain_initialise(struct domain *d)
 
     register_dpci_portio_handler(d);
 
+    hvm_ioreq_init(d);
+
     if ( is_pvh_domain(d) )
     {
         register_portio_handler(d, 0, 0x10003, handle_pvh_io);
@@ -644,8 +646,6 @@ int hvm_domain_initialise(struct domain *d)
     msixtbl_init(d);
 
     register_portio_handler(d, 0xe9, 1, hvm_print_line);
-
-    hvm_ioreq_init(d);
 
     if ( hvm_tsc_scaling_supported )
         d->arch.hvm_domain.tsc_scaling_ratio = hvm_default_tsc_scaling_ratio;
@@ -1157,9 +1157,8 @@ static int hvm_load_cpu_ctxt(struct domain *d, hvm_domain_context_t *h)
         xsave_area->xsave_hdr.xstate_bv = 0;
         xsave_area->fpu_sse.mxcsr = MXCSR_DEFAULT;
     }
-    if ( cpu_has_xsaves && xsave_area )
-        xsave_area->xsave_hdr.xcomp_bv = XSTATE_COMPACTION_ENABLED |
-            xsave_area->xsave_hdr.xstate_bv;
+    if ( xsave_area )
+        xsave_area->xsave_hdr.xcomp_bv = 0;
 
     v->arch.user_regs.eax = ctxt.rax;
     v->arch.user_regs.ebx = ctxt.rbx;
@@ -3433,14 +3432,18 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
         }
         if ( count == 1 )
         {
-            if ( cpu_has_xsaves && cpu_has_vmx_xsaves )
+            uint64_t xfeatures = v->arch.xcr0 | v->arch.hvm_vcpu.msr_xss;
+            if ( cpu_has_xsaves && cpu_has_vmx_xsaves && xfeatures )
             {
                 *ebx = XSTATE_AREA_MIN_SIZE;
-                if ( v->arch.xcr0 | v->arch.hvm_vcpu.msr_xss )
+                if ( xfeatures & ~XSTATE_FP_SSE )
                     for ( sub_leaf = 2; sub_leaf < 63; sub_leaf++ )
-                        if ( (v->arch.xcr0 | v->arch.hvm_vcpu.msr_xss) &
-                             (1ULL << sub_leaf) )
+                        if ( xfeatures & (1ULL << sub_leaf) )
+                        {
+                            if ( test_bit(sub_leaf, &xstate_align) )
+                                *ebx = ROUNDUP(*ebx, 64);
                             *ebx += xstate_sizes[sub_leaf];
+                        }
             }
             else
                 *ebx = *ecx = *edx = 0;
@@ -4273,8 +4276,7 @@ void hvm_vcpu_reset_state(struct vcpu *v, uint16_t cs, uint16_t ip)
     if ( v->arch.xsave_area )
     {
         v->arch.xsave_area->xsave_hdr.xstate_bv = XSTATE_FP;
-        v->arch.xsave_area->xsave_hdr.xcomp_bv = cpu_has_xsaves
-            ? XSTATE_COMPACTION_ENABLED | XSTATE_FP : 0;
+        v->arch.xsave_area->xsave_hdr.xcomp_bv = 0;
     }
 
     v->arch.vgc_flags = VGCF_online;

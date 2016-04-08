@@ -21,7 +21,7 @@ endif
 
 LIBXL_LIBS =
 LIBXL_LIBS = $(LDLIBS_libxentoollog) $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(LDLIBS_libblktapctl) $(PTYFUNCS_LIBS) $(LIBUUID_LIBS)
-ifeq ($(CONFIG_REMUS_NETBUF),y)
+ifeq ($(CONFIG_LIBNL),y)
 LIBXL_LIBS += $(LIBNL3_LIBS)
 endif
 
@@ -31,7 +31,7 @@ CFLAGS_LIBXL += $(CFLAGS_libxenctrl)
 CFLAGS_LIBXL += $(CFLAGS_libxenguest)
 CFLAGS_LIBXL += $(CFLAGS_libxenstore)
 CFLAGS_LIBXL += $(CFLAGS_libblktapctl) 
-ifeq ($(CONFIG_REMUS_NETBUF),y)
+ifeq ($(CONFIG_LIBNL),y)
 CFLAGS_LIBXL += $(LIBNL3_CFLAGS)
 endif
 CFLAGS_LIBXL += -Wshadow
@@ -52,7 +52,7 @@ else
 LIBXL_OBJS-y += libxl_noblktap2.o
 endif
 
-ifeq ($(CONFIG_REMUS_NETBUF),y)
+ifeq ($(CONFIG_LIBNL),y)
 LIBXL_OBJS-y += libxl_netbuffer.o
 else
 LIBXL_OBJS-y += libxl_nonetbuffer.o
@@ -65,10 +65,15 @@ LIBXL_OBJS-y += libxl_no_convert_callout.o
 endif
 
 LIBXL_OBJS-y += libxl_remus.o libxl_checkpoint_device.o libxl_remus_disk_drbd.o
+
+ifeq ($(CONFIG_LIBNL),y)
 LIBXL_OBJS-y += libxl_colo_restore.o libxl_colo_save.o
 LIBXL_OBJS-y += libxl_colo_qdisk.o
 LIBXL_OBJS-y += libxl_colo_proxy.o
 LIBXL_OBJS-y += libxl_colo_nic.o
+else
+LIBXL_OBJS-y += libxl_no_colo.o
+endif
 
 LIBXL_OBJS-$(CONFIG_X86) += libxl_cpuid.o libxl_x86.o libxl_psr.o
 LIBXL_OBJS-$(CONFIG_ARM) += libxl_nocpuid.o libxl_arm.o libxl_libfdt_compat.o

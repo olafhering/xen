@@ -1552,7 +1552,6 @@ void libxl__destroy_domid(libxl__egc *egc, libxl__destroy_domid_state *dis)
     libxl_ctx *ctx = CTX;
     uint32_t domid = dis->domid;
     char *dom_path;
-    char *pid;
     int rc, dm_present;
 
     libxl__ev_child_init(&dis->destroyer);
@@ -1575,8 +1574,7 @@ void libxl__destroy_domid(libxl__egc *egc, libxl__destroy_domid_state *dis)
         }
         /* fall through */
     case LIBXL_DOMAIN_TYPE_PV:
-        pid = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("/local/domain/%d/image/device-model-pid", domid));
-        dm_present = (pid != NULL);
+        dm_present = libxl__dm_active(gc, domid);
         break;
     case LIBXL_DOMAIN_TYPE_INVALID:
         rc = ERROR_FAIL;
@@ -2106,6 +2104,9 @@ void libxl__device_vtpm_add(libxl__egc *egc, uint32_t domid,
         if (rc) goto out;
 
         DEVICE_ADD(vtpm, vtpms, domid, &vtpm_saved, COMPARE_DEVID, &d_config);
+
+        rc = libxl__dm_check_start(gc, &d_config, domid);
+        if (rc) goto out;
     }
 
     for (;;) {
@@ -2317,7 +2318,7 @@ int libxl__device_disk_setdefault(libxl__gc *gc, libxl_device_disk *disk)
 }
 
 int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
-                                   libxl_device_disk *disk,
+                                   const libxl_device_disk *disk,
                                    libxl__device *device)
 {
     int devid;
@@ -2412,6 +2413,9 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
         if (rc) goto out;
 
         DEVICE_ADD(disk, disks, domid, &disk_saved, COMPARE_DISK, &d_config);
+
+        rc = libxl__dm_check_start(gc, &d_config, domid);
+        if (rc) goto out;
     }
 
     for (;;) {
@@ -2461,21 +2465,6 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
                 script = libxl__abs_path(gc, disk->script?: "block",
                                          libxl__xen_script_dir_path());
                 flexarray_append_pair(back, "script", script);
-
-                /* If the user did not supply a block script then we
-                 * write the physical-device node ourselves.
-                 *
-                 * If the user did supply a script then that script is
-                 * responsible for this since the block device may not
-                 * exist yet.
-                 */
-                if (!disk->script &&
-                    disk->backend_domid == LIBXL_TOOLSTACK_DOMID) {
-                    int major, minor;
-                    if (!libxl__device_physdisk_major_minor(dev, &major, &minor))
-                        flexarray_append_pair(back, "physical-device",
-                                              GCSPRINTF("%x:%x", major, minor));
-                }
 
                 assert(device->backend_kind == LIBXL__DEVICE_KIND_VBD);
                 break;
@@ -2999,6 +2988,9 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
 
     DEVICE_ADD(disk, disks, domid, &disk_saved, COMPARE_DISK, &d_config);
 
+    rc = libxl__dm_check_start(gc, &d_config, domid);
+    if (rc) goto out;
+
     if (dm_ver == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
         rc = libxl__qmp_insert_cdrom(gc, domid, disk);
         if (rc) goto out;
@@ -3073,7 +3065,7 @@ static char * libxl__alloc_vdev(libxl__gc *gc, void *get_vdev_user,
                     GCSPRINTF("%s/device/vbd/%d/backend",
                         dompath, devid)) == NULL) {
             if (errno == ENOENT)
-                return libxl__devid_to_localdev(gc, devid);
+                return libxl__devid_to_vdev(gc, devid);
             else
                 return NULL;
         }
@@ -3084,13 +3076,82 @@ static char * libxl__alloc_vdev(libxl__gc *gc, void *get_vdev_user,
 
 /* Callbacks */
 
+char *libxl__device_disk_find_local_path(libxl__gc *gc, 
+                                          libxl_domid guest_domid,
+                                          const libxl_device_disk *disk,
+                                          bool qdisk_direct)
+{
+    char *path = NULL;
+
+    /* No local paths for driver domains */
+    if (disk->backend_domname != NULL) {
+        LOG(DEBUG, "Non-local backend, can't access locally.\n");
+        goto out;
+    }
+
+    /*
+     * If this is in raw format, and we're not using a script or a
+     * driver domain, we can access the target path directly.
+     */
+    if (disk->format == LIBXL_DISK_FORMAT_RAW
+        && disk->script == NULL) {
+        path = libxl__strdup(gc, disk->pdev_path);
+        LOG(DEBUG, "Directly accessing local RAW disk %s", path);
+        goto out;
+    } 
+
+    /*
+     * If we're being called for a qemu path, we can pass the target
+     * string directly as well
+     */
+    if (qdisk_direct && disk->backend == LIBXL_DISK_BACKEND_QDISK) {
+        path = libxl__strdup(gc, disk->pdev_path);
+        LOG(DEBUG, "Directly accessing local QDISK target %s", path);
+        goto out;
+    } 
+
+    /* 
+     * If the format isn't raw and / or we're using a script, then see
+     * if the script has written a path to the "cooked" node
+     */
+    if (disk->script && guest_domid != INVALID_DOMID) {
+        libxl__device device;
+        char *be_path, *pdpath;
+        int rc;
+
+        LOG(DEBUG,
+            "Run from a script; checking for physical-device-path (vdev %s)",
+            disk->vdev);
+
+        rc = libxl__device_from_disk(gc, guest_domid, disk, &device);
+        if (rc < 0)
+            goto out;
+
+        be_path = libxl__device_backend_path(gc, &device);
+
+        pdpath = libxl__sprintf(gc, "%s/physical-device-path", be_path);
+
+        LOG(DEBUG, "Attempting to read node %s", pdpath);
+        path = libxl__xs_read(gc, XBT_NULL, pdpath);
+
+        if (path)
+            LOG(DEBUG, "Accessing cooked block device %s", path);
+        else
+            LOG(DEBUG, "No physical-device-path, can't access locally.");
+
+        goto out;
+    }
+
+ out:
+    return path;
+}
+
 static void local_device_attach_cb(libxl__egc *egc, libxl__ao_device *aodev);
 
 void libxl__device_disk_local_initiate_attach(libxl__egc *egc,
                                      libxl__disk_local_state *dls)
 {
     STATE_AO_GC(dls->ao);
-    char *dev = NULL;
     int rc;
     const libxl_device_disk *in_disk = dls->in_disk;
     libxl_device_disk *disk = &dls->disk;
@@ -3098,34 +3159,36 @@ void libxl__device_disk_local_initiate_attach(libxl__egc *egc,
 
     assert(in_disk->pdev_path);
 
-    memcpy(disk, in_disk, sizeof(libxl_device_disk));
-    disk->pdev_path = libxl__strdup(gc, in_disk->pdev_path);
-    if (in_disk->script != NULL)
-        disk->script = libxl__strdup(gc, in_disk->script);
     disk->vdev = NULL;
 
-    rc = libxl__device_disk_setdefault(gc, disk);
-    if (rc) goto out;
+    if (dls->diskpath)
+        LOG(DEBUG, "Strange, dls->diskpath already set: %s", dls->diskpath);
 
-    /* If this is in a driver domain, or it's not a raw format, or it involves
-     * running a script, we have to do a local attach. */
-    if (disk->backend_domname != NULL
-        || disk->format != LIBXL_DISK_FORMAT_RAW
-        || disk->script != NULL) {
+    LOG(DEBUG, "Trying to find local path");
+
+    dls->diskpath = libxl__device_disk_find_local_path(gc, INVALID_DOMID,
+                                                       in_disk, false);
+    if (dls->diskpath) {
+        LOG(DEBUG, "Local path found, executing callback.");
+        dls->callback(egc, dls, 0);
+    } else {
+        LOG(DEBUG, "Local path not found, initiating attach.");
+
+        memcpy(disk, in_disk, sizeof(libxl_device_disk));
+        disk->pdev_path = libxl__strdup(gc, in_disk->pdev_path);
+        if (in_disk->script != NULL)
+            disk->script = libxl__strdup(gc, in_disk->script);
+        disk->vdev = NULL;
+        
+        rc = libxl__device_disk_setdefault(gc, disk);
+        if (rc) goto out;
+
         libxl__prepare_ao_device(ao, &dls->aodev);
         dls->aodev.callback = local_device_attach_cb;
         device_disk_add(egc, LIBXL_TOOLSTACK_DOMID, disk, &dls->aodev,
                         libxl__alloc_vdev, (void *) blkdev_start);
-        return;
     }
 
-    LOG(DEBUG, "locally attaching RAW disk %s", disk->pdev_path);
-    dev = disk->pdev_path;
-
-    if (dev != NULL)
-        dls->diskpath = libxl__strdup(gc, dev);
-
-    dls->callback(egc, dls, 0);
     return;
 
  out:
@@ -3139,22 +3202,16 @@ static void local_device_attach_cb(libxl__egc *egc, libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
     libxl__disk_local_state *dls = CONTAINER_OF(aodev, *dls, aodev);
-    char *dev = NULL, *be_path = NULL;
+    char *be_path = NULL;
     int rc;
     libxl__device device;
     libxl_device_disk *disk = &dls->disk;
 
     rc = aodev->rc;
     if (rc) {
-        LOGE(ERROR, "unable to %s %s with id %u",
-                    libxl__device_action_to_string(aodev->action),
-                    libxl__device_kind_to_string(aodev->dev->kind),
-                    aodev->dev->devid);
+        LOGE(ERROR, "unable locally attach device: %s", disk->pdev_path);
         goto out;
     }
-
-    dev = GCSPRINTF("/dev/%s", disk->vdev);
-    LOG(DEBUG, "locally attaching disk %s", dev);
 
     rc = libxl__device_from_disk(gc, LIBXL_TOOLSTACK_DOMID, disk, &device);
     if (rc < 0)
@@ -3164,8 +3221,9 @@ static void local_device_attach_cb(libxl__egc *egc, libxl__ao_device *aodev)
     if (rc < 0)
         goto out;
 
-    if (dev != NULL)
-        dls->diskpath = libxl__strdup(gc, dev);
+    dls->diskpath = GCSPRINTF("/dev/%s",
+                              libxl__devid_to_localdev(gc, device.devid));
+    LOG(DEBUG, "locally attached disk %s", dls->diskpath);
 
     dls->callback(egc, dls, 0);
     return;
@@ -3430,6 +3488,9 @@ void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
         if (rc) goto out;
 
         DEVICE_ADD(nic, nics, domid, &nic_saved, COMPARE_DEVID, &d_config);
+
+        rc = libxl__dm_check_start(gc, &d_config, domid);
+        if (rc) goto out;
     }
 
     for (;;) {
@@ -5858,6 +5919,236 @@ static int sched_credit2_domain_set(libxl__gc *gc, uint32_t domid,
     return 0;
 }
 
+static int sched_rtds_validate_params(libxl__gc *gc, int period, int budget)
+{
+    int rc;
+
+    if (period < 1) {
+        LOG(ERROR, "Invalid VCPU period of %d (it should be >= 1)", period);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    if (budget < 1) {
+        LOG(ERROR, "Invalid VCPU budget of %d (it should be >= 1)", budget);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    if (budget > period) {
+        LOG(ERROR, "VCPU budget must be smaller than or equal to period, "
+                   "but %d > %d", budget, period);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+    rc = 0;
+out:
+    return rc;
+}
+
+/* Get the RTDS scheduling parameters of vcpu(s) */
+static int sched_rtds_vcpu_get(libxl__gc *gc, uint32_t domid,
+                               libxl_vcpu_sched_params *scinfo)
+{
+    uint32_t num_vcpus;
+    int i, r, rc;
+    xc_dominfo_t info;
+    struct xen_domctl_schedparam_vcpu *vcpus;
+
+    r = xc_domain_getinfo(CTX->xch, domid, 1, &info);
+    if (r < 0) {
+        LOGE(ERROR, "getting domain info");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    if (scinfo->num_vcpus <= 0) {
+        rc = ERROR_INVAL;
+        goto out;
+    } else {
+        num_vcpus = scinfo->num_vcpus;
+        GCNEW_ARRAY(vcpus, num_vcpus);
+        for (i = 0; i < num_vcpus; i++) {
+            if (scinfo->vcpus[i].vcpuid < 0 ||
+                scinfo->vcpus[i].vcpuid > info.max_vcpu_id) {
+                LOG(ERROR, "VCPU index is out of range, "
+                           "valid values are within range from 0 to %d",
+                           info.max_vcpu_id);
+                rc = ERROR_INVAL;
+                goto out;
+            }
+            vcpus[i].vcpuid = scinfo->vcpus[i].vcpuid;
+        }
+    }
+
+    r = xc_sched_rtds_vcpu_get(CTX->xch, domid, vcpus, num_vcpus);
+    if (r != 0) {
+        LOGE(ERROR, "getting vcpu sched rtds");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    scinfo->sched = LIBXL_SCHEDULER_RTDS;
+    for (i = 0; i < num_vcpus; i++) {
+        scinfo->vcpus[i].period = vcpus[i].u.rtds.period;
+        scinfo->vcpus[i].budget = vcpus[i].u.rtds.budget;
+        scinfo->vcpus[i].vcpuid = vcpus[i].vcpuid;
+    }
+    rc = 0;
+out:
+    return rc;
+}
+
+/* Get the RTDS scheduling parameters of all vcpus of a domain */
+static int sched_rtds_vcpu_get_all(libxl__gc *gc, uint32_t domid,
+                                   libxl_vcpu_sched_params *scinfo)
+{
+    uint32_t num_vcpus;
+    int i, r, rc;
+    xc_dominfo_t info;
+    struct xen_domctl_schedparam_vcpu *vcpus;
+
+    r = xc_domain_getinfo(CTX->xch, domid, 1, &info);
+    if (r < 0) {
+        LOGE(ERROR, "getting domain info");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    if (scinfo->num_vcpus > 0) {
+        rc = ERROR_INVAL;
+        goto out;
+    } else {
+        num_vcpus = info.max_vcpu_id + 1;
+        GCNEW_ARRAY(vcpus, num_vcpus);
+        for (i = 0; i < num_vcpus; i++)
+            vcpus[i].vcpuid = i;
+    }
+
+    r = xc_sched_rtds_vcpu_get(CTX->xch, domid, vcpus, num_vcpus);
+    if (r != 0) {
+        LOGE(ERROR, "getting vcpu sched rtds");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    scinfo->sched = LIBXL_SCHEDULER_RTDS;
+    scinfo->num_vcpus = num_vcpus;
+    scinfo->vcpus = libxl__calloc(NOGC, num_vcpus,
+                                  sizeof(libxl_sched_params));
+
+    for (i = 0; i < num_vcpus; i++) {
+        scinfo->vcpus[i].period = vcpus[i].u.rtds.period;
+        scinfo->vcpus[i].budget = vcpus[i].u.rtds.budget;
+        scinfo->vcpus[i].vcpuid = vcpus[i].vcpuid;
+    }
+    rc = 0;
+out:
+    return rc;
+}
+
+/* Set the RTDS scheduling parameters of vcpu(s) */
+static int sched_rtds_vcpu_set(libxl__gc *gc, uint32_t domid,
+                               const libxl_vcpu_sched_params *scinfo)
+{
+    int r, rc;
+    int i;
+    uint16_t max_vcpuid;
+    xc_dominfo_t info;
+    struct xen_domctl_schedparam_vcpu *vcpus;
+
+    r = xc_domain_getinfo(CTX->xch, domid, 1, &info);
+    if (r < 0) {
+        LOGE(ERROR, "getting domain info");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    max_vcpuid = info.max_vcpu_id;
+
+    if (scinfo->num_vcpus <= 0) {
+        rc = ERROR_INVAL;
+        goto out;
+    }
+    for (i = 0; i < scinfo->num_vcpus; i++) {
+        if (scinfo->vcpus[i].vcpuid < 0 ||
+            scinfo->vcpus[i].vcpuid > max_vcpuid) {
+            LOG(ERROR, "Invalid VCPU %d: valid range is [0, %d]",
+                       scinfo->vcpus[i].vcpuid, max_vcpuid);
+            rc = ERROR_INVAL;
+            goto out;
+        }
+        rc = sched_rtds_validate_params(gc, scinfo->vcpus[i].period,
+                                        scinfo->vcpus[i].budget);
+        if (rc) {
+            rc = ERROR_INVAL;
+            goto out;
+        }
+    }
+    GCNEW_ARRAY(vcpus, scinfo->num_vcpus);
+    for (i = 0; i < scinfo->num_vcpus; i++) {
+        vcpus[i].vcpuid = scinfo->vcpus[i].vcpuid;
+        vcpus[i].u.rtds.period = scinfo->vcpus[i].period;
+        vcpus[i].u.rtds.budget = scinfo->vcpus[i].budget;
+    }
+
+    r = xc_sched_rtds_vcpu_set(CTX->xch, domid,
+                               vcpus, scinfo->num_vcpus);
+    if (r != 0) {
+        LOGE(ERROR, "setting vcpu sched rtds");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    rc = 0;
+out:
+    return rc;
+}
+
+/* Set the RTDS scheduling parameters of all vcpus of a domain */
+static int sched_rtds_vcpu_set_all(libxl__gc *gc, uint32_t domid,
+                                   const libxl_vcpu_sched_params *scinfo)
+{
+    int r, rc;
+    int i;
+    uint16_t max_vcpuid;
+    xc_dominfo_t info;
+    struct xen_domctl_schedparam_vcpu *vcpus;
+    uint32_t num_vcpus;
+
+    r = xc_domain_getinfo(CTX->xch, domid, 1, &info);
+    if (r < 0) {
+        LOGE(ERROR, "getting domain info");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    max_vcpuid = info.max_vcpu_id;
+
+    if (scinfo->num_vcpus != 1) {
+        rc = ERROR_INVAL;
+        goto out;
+    }
+    if (sched_rtds_validate_params(gc, scinfo->vcpus[0].period,
+                                   scinfo->vcpus[0].budget)) {
+        rc = ERROR_INVAL;
+        goto out;
+    }
+    num_vcpus = max_vcpuid + 1;
+    GCNEW_ARRAY(vcpus, num_vcpus);
+    for (i = 0; i < num_vcpus; i++) {
+        vcpus[i].vcpuid = i;
+        vcpus[i].u.rtds.period = scinfo->vcpus[0].period;
+        vcpus[i].u.rtds.budget = scinfo->vcpus[0].budget;
+    }
+
+    r = xc_sched_rtds_vcpu_set(CTX->xch, domid,
+                               vcpus, num_vcpus);
+    if (r != 0) {
+        LOGE(ERROR, "setting vcpu sched rtds");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    rc = 0;
+out:
+    return rc;
+}
+
 static int sched_rtds_domain_get(libxl__gc *gc, uint32_t domid,
                                libxl_domain_sched_params *scinfo)
 {
@@ -5890,30 +6181,12 @@ static int sched_rtds_domain_set(libxl__gc *gc, uint32_t domid,
         LOGE(ERROR, "getting domain sched rtds");
         return ERROR_FAIL;
     }
-
-    if (scinfo->period != LIBXL_DOMAIN_SCHED_PARAM_PERIOD_DEFAULT) {
-        if (scinfo->period < 1) {
-            LOG(ERROR, "VCPU period is not set or out of range, "
-                       "valid values are larger than 1");
-            return ERROR_INVAL;
-        }
+    if (scinfo->period != LIBXL_DOMAIN_SCHED_PARAM_PERIOD_DEFAULT)
         sdom.period = scinfo->period;
-    }
-
-    if (scinfo->budget != LIBXL_DOMAIN_SCHED_PARAM_BUDGET_DEFAULT) {
-        if (scinfo->budget < 1) {
-            LOG(ERROR, "VCPU budget is not set or out of range, "
-                       "valid values are larger than 1");
-            return ERROR_INVAL;
-        }
+    if (scinfo->budget != LIBXL_DOMAIN_SCHED_PARAM_BUDGET_DEFAULT)
         sdom.budget = scinfo->budget;
-    }
-
-    if (sdom.budget > sdom.period) {
-        LOG(ERROR, "VCPU budget is larger than VCPU period, "
-                   "VCPU budget should be no larger than VCPU period");
+    if (sched_rtds_validate_params(gc, sdom.period, sdom.budget))
         return ERROR_INVAL;
-    }
 
     rc = xc_sched_rtds_domain_set(CTX->xch, domid, &sdom);
     if (rc < 0) {
@@ -5961,6 +6234,74 @@ int libxl_domain_sched_params_set(libxl_ctx *ctx, uint32_t domid,
     return ret;
 }
 
+int libxl_vcpu_sched_params_set(libxl_ctx *ctx, uint32_t domid,
+                                const libxl_vcpu_sched_params *scinfo)
+{
+    GC_INIT(ctx);
+    libxl_scheduler sched = scinfo->sched;
+    int rc;
+
+    if (sched == LIBXL_SCHEDULER_UNKNOWN)
+        sched = libxl__domain_scheduler(gc, domid);
+
+    switch (sched) {
+    case LIBXL_SCHEDULER_SEDF:
+        LOG(ERROR, "SEDF scheduler no longer available");
+        rc = ERROR_FEATURE_REMOVED;
+        break;
+    case LIBXL_SCHEDULER_CREDIT:
+    case LIBXL_SCHEDULER_CREDIT2:
+    case LIBXL_SCHEDULER_ARINC653:
+        LOG(ERROR, "per-VCPU parameter setting not supported for this scheduler");
+        rc = ERROR_INVAL;
+        break;
+    case LIBXL_SCHEDULER_RTDS:
+        rc = sched_rtds_vcpu_set(gc, domid, scinfo);
+        break;
+    default:
+        LOG(ERROR, "Unknown scheduler");
+        rc = ERROR_INVAL;
+        break;
+    }
+
+    GC_FREE;
+    return rc;
+}
+
+int libxl_vcpu_sched_params_set_all(libxl_ctx *ctx, uint32_t domid,
+                                    const libxl_vcpu_sched_params *scinfo)
+{
+    GC_INIT(ctx);
+    libxl_scheduler sched = scinfo->sched;
+    int rc;
+
+    if (sched == LIBXL_SCHEDULER_UNKNOWN)
+        sched = libxl__domain_scheduler(gc, domid);
+
+    switch (sched) {
+    case LIBXL_SCHEDULER_SEDF:
+        LOG(ERROR, "SEDF scheduler no longer available");
+        rc = ERROR_FEATURE_REMOVED;
+        break;
+    case LIBXL_SCHEDULER_CREDIT:
+    case LIBXL_SCHEDULER_CREDIT2:
+    case LIBXL_SCHEDULER_ARINC653:
+        LOG(ERROR, "per-VCPU parameter setting not supported for this scheduler");
+        rc = ERROR_INVAL;
+        break;
+    case LIBXL_SCHEDULER_RTDS:
+        rc = sched_rtds_vcpu_set_all(gc, domid, scinfo);
+        break;
+    default:
+        LOG(ERROR, "Unknown scheduler");
+        rc = ERROR_INVAL;
+        break;
+    }
+
+    GC_FREE;
+    return rc;
+}
+
 int libxl_domain_sched_params_get(libxl_ctx *ctx, uint32_t domid,
                                   libxl_domain_sched_params *scinfo)
 {
@@ -5993,6 +6334,70 @@ int libxl_domain_sched_params_get(libxl_ctx *ctx, uint32_t domid,
 
     GC_FREE;
     return ret;
+}
+
+int libxl_vcpu_sched_params_get(libxl_ctx *ctx, uint32_t domid,
+                                libxl_vcpu_sched_params *scinfo)
+{
+    GC_INIT(ctx);
+    int rc;
+
+    scinfo->sched = libxl__domain_scheduler(gc, domid);
+
+    switch (scinfo->sched) {
+    case LIBXL_SCHEDULER_SEDF:
+        LOG(ERROR, "SEDF scheduler is no longer available");
+        rc = ERROR_FEATURE_REMOVED;
+        break;
+    case LIBXL_SCHEDULER_CREDIT:
+    case LIBXL_SCHEDULER_CREDIT2:
+    case LIBXL_SCHEDULER_ARINC653:
+        LOG(ERROR, "per-VCPU parameter getting not supported for this scheduler");
+        rc = ERROR_INVAL;
+        break;
+    case LIBXL_SCHEDULER_RTDS:
+        rc = sched_rtds_vcpu_get(gc, domid, scinfo);
+        break;
+    default:
+        LOG(ERROR, "Unknown scheduler");
+        rc = ERROR_INVAL;
+        break;
+    }
+
+    GC_FREE;
+    return rc;
+}
+
+int libxl_vcpu_sched_params_get_all(libxl_ctx *ctx, uint32_t domid,
+                                    libxl_vcpu_sched_params *scinfo)
+{
+    GC_INIT(ctx);
+    int rc;
+
+    scinfo->sched = libxl__domain_scheduler(gc, domid);
+
+    switch (scinfo->sched) {
+    case LIBXL_SCHEDULER_SEDF:
+        LOG(ERROR, "SEDF scheduler is no longer available");
+        rc = ERROR_FEATURE_REMOVED;
+        break;
+    case LIBXL_SCHEDULER_CREDIT:
+    case LIBXL_SCHEDULER_CREDIT2:
+    case LIBXL_SCHEDULER_ARINC653:
+        LOG(ERROR, "per-VCPU parameter getting not supported for this scheduler");
+        rc = ERROR_INVAL;
+        break;
+    case LIBXL_SCHEDULER_RTDS:
+        rc = sched_rtds_vcpu_get_all(gc, domid, scinfo);
+        break;
+    default:
+        LOG(ERROR, "Unknown scheduler");
+        rc = ERROR_INVAL;
+        break;
+    }
+
+    GC_FREE;
+    return rc;
 }
 
 static int libxl__domain_s3_resume(libxl__gc *gc, int domid)

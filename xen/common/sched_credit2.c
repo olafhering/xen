@@ -1416,6 +1416,7 @@ csched2_dom_cntl(
     struct csched2_dom * const sdom = CSCHED2_DOM(d);
     struct csched2_private *prv = CSCHED2_PRIV(ops);
     unsigned long flags;
+    int rc = 0;
 
     /* Must hold csched2_priv lock to read and update sdom,
      * runq lock to update csvcs. */
@@ -1457,12 +1458,13 @@ csched2_dom_cntl(
         }
         break;
     default:
-        return -EINVAL;
+        rc = -EINVAL;
+        break;
     }
 
     spin_unlock_irqrestore(&prv->lock, flags);
 
-    return 0;
+    return rc;
 }
 
 static void *
@@ -1969,22 +1971,15 @@ static void deactivate_runqueue(struct csched2_private *prv, int rqi)
     cpumask_clear_cpu(rqi, &prv->active_queues);
 }
 
-static void init_pcpu(const struct scheduler *ops, int cpu)
+static void
+init_pdata(struct csched2_private *prv, unsigned int cpu)
 {
     unsigned rqi;
-    unsigned long flags;
-    struct csched2_private *prv = CSCHED2_PRIV(ops);
     struct csched2_runqueue_data *rqd;
     spinlock_t *old_lock;
 
-    spin_lock_irqsave(&prv->lock, flags);
-
-    if ( cpumask_test_cpu(cpu, &prv->initialized) )
-    {
-        printk("%s: Strange, cpu %d already initialized!\n", __func__, cpu);
-        spin_unlock_irqrestore(&prv->lock, flags);
-        return;
-    }
+    ASSERT(spin_is_locked(&prv->lock));
+    ASSERT(!cpumask_test_cpu(cpu, &prv->initialized));
 
     /* Figure out which runqueue to put it in */
     rqi = 0;
@@ -2003,7 +1998,7 @@ static void init_pcpu(const struct scheduler *ops, int cpu)
         BUG();
     }
 
-    rqd=prv->rqd + rqi;
+    rqd = prv->rqd + rqi;
 
     printk("Adding cpu %d to runqueue %d\n", cpu, rqi);
     if ( ! cpumask_test_cpu(rqi, &prv->active_queues) )
@@ -2013,13 +2008,13 @@ static void init_pcpu(const struct scheduler *ops, int cpu)
     }
     
     /* IRQs already disabled */
-    old_lock=pcpu_schedule_lock(cpu);
+    old_lock = pcpu_schedule_lock(cpu);
 
     /* Move spinlock to new runq lock.  */
     per_cpu(schedule_data, cpu).schedule_lock = &rqd->lock;
 
     /* Set the runqueue map */
-    prv->runq_map[cpu]=rqi;
+    prv->runq_map[cpu] = rqi;
     
     cpumask_set_cpu(cpu, &rqd->idle);
     cpumask_set_cpu(cpu, &rqd->active);
@@ -2029,23 +2024,18 @@ static void init_pcpu(const struct scheduler *ops, int cpu)
 
     cpumask_set_cpu(cpu, &prv->initialized);
 
-    spin_unlock_irqrestore(&prv->lock, flags);
-
     return;
 }
 
-static void *
-csched2_alloc_pdata(const struct scheduler *ops, int cpu)
+static void
+csched2_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
 {
-    /* Check to see if the cpu is online yet */
-    /* Note: cpu 0 doesn't get a STARTING callback */
-    if ( cpu == 0 || cpu_to_socket(cpu) != XEN_INVALID_SOCKET_ID )
-        init_pcpu(ops, cpu);
-    else
-        printk("%s: cpu %d not online yet, deferring initializatgion\n",
-               __func__, cpu);
+    struct csched2_private *prv = CSCHED2_PRIV(ops);
+    unsigned long flags;
 
-    return (void *)1;
+    spin_lock_irqsave(&prv->lock, flags);
+    init_pdata(prv, cpu);
+    spin_unlock_irqrestore(&prv->lock, flags);
 }
 
 static void
@@ -2059,7 +2049,7 @@ csched2_free_pdata(const struct scheduler *ops, void *pcpu, int cpu)
 
     spin_lock_irqsave(&prv->lock, flags);
 
-    BUG_ON(!cpumask_test_cpu(cpu, &prv->initialized));
+    ASSERT(cpumask_test_cpu(cpu, &prv->initialized));
     
     /* Find the old runqueue and remove this cpu from it */
     rqi = prv->runq_map[cpu];
@@ -2094,49 +2084,6 @@ csched2_free_pdata(const struct scheduler *ops, void *pcpu, int cpu)
     spin_unlock_irqrestore(&prv->lock, flags);
 
     return;
-}
-
-static int
-csched2_cpu_starting(int cpu)
-{
-    struct scheduler *ops;
-
-    /* Hope this is safe from cpupools switching things around. :-) */
-    ops = per_cpu(scheduler, cpu);
-
-    if ( ops->alloc_pdata == csched2_alloc_pdata )
-        init_pcpu(ops, cpu);
-
-    return NOTIFY_DONE;
-}
-
-static int cpu_credit2_callback(
-    struct notifier_block *nfb, unsigned long action, void *hcpu)
-{
-    unsigned int cpu = (unsigned long)hcpu;
-    int rc = 0;
-
-    switch ( action )
-    {
-    case CPU_STARTING:
-        csched2_cpu_starting(cpu);
-        break;
-    default:
-        break;
-    }
-
-    return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
-}
-
-static struct notifier_block cpu_credit2_nfb = {
-    .notifier_call = cpu_credit2_callback
-};
-
-static int
-csched2_global_init(void)
-{
-    register_cpu_notifier(&cpu_credit2_nfb);
-    return 0;
 }
 
 static int
@@ -2217,12 +2164,11 @@ static const struct scheduler sched_credit2_def = {
 
     .dump_cpu_state = csched2_dump_pcpu,
     .dump_settings  = csched2_dump,
-    .global_init    = csched2_global_init,
     .init           = csched2_init,
     .deinit         = csched2_deinit,
     .alloc_vdata    = csched2_alloc_vdata,
     .free_vdata     = csched2_free_vdata,
-    .alloc_pdata    = csched2_alloc_pdata,
+    .init_pdata     = csched2_init_pdata,
     .free_pdata     = csched2_free_pdata,
     .alloc_domdata  = csched2_alloc_domdata,
     .free_domdata   = csched2_free_domdata,

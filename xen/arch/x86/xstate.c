@@ -26,7 +26,7 @@ u64 __read_mostly xfeature_mask;
 
 static unsigned int *__read_mostly xstate_offsets;
 unsigned int *__read_mostly xstate_sizes;
-static u64 __read_mostly xstate_align;
+u64 __read_mostly xstate_align;
 static unsigned int __read_mostly xstate_features;
 
 static uint32_t __read_mostly mxcsr_mask = 0x0000ffbf;
@@ -164,12 +164,9 @@ static void *get_xsave_addr(struct xsave_struct *xsave,
                             const uint16_t *comp_offsets,
                             unsigned int xfeature_idx)
 {
-    if ( !((1ul << xfeature_idx) & xsave->xsave_hdr.xstate_bv) )
-        return NULL;
-
-    return (void *)xsave + (xsave_area_compressed(xsave) ?
-                            comp_offsets[xfeature_idx] :
-                            xstate_offsets[xfeature_idx]);
+    ASSERT(xsave_area_compressed(xsave));
+    return (1ul << xfeature_idx) & xsave->xsave_hdr.xstate_bv ?
+           (void *)xsave + comp_offsets[xfeature_idx] : NULL;
 }
 
 void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size)
@@ -179,7 +176,7 @@ void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size)
     u64 xstate_bv = xsave->xsave_hdr.xstate_bv;
     u64 valid;
 
-    if ( !cpu_has_xsaves && !cpu_has_xsavec )
+    if ( !(xsave->xsave_hdr.xcomp_bv & XSTATE_COMPACTION_ENABLED) )
     {
         memcpy(dest, xsave, size);
         return;
@@ -211,6 +208,8 @@ void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size)
             ASSERT((xstate_offsets[index] + xstate_sizes[index]) <= size);
             memcpy(dest + xstate_offsets[index], src, xstate_sizes[index]);
         }
+        else
+            memset(dest + xstate_offsets[index], 0, xstate_sizes[index]);
 
         valid &= ~feature;
     }
@@ -223,13 +222,14 @@ void compress_xsave_states(struct vcpu *v, const void *src, unsigned int size)
     u64 xstate_bv = ((const struct xsave_struct *)src)->xsave_hdr.xstate_bv;
     u64 valid;
 
-    if ( !cpu_has_xsaves && !cpu_has_xsavec )
+    ASSERT(!xsave_area_compressed(src));
+
+    if ( !(v->arch.xcr0_accum & XSTATE_XSAVES_ONLY) )
     {
         memcpy(xsave, src, size);
         return;
     }
 
-    ASSERT(!xsave_area_compressed(src));
     /*
      * Copy legacy XSAVE area, to avoid complications with CPUID
      * leaves 0 and 1 in the loop below.
@@ -270,15 +270,16 @@ void xsave(struct vcpu *v, uint64_t mask)
     uint32_t lmask = mask;
     unsigned int fip_width = v->domain->arch.x87_fip_width;
 #define XSAVE(pfx) \
-        alternative_io_3(".byte " pfx "0x0f,0xae,0x27\n", /* xsave */ \
-                         ".byte " pfx "0x0f,0xae,0x37\n", /* xsaveopt */ \
-                         X86_FEATURE_XSAVEOPT, \
-                         ".byte " pfx "0x0f,0xc7,0x27\n", /* xsavec */ \
-                         X86_FEATURE_XSAVEC, \
-                         ".byte " pfx "0x0f,0xc7,0x2f\n", /* xsaves */ \
-                         X86_FEATURE_XSAVES, \
-                         "=m" (*ptr), \
-                         "a" (lmask), "d" (hmask), "D" (ptr))
+        if ( v->arch.xcr0_accum & XSTATE_XSAVES_ONLY ) \
+            asm volatile ( ".byte " pfx "0x0f,0xc7,0x2f\n" /* xsaves */ \
+                           : "=m" (*ptr) \
+                           : "a" (lmask), "d" (hmask), "D" (ptr) ); \
+        else \
+            alternative_io(".byte " pfx "0x0f,0xae,0x27\n", /* xsave */ \
+                           ".byte " pfx "0x0f,0xae,0x37\n", /* xsaveopt */ \
+                           X86_FEATURE_XSAVEOPT, \
+                           "=m" (*ptr), \
+                           "a" (lmask), "d" (hmask), "D" (ptr))
 
     if ( fip_width == 8 || !(mask & XSTATE_FP) )
     {
@@ -369,19 +370,29 @@ void xrstor(struct vcpu *v, uint64_t mask)
         switch ( __builtin_expect(ptr->fpu_sse.x[FPU_WORD_SIZE_OFFSET], 8) )
         {
             BUILD_BUG_ON(sizeof(faults) != 4); /* Clang doesn't support %z in asm. */
-#define XRSTOR(pfx) \
-        alternative_io("1: .byte " pfx "0x0f,0xae,0x2f\n" \
+#define _xrstor(insn) \
+        asm volatile ( "1: .byte " insn "\n" \
                        "3:\n" \
                        "   .section .fixup,\"ax\"\n" \
                        "2: incl %[faults]\n" \
                        "   jmp 3b\n" \
                        "   .previous\n" \
-                       _ASM_EXTABLE(1b, 2b), \
-                       ".byte " pfx "0x0f,0xc7,0x1f\n", \
-                       X86_FEATURE_XSAVES, \
-                       ASM_OUTPUT2([mem] "+m" (*ptr), [faults] "+g" (faults)), \
-                       [lmask] "a" (lmask), [hmask] "d" (hmask), \
-                       [ptr] "D" (ptr))
+                       _ASM_EXTABLE(1b, 2b) \
+                       : [mem] "+m" (*ptr), [faults] "+g" (faults) \
+                       : [lmask] "a" (lmask), [hmask] "d" (hmask), \
+                         [ptr] "D" (ptr) )
+
+#define XRSTOR(pfx) \
+        if ( v->arch.xcr0_accum & XSTATE_XSAVES_ONLY ) \
+        { \
+            if ( unlikely(!(ptr->xsave_hdr.xcomp_bv & \
+                            XSTATE_COMPACTION_ENABLED)) ) \
+                ptr->xsave_hdr.xcomp_bv |= ptr->xsave_hdr.xstate_bv | \
+                                           XSTATE_COMPACTION_ENABLED; \
+            _xrstor(pfx "0x0f,0xc7,0x1f"); /* xrstors */ \
+        } \
+        else \
+            _xrstor(pfx "0x0f,0xae,0x2f") /* xrstor */
 
         default:
             XRSTOR("0x48,");
@@ -390,6 +401,7 @@ void xrstor(struct vcpu *v, uint64_t mask)
             XRSTOR("");
             break;
 #undef XRSTOR
+#undef _xrstor
         }
         if ( likely(faults == prev_faults) )
             break;
@@ -417,7 +429,7 @@ void xrstor(struct vcpu *v, uint64_t mask)
                   ((mask & XSTATE_YMM) &&
                    !(ptr->xsave_hdr.xcomp_bv & XSTATE_COMPACTION_ENABLED))) )
                 ptr->fpu_sse.mxcsr &= mxcsr_mask;
-            if ( cpu_has_xsaves || cpu_has_xsavec )
+            if ( v->arch.xcr0_accum & XSTATE_XSAVES_ONLY )
             {
                 ptr->xsave_hdr.xcomp_bv &= this_cpu(xcr0) | this_cpu(xss);
                 ptr->xsave_hdr.xstate_bv &= ptr->xsave_hdr.xcomp_bv;
@@ -434,7 +446,7 @@ void xrstor(struct vcpu *v, uint64_t mask)
         case 2: /* Stage 2: Reset all state. */
             ptr->fpu_sse.mxcsr = MXCSR_DEFAULT;
             ptr->xsave_hdr.xstate_bv = 0;
-            ptr->xsave_hdr.xcomp_bv = cpu_has_xsaves
+            ptr->xsave_hdr.xcomp_bv = v->arch.xcr0_accum & XSTATE_XSAVES_ONLY
                                       ? XSTATE_COMPACTION_ENABLED : 0;
             continue;
         }
