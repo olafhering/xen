@@ -740,6 +740,8 @@ static void domcreate_bootloader_done(libxl__egc *egc,
 static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *aodevs,
                                 int ret);
 
+static void domcreate_attach_vscsictrls(libxl__egc *egc, libxl__multidev *multidev,
+                                        int ret);
 static void domcreate_attach_vtpms(libxl__egc *egc, libxl__multidev *multidev,
                                    int ret);
 static void domcreate_attach_usbctrls(libxl__egc *egc,
@@ -1426,18 +1428,51 @@ static void domcreate_devmodel_started(libxl__egc *egc,
     if (d_config->num_nics > 0) {
         /* Attach nics */
         libxl__multidev_begin(ao, &dcs->multidev);
-        dcs->multidev.callback = domcreate_attach_vtpms;
+        dcs->multidev.callback = domcreate_attach_vscsictrls;
         libxl__add_nics(egc, ao, domid, d_config, &dcs->multidev);
         libxl__multidev_prepared(egc, &dcs->multidev, 0);
         return;
     }
 
-    domcreate_attach_vtpms(egc, &dcs->multidev, 0);
+    domcreate_attach_vscsictrls(egc, &dcs->multidev, 0);
     return;
 
 error_out:
     assert(ret);
     domcreate_complete(egc, dcs, ret);
+}
+
+static void domcreate_attach_vscsictrls(libxl__egc *egc,
+                                   libxl__multidev *multidev,
+                                   int ret)
+{
+   libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
+   STATE_AO_GC(dcs->ao);
+   int domid = dcs->guest_domid;
+
+   libxl_domain_config* const d_config = dcs->guest_config;
+
+   if(ret) {
+       LOG(ERROR, "unable to add nic devices");
+       goto error_out;
+   }
+
+    /* Plug vscsi devices */
+   if (d_config->num_vscsictrls > 0) {
+       /* Attach vscsictrls */
+       libxl__multidev_begin(ao, &dcs->multidev);
+       dcs->multidev.callback = domcreate_attach_vtpms;
+       libxl__add_vscsictrls(egc, ao, domid, d_config, &dcs->multidev);
+       libxl__multidev_prepared(egc, &dcs->multidev, 0);
+       return;
+   }
+
+   domcreate_attach_vtpms(egc, multidev, 0);
+   return;
+
+error_out:
+   assert(ret);
+   domcreate_complete(egc, dcs, ret);
 }
 
 static void domcreate_attach_vtpms(libxl__egc *egc,
@@ -1451,7 +1486,7 @@ static void domcreate_attach_vtpms(libxl__egc *egc,
    libxl_domain_config* const d_config = dcs->guest_config;
 
    if(ret) {
-       LOG(ERROR, "unable to add nic devices");
+       LOG(ERROR, "unable to add vscsi devices");
        goto error_out;
    }
 
