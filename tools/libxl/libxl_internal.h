@@ -1214,10 +1214,10 @@ _hidden int libxl__domain_create_info_setdefault(libxl__gc *gc,
 _hidden int libxl__domain_build_info_setdefault(libxl__gc *gc,
                                         libxl_domain_build_info *b_info);
 _hidden int libxl__device_disk_setdefault(libxl__gc *gc,
-                                          libxl_device_disk *disk);
+                                          libxl_device_disk *disk,
+                                          uint32_t domid);
 _hidden int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
-                                         uint32_t domid,
-                                         libxl_domain_build_info *info);
+                                         uint32_t domid);
 _hidden int libxl__device_vtpm_setdefault(libxl__gc *gc, libxl_device_vtpm *vtpm);
 _hidden int libxl__device_vfb_setdefault(libxl__gc *gc, libxl_device_vfb *vfb);
 _hidden int libxl__device_vkb_setdefault(libxl__gc *gc, libxl_device_vkb *vkb);

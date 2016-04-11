@@ -751,13 +751,13 @@ libxl_device_usbdev_list(libxl_ctx *ctx, uint32_t domid, int *num)
     usbctrls = libxl__xs_directory(gc, XBT_NULL, path, &nc);
 
     for (i = 0; i < nc; i++) {
-        int r, nd = 0;
+        int rc, nd = 0;
         libxl_device_usbdev *tmp = NULL;
 
-        r = libxl__device_usbdev_list_for_usbctrl(gc, domid,
+        rc = libxl__device_usbdev_list_for_usbctrl(gc, domid,
                                                   atoi(usbctrls[i]),
                                                   &tmp, &nd);
-        if (!r || !nd) continue;
+        if (rc || !nd) continue;
 
         usbdevs = libxl__realloc(NOGC, usbdevs,
                                  sizeof(*usbdevs) * (*num + nd));
@@ -964,6 +964,7 @@ static int libxl__device_usbdev_add_xenstore(libxl__gc *gc, uint32_t domid,
                                     usbdev->u.hostdev.hostaddr);
     if (!busid) {
         LOG(DEBUG, "Fail to get busid of usb device");
+        rc = ERROR_FAIL;
         goto out;
     }
 
@@ -1095,33 +1096,33 @@ out:
 
 static int bind_usbintf(libxl__gc *gc, const char *intf, const char *drvpath)
 {
-    char *path;
+    char *bind_path, *intf_path;
     struct stat st;
     int fd = -1;
     int rc, r;
 
-    path = GCSPRINTF("%s/%s", drvpath, intf);
+    intf_path = GCSPRINTF("%s/%s", drvpath, intf);
 
     /* check through lstat, if intf already exists under drvpath,
      * it's already bound, return directly; if it doesn't exist,
      * continue to do bind work; otherwise, return error.
      */
-    r = lstat(path, &st);
+    r = lstat(intf_path, &st);
     if (r == 0)
         return 0;
     if (r < 0 && errno != ENOENT)
         return ERROR_FAIL;
 
-    path = GCSPRINTF("%s/bind", drvpath);
+    bind_path = GCSPRINTF("%s/bind", drvpath);
 
-    fd = open(path, O_WRONLY);
+    fd = open(bind_path, O_WRONLY);
     if (fd < 0) {
-        LOGE(ERROR, "open file failed: '%s'", path);
+        LOGE(ERROR, "open file failed: '%s'", bind_path);
         rc = ERROR_FAIL;
         goto out;
     }
 
-    if (libxl_write_exactly(CTX, fd, intf, strlen(intf), path, intf)) {
+    if (libxl_write_exactly(CTX, fd, intf, strlen(intf), bind_path, intf)) {
         rc = ERROR_FAIL;
         goto out;
     }

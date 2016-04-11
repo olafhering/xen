@@ -81,6 +81,10 @@
 #define cpu_has_xsavec		boot_cpu_has(X86_FEATURE_XSAVEC)
 #define cpu_has_xgetbv1		boot_cpu_has(X86_FEATURE_XGETBV1)
 #define cpu_has_xsaves		boot_cpu_has(X86_FEATURE_XSAVES)
+#define cpu_has_monitor		boot_cpu_has(X86_FEATURE_MONITOR)
+#define cpu_has_eist		boot_cpu_has(X86_FEATURE_EIST)
+#define cpu_has_hypervisor	boot_cpu_has(X86_FEATURE_HYPERVISOR)
+#define cpu_has_cmp_legacy	boot_cpu_has(X86_FEATURE_CMP_LEGACY)
 
 enum _cache_type {
     CACHE_TYPE_NULL = 0,

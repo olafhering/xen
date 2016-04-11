@@ -1985,7 +1985,9 @@ int xc_cpuid_set(xc_interface *xch,
                  const char **config,
                  char **config_transformed);
 int xc_cpuid_apply_policy(xc_interface *xch,
-                          domid_t domid);
+                          domid_t domid,
+                          uint32_t *featureset,
+                          unsigned int nr_features);
 void xc_cpuid_to_str(const unsigned int *regs,
                      char **strs); /* some strs[] may be NULL if ENOMEM */
 int xc_mca_op(xc_interface *xch, struct xen_mc *mc);
@@ -2618,6 +2620,24 @@ int xc_psr_cat_get_domain_data(xc_interface *xch, uint32_t domid,
 int xc_psr_cat_get_l3_info(xc_interface *xch, uint32_t socket,
                            uint32_t *cos_max, uint32_t *cbm_len,
                            bool *cdp_enabled);
+
+int xc_get_cpu_levelling_caps(xc_interface *xch, uint32_t *caps);
+int xc_get_cpu_featureset(xc_interface *xch, uint32_t index,
+                          uint32_t *nr_features, uint32_t *featureset);
+
+uint32_t xc_get_cpu_featureset_size(void);
+
+enum xc_static_cpu_featuremask {
+    XC_FEATUREMASK_KNOWN,
+    XC_FEATUREMASK_SPECIAL,
+    XC_FEATUREMASK_PV,
+    XC_FEATUREMASK_HVM_SHADOW,
+    XC_FEATUREMASK_HVM_HAP,
+    XC_FEATUREMASK_DEEP_FEATURES,
+};
+const uint32_t *xc_get_static_cpu_featuremask(enum xc_static_cpu_featuremask);
+const uint32_t *xc_get_feature_deep_deps(uint32_t feature);
+
 #endif
 
 /* Compat shims */

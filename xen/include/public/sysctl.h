@@ -766,6 +766,52 @@ struct xen_sysctl_tmem_op {
 typedef struct xen_sysctl_tmem_op xen_sysctl_tmem_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_sysctl_tmem_op_t);
 
+/*
+ * XEN_SYSCTL_get_cpu_levelling_caps (x86 specific)
+ *
+ * Return hardware capabilities concerning masking or faulting of the cpuid
+ * instruction for PV guests.
+ */
+struct xen_sysctl_cpu_levelling_caps {
+#define XEN_SYSCTL_CPU_LEVELCAP_faulting    (1ul <<  0) /* CPUID faulting    */
+#define XEN_SYSCTL_CPU_LEVELCAP_ecx         (1ul <<  1) /* 0x00000001.ecx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_edx         (1ul <<  2) /* 0x00000001.edx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_extd_ecx    (1ul <<  3) /* 0x80000001.ecx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_extd_edx    (1ul <<  4) /* 0x80000001.edx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_xsave_eax   (1ul <<  5) /* 0x0000000D:1.eax  */
+#define XEN_SYSCTL_CPU_LEVELCAP_thermal_ecx (1ul <<  6) /* 0x00000006.ecx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_l7s0_eax    (1ul <<  7) /* 0x00000007:0.eax  */
+#define XEN_SYSCTL_CPU_LEVELCAP_l7s0_ebx    (1ul <<  8) /* 0x00000007:0.ebx  */
+    uint32_t caps;
+};
+typedef struct xen_sysctl_cpu_levelling_caps xen_sysctl_cpu_levelling_caps_t;
+DEFINE_XEN_GUEST_HANDLE(xen_sysctl_cpu_levelling_caps_t);
+
+/*
+ * XEN_SYSCTL_get_cpu_featureset (x86 specific)
+ *
+ * Return information about featuresets available on this host.
+ *  -  Raw: The real cpuid values.
+ *  - Host: The values Xen is using, (after command line overrides, etc).
+ *  -   PV: Maximum set of features which can be given to a PV guest.
+ *  -  HVM: Maximum set of features which can be given to a HVM guest.
+ */
+struct xen_sysctl_cpu_featureset {
+#define XEN_SYSCTL_cpu_featureset_raw      0
+#define XEN_SYSCTL_cpu_featureset_host     1
+#define XEN_SYSCTL_cpu_featureset_pv       2
+#define XEN_SYSCTL_cpu_featureset_hvm      3
+    uint32_t index;       /* IN: Which featureset to query? */
+    uint32_t nr_features; /* IN/OUT: Number of entries in/written to
+                           * 'features', or the maximum number of features if
+                           * the guest handle is NULL.  NB. All featuresets
+                           * come from the same numberspace, so have the same
+                           * maximum length. */
+    XEN_GUEST_HANDLE_64(uint32) features; /* OUT: */
+};
+typedef struct xen_sysctl_featureset xen_sysctl_featureset_t;
+DEFINE_XEN_GUEST_HANDLE(xen_sysctl_featureset_t);
+
 struct xen_sysctl {
     uint32_t cmd;
 #define XEN_SYSCTL_readconsole                    1
@@ -791,6 +837,8 @@ struct xen_sysctl {
 #define XEN_SYSCTL_pcitopoinfo                   22
 #define XEN_SYSCTL_psr_cat_op                    23
 #define XEN_SYSCTL_tmem_op                       24
+#define XEN_SYSCTL_get_cpu_levelling_caps        25
+#define XEN_SYSCTL_get_cpu_featureset            26
     uint32_t interface_version; /* XEN_SYSCTL_INTERFACE_VERSION */
     union {
         struct xen_sysctl_readconsole       readconsole;
@@ -816,6 +864,8 @@ struct xen_sysctl {
         struct xen_sysctl_psr_cmt_op        psr_cmt_op;
         struct xen_sysctl_psr_cat_op        psr_cat_op;
         struct xen_sysctl_tmem_op           tmem_op;
+        struct xen_sysctl_cpu_levelling_caps cpu_levelling_caps;
+        struct xen_sysctl_cpu_featureset    cpu_featureset;
         uint8_t                             pad[128];
     } u;
 };

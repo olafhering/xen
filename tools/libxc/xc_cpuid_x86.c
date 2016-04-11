@@ -21,17 +21,141 @@
 
 #include <stdlib.h>
 #include <stdbool.h>
+#include <limits.h>
 #include "xc_private.h"
-#include "xc_cpufeature.h"
+#include "xc_bitops.h"
 #include <xen/hvm/params.h>
 
-#define bitmaskof(idx)      (1u << (idx))
-#define clear_bit(idx, dst) ((dst) &= ~(1u << (idx)))
-#define set_bit(idx, dst)   ((dst) |= (1u << (idx)))
+enum {
+#define XEN_CPUFEATURE(name, value) X86_FEATURE_##name = value,
+#include <xen/arch-x86/cpufeatureset.h>
+};
+#include "_xc_cpuid_autogen.h"
+
+#define bitmaskof(idx)      (1u << ((idx) & 31))
+#define featureword_of(idx) ((idx) >> 5)
+#define clear_feature(idx, dst) ((dst) &= ~bitmaskof(idx))
+#define set_feature(idx, dst)   ((dst) |=  bitmaskof(idx))
 
 #define DEF_MAX_BASE 0x0000000du
 #define DEF_MAX_INTELEXT  0x80000008u
 #define DEF_MAX_AMDEXT    0x8000001cu
+#define COMMON_1D CPUID_COMMON_1D_FEATURES
+
+int xc_get_cpu_levelling_caps(xc_interface *xch, uint32_t *caps)
+{
+    DECLARE_SYSCTL;
+    int ret;
+
+    sysctl.cmd = XEN_SYSCTL_get_cpu_levelling_caps;
+    ret = do_sysctl(xch, &sysctl);
+
+    if ( !ret )
+        *caps = sysctl.u.cpu_levelling_caps.caps;
+
+    return ret;
+}
+
+int xc_get_cpu_featureset(xc_interface *xch, uint32_t index,
+                          uint32_t *nr_features, uint32_t *featureset)
+{
+    DECLARE_SYSCTL;
+    DECLARE_HYPERCALL_BOUNCE(featureset,
+                             *nr_features * sizeof(*featureset),
+                             XC_HYPERCALL_BUFFER_BOUNCE_OUT);
+    int ret;
+
+    if ( xc_hypercall_bounce_pre(xch, featureset) )
+        return -1;
+
+    sysctl.cmd = XEN_SYSCTL_get_cpu_featureset;
+    sysctl.u.cpu_featureset.index = index;
+    sysctl.u.cpu_featureset.nr_features = *nr_features;
+    set_xen_guest_handle(sysctl.u.cpu_featureset.features, featureset);
+
+    ret = do_sysctl(xch, &sysctl);
+
+    xc_hypercall_bounce_post(xch, featureset);
+
+    if ( !ret )
+        *nr_features = sysctl.u.cpu_featureset.nr_features;
+
+    return ret;
+}
+
+uint32_t xc_get_cpu_featureset_size(void)
+{
+    return FEATURESET_NR_ENTRIES;
+}
+
+const uint32_t *xc_get_static_cpu_featuremask(
+    enum xc_static_cpu_featuremask mask)
+{
+    const static uint32_t known[FEATURESET_NR_ENTRIES] = INIT_KNOWN_FEATURES,
+        special[FEATURESET_NR_ENTRIES] = INIT_SPECIAL_FEATURES,
+        pv[FEATURESET_NR_ENTRIES] = INIT_PV_FEATURES,
+        hvm_shadow[FEATURESET_NR_ENTRIES] = INIT_HVM_SHADOW_FEATURES,
+        hvm_hap[FEATURESET_NR_ENTRIES] = INIT_HVM_HAP_FEATURES,
+        deep_features[FEATURESET_NR_ENTRIES] = INIT_DEEP_FEATURES;
+
+    XC_BUILD_BUG_ON(ARRAY_SIZE(known) != FEATURESET_NR_ENTRIES);
+    XC_BUILD_BUG_ON(ARRAY_SIZE(special) != FEATURESET_NR_ENTRIES);
+    XC_BUILD_BUG_ON(ARRAY_SIZE(pv) != FEATURESET_NR_ENTRIES);
+    XC_BUILD_BUG_ON(ARRAY_SIZE(hvm_shadow) != FEATURESET_NR_ENTRIES);
+    XC_BUILD_BUG_ON(ARRAY_SIZE(hvm_hap) != FEATURESET_NR_ENTRIES);
+    XC_BUILD_BUG_ON(ARRAY_SIZE(deep_features) != FEATURESET_NR_ENTRIES);
+
+    switch ( mask )
+    {
+    case XC_FEATUREMASK_KNOWN:
+        return known;
+
+    case XC_FEATUREMASK_SPECIAL:
+        return special;
+
+    case XC_FEATUREMASK_PV:
+        return pv;
+
+    case XC_FEATUREMASK_HVM_SHADOW:
+        return hvm_shadow;
+
+    case XC_FEATUREMASK_HVM_HAP:
+        return hvm_hap;
+
+    case XC_FEATUREMASK_DEEP_FEATURES:
+        return deep_features;
+
+    default:
+        return NULL;
+    }
+}
+
+const uint32_t *xc_get_feature_deep_deps(uint32_t feature)
+{
+    static const struct {
+        uint32_t feature;
+        uint32_t fs[FEATURESET_NR_ENTRIES];
+    } deep_deps[] = INIT_DEEP_DEPS;
+
+    unsigned int start = 0, end = ARRAY_SIZE(deep_deps);
+
+    XC_BUILD_BUG_ON(ARRAY_SIZE(deep_deps) != NR_DEEP_DEPS);
+
+    /* deep_deps[] is sorted.  Perform a binary search. */
+    while ( start < end )
+    {
+        unsigned int mid = start + ((end - start) / 2);
+
+        if ( deep_deps[mid].feature > feature )
+            end = mid;
+        else if ( deep_deps[mid].feature < feature )
+            start = mid + 1;
+        else
+            return deep_deps[mid].fs;
+    }
+
+    return NULL;
+}
 
 struct cpuid_domain_info
 {
@@ -45,6 +169,9 @@ struct cpuid_domain_info
     bool hvm;
     bool pvh;
     uint64_t xfeature_mask;
+
+    uint32_t *featureset;
+    unsigned int nr_features;
 
     /* PV-only information. */
     bool pv64;
@@ -77,11 +204,14 @@ static void cpuid(const unsigned int *input, unsigned int *regs)
 }
 
 static int get_cpuid_domain_info(xc_interface *xch, domid_t domid,
-                                 struct cpuid_domain_info *info)
+                                 struct cpuid_domain_info *info,
+                                 uint32_t *featureset,
+                                 unsigned int nr_features)
 {
     struct xen_domctl domctl = {};
     xc_dominfo_t di;
     unsigned int in[2] = { 0, ~0U }, regs[4];
+    unsigned int i, host_nr_features = xc_get_cpu_featureset_size();
     int rc;
 
     cpuid(in, regs);
@@ -102,6 +232,23 @@ static int get_cpuid_domain_info(xc_interface *xch, domid_t domid,
 
     info->hvm = di.hvm;
     info->pvh = di.pvh;
+
+    info->featureset = calloc(host_nr_features, sizeof(*info->featureset));
+    if ( !info->featureset )
+        return -ENOMEM;
+
+    info->nr_features = host_nr_features;
+
+    if ( featureset )
+    {
+        memcpy(info->featureset, featureset,
+               min(host_nr_features, nr_features) * sizeof(*info->featureset));
+
+        /* Check for truncated set bits. */
+        for ( i = nr_features; i < host_nr_features; ++i )
+            if ( featureset[i] != 0 )
+                return -EOPNOTSUPP;
+    }
 
     /* Get xstate information. */
     domctl.cmd = XEN_DOMCTL_getvcpuextstate;
@@ -127,6 +274,14 @@ static int get_cpuid_domain_info(xc_interface *xch, domid_t domid,
             return rc;
 
         info->nestedhvm = !!val;
+
+        if ( !featureset )
+        {
+            rc = xc_get_cpu_featureset(xch, XEN_SYSCTL_cpu_featureset_hvm,
+                                       &host_nr_features, info->featureset);
+            if ( rc )
+                return rc;
+        }
     }
     else
     {
@@ -137,9 +292,22 @@ static int get_cpuid_domain_info(xc_interface *xch, domid_t domid,
             return rc;
 
         info->pv64 = (width == 8);
+
+        if ( !featureset )
+        {
+            rc = xc_get_cpu_featureset(xch, XEN_SYSCTL_cpu_featureset_pv,
+                                       &host_nr_features, info->featureset);
+            if ( rc )
+                return rc;
+        }
     }
 
     return 0;
+}
+
+static void free_cpuid_domain_info(struct cpuid_domain_info *info)
+{
+    free(info->featureset);
 }
 
 static void amd_xc_cpuid_policy(xc_interface *xch,
@@ -157,38 +325,6 @@ static void amd_xc_cpuid_policy(xc_interface *xch,
         if ( regs[0] > DEF_MAX_AMDEXT )
             regs[0] = DEF_MAX_AMDEXT;
         break;
-
-    case 0x80000001: {
-        if ( !info->pae )
-            clear_bit(X86_FEATURE_PAE, regs[3]);
-
-        /* Filter all other features according to a whitelist. */
-        regs[2] &= (bitmaskof(X86_FEATURE_LAHF_LM) |
-                    bitmaskof(X86_FEATURE_CMP_LEGACY) |
-                    (info->nestedhvm ? bitmaskof(X86_FEATURE_SVM) : 0) |
-                    bitmaskof(X86_FEATURE_CR8_LEGACY) |
-                    bitmaskof(X86_FEATURE_ABM) |
-                    bitmaskof(X86_FEATURE_SSE4A) |
-                    bitmaskof(X86_FEATURE_MISALIGNSSE) |
-                    bitmaskof(X86_FEATURE_3DNOWPREFETCH) |
-                    bitmaskof(X86_FEATURE_OSVW) |
-                    bitmaskof(X86_FEATURE_XOP) |
-                    bitmaskof(X86_FEATURE_LWP) |
-                    bitmaskof(X86_FEATURE_FMA4) |
-                    bitmaskof(X86_FEATURE_TBM) |
-                    bitmaskof(X86_FEATURE_DBEXT));
-        regs[3] &= (0x0183f3ff | /* features shared with 0x00000001:EDX */
-                    bitmaskof(X86_FEATURE_NX) |
-                    bitmaskof(X86_FEATURE_LM) |
-                    bitmaskof(X86_FEATURE_PAGE1GB) |
-                    bitmaskof(X86_FEATURE_SYSCALL) |
-                    bitmaskof(X86_FEATURE_MP) |
-                    bitmaskof(X86_FEATURE_MMXEXT) |
-                    bitmaskof(X86_FEATURE_FFXSR) |
-                    bitmaskof(X86_FEATURE_3DNOW) |
-                    bitmaskof(X86_FEATURE_3DNOWEXT));
-        break;
-    }
 
     case 0x80000008:
         /*
@@ -236,12 +372,6 @@ static void intel_xc_cpuid_policy(xc_interface *xch,
 {
     switch ( input[0] )
     {
-    case 0x00000001:
-        /* ECX[5] is availability of VMX */
-        if ( info->nestedhvm )
-            set_bit(X86_FEATURE_VMXE, regs[2]);
-        break;
-
     case 0x00000004:
         /*
          * EAX[31:26] is Maximum Cores Per Package (minus one).
@@ -257,19 +387,6 @@ static void intel_xc_cpuid_policy(xc_interface *xch,
             regs[0] = DEF_MAX_INTELEXT;
         break;
 
-    case 0x80000001: {
-        /* Only a few features are advertised in Intel's 0x80000001. */
-        regs[2] &= (bitmaskof(X86_FEATURE_LAHF_LM) |
-                    bitmaskof(X86_FEATURE_3DNOWPREFETCH) |
-                    bitmaskof(X86_FEATURE_ABM));
-        regs[3] &= (bitmaskof(X86_FEATURE_NX) |
-                    bitmaskof(X86_FEATURE_LM) |
-                    bitmaskof(X86_FEATURE_PAGE1GB) |
-                    bitmaskof(X86_FEATURE_SYSCALL) |
-                    bitmaskof(X86_FEATURE_RDTSCP));
-        break;
-    }
-
     case 0x80000005:
         regs[0] = regs[1] = regs[2] = 0;
         break;
@@ -281,60 +398,115 @@ static void intel_xc_cpuid_policy(xc_interface *xch,
     }
 }
 
-#define XSAVEOPT        (1 << 0)
-#define XSAVEC          (1 << 1)
-#define XGETBV1         (1 << 2)
-#define XSAVES          (1 << 3)
+/* XSTATE bits in XCR0. */
+#define X86_XCR0_X87    (1ULL <<  0)
+#define X86_XCR0_SSE    (1ULL <<  1)
+#define X86_XCR0_AVX    (1ULL <<  2)
+#define X86_XCR0_BNDREG (1ULL <<  3)
+#define X86_XCR0_BNDCSR (1ULL <<  4)
+#define X86_XCR0_PKRU   (1ULL <<  9)
+#define X86_XCR0_LWP    (1ULL << 62)
+
+#define X86_XSS_MASK    (0) /* No XSS states supported yet. */
+
+/* Per-component subleaf flags. */
+#define XSTATE_XSS      (1ULL <<  0)
+#define XSTATE_ALIGN64  (1ULL <<  1)
+
 /* Configure extended state enumeration leaves (0x0000000D for xsave) */
 static void xc_cpuid_config_xsave(xc_interface *xch,
                                   const struct cpuid_domain_info *info,
                                   const unsigned int *input, unsigned int *regs)
 {
-    if ( info->xfeature_mask == 0 )
+    uint64_t guest_xfeature_mask;
+
+    if ( info->xfeature_mask == 0 ||
+         !test_bit(X86_FEATURE_XSAVE, info->featureset) )
     {
         regs[0] = regs[1] = regs[2] = regs[3] = 0;
         return;
     }
 
+    guest_xfeature_mask = X86_XCR0_SSE | X86_XCR0_X87;
+
+    if ( test_bit(X86_FEATURE_AVX, info->featureset) )
+        guest_xfeature_mask |= X86_XCR0_AVX;
+
+    if ( test_bit(X86_FEATURE_MPX, info->featureset) )
+        guest_xfeature_mask |= X86_XCR0_BNDREG | X86_XCR0_BNDCSR;
+
+    if ( test_bit(X86_FEATURE_PKU, info->featureset) )
+        guest_xfeature_mask |= X86_XCR0_PKRU;
+
+    if ( test_bit(X86_FEATURE_LWP, info->featureset) )
+        guest_xfeature_mask |= X86_XCR0_LWP;
+
+    /*
+     * In the common case, the toolstack will have queried Xen for the maximum
+     * available featureset, and guest_xfeature_mask should not able to be
+     * calculated as being greater than the host limit, info->xfeature_mask.
+     *
+     * Nothing currently prevents a toolstack (or an optimistic user) from
+     * purposefully trying to select a larger-than-available xstate set.
+     *
+     * To avoid the domain dying with an unexpected fault, clamp the
+     * calculated mask to the host limit.  Future development work will remove
+     * this possibility, when Xen fully audits the complete cpuid polcy set
+     * for a domain.
+     */
+    guest_xfeature_mask &= info->xfeature_mask;
+
     switch ( input[1] )
     {
-    case 0: 
+    case 0:
         /* EAX: low 32bits of xfeature_enabled_mask */
-        regs[0] = info->xfeature_mask & 0xFFFFFFFF;
+        regs[0] = guest_xfeature_mask & 0xFFFFFFFF;
         /* EDX: high 32bits of xfeature_enabled_mask */
-        regs[3] = (info->xfeature_mask >> 32) & 0xFFFFFFFF;
+        regs[3] = guest_xfeature_mask >> 32;
         /* ECX: max size required by all HW features */
         {
             unsigned int _input[2] = {0xd, 0x0}, _regs[4];
             regs[2] = 0;
-            for ( _input[1] = 2; _input[1] < 64; _input[1]++ )
+            for ( _input[1] = 2; _input[1] <= 62; _input[1]++ )
             {
                 cpuid(_input, _regs);
                 if ( (_regs[0] + _regs[1]) > regs[2] )
                     regs[2] = _regs[0] + _regs[1];
             }
         }
-        /* EBX: max size required by enabled features. 
-         * This register contains a dynamic value, which varies when a guest 
-         * enables or disables XSTATE features (via xsetbv). The default size 
-         * after reset is 576. */ 
+        /* EBX: max size required by enabled features.
+         * This register contains a dynamic value, which varies when a guest
+         * enables or disables XSTATE features (via xsetbv). The default size
+         * after reset is 576. */
         regs[1] = 512 + 64; /* FP/SSE + XSAVE.HEADER */
         break;
+
     case 1: /* leaf 1 */
-        regs[0] &= (XSAVEOPT | XSAVEC | XGETBV1 | XSAVES);
-        if ( !info->hvm )
-            regs[0] &= ~XSAVES;
-        regs[2] &= info->xfeature_mask;
-        regs[3] = 0;
+        regs[0] = info->featureset[featureword_of(X86_FEATURE_XSAVEOPT)];
+        regs[1] = 0;
+
+        if ( test_bit(X86_FEATURE_XSAVES, info->featureset) )
+        {
+            regs[2] = guest_xfeature_mask & X86_XSS_MASK & 0xFFFFFFFF;
+            regs[3] = (guest_xfeature_mask >> 32) & X86_XSS_MASK;
+        }
+        else
+            regs[2] = regs[3] = 0;
         break;
-    case 2 ... 63: /* sub-leaves */
-        if ( !(info->xfeature_mask & (1ULL << input[1])) )
+
+    case 2 ... 62: /* per-component sub-leaves */
+        if ( !(guest_xfeature_mask & (1ULL << input[1])) )
         {
             regs[0] = regs[1] = regs[2] = regs[3] = 0;
             break;
         }
         /* Don't touch EAX, EBX. Also cleanup ECX and EDX */
-        regs[2] = regs[3] = 0;
+        regs[2] &= XSTATE_XSS | XSTATE_ALIGN64;
+        regs[3] = 0;
+        break;
+
+    default:
+        regs[0] = regs[1] = regs[2] = regs[3] = 0;
         break;
     }
 }
@@ -357,85 +529,22 @@ static void xc_cpuid_hvm_policy(xc_interface *xch,
          */
         regs[1] = (regs[1] & 0x0000ffffu) | ((regs[1] & 0x007f0000u) << 1);
 
-        regs[2] &= (bitmaskof(X86_FEATURE_XMM3) |
-                    bitmaskof(X86_FEATURE_PCLMULQDQ) |
-                    bitmaskof(X86_FEATURE_SSSE3) |
-                    bitmaskof(X86_FEATURE_FMA) |
-                    bitmaskof(X86_FEATURE_CX16) |
-                    bitmaskof(X86_FEATURE_PCID) |
-                    bitmaskof(X86_FEATURE_SSE4_1) |
-                    bitmaskof(X86_FEATURE_SSE4_2) |
-                    bitmaskof(X86_FEATURE_MOVBE)  |
-                    bitmaskof(X86_FEATURE_POPCNT) |
-                    bitmaskof(X86_FEATURE_AES) |
-                    bitmaskof(X86_FEATURE_F16C) |
-                    bitmaskof(X86_FEATURE_RDRAND) |
-                    ((info->xfeature_mask != 0) ?
-                     (bitmaskof(X86_FEATURE_AVX) |
-                      bitmaskof(X86_FEATURE_XSAVE)) : 0));
-
-        regs[2] |= (bitmaskof(X86_FEATURE_HYPERVISOR) |
-                    bitmaskof(X86_FEATURE_TSC_DEADLINE) |
-                    bitmaskof(X86_FEATURE_X2APIC));
-
-        regs[3] &= (bitmaskof(X86_FEATURE_FPU) |
-                    bitmaskof(X86_FEATURE_VME) |
-                    bitmaskof(X86_FEATURE_DE) |
-                    bitmaskof(X86_FEATURE_PSE) |
-                    bitmaskof(X86_FEATURE_TSC) |
-                    bitmaskof(X86_FEATURE_MSR) |
-                    bitmaskof(X86_FEATURE_PAE) |
-                    bitmaskof(X86_FEATURE_MCE) |
-                    bitmaskof(X86_FEATURE_CX8) |
-                    bitmaskof(X86_FEATURE_APIC) |
-                    bitmaskof(X86_FEATURE_SEP) |
-                    bitmaskof(X86_FEATURE_MTRR) |
-                    bitmaskof(X86_FEATURE_PGE) |
-                    bitmaskof(X86_FEATURE_MCA) |
-                    bitmaskof(X86_FEATURE_CMOV) |
-                    bitmaskof(X86_FEATURE_PAT) |
-                    bitmaskof(X86_FEATURE_CLFLSH) |
-                    bitmaskof(X86_FEATURE_PSE36) |
-                    bitmaskof(X86_FEATURE_MMX) |
-                    bitmaskof(X86_FEATURE_FXSR) |
-                    bitmaskof(X86_FEATURE_XMM) |
-                    bitmaskof(X86_FEATURE_XMM2) |
-                    bitmaskof(X86_FEATURE_HT));
-            
-        /* We always support MTRR MSRs. */
-        regs[3] |= bitmaskof(X86_FEATURE_MTRR);
-
-        if ( !info->pae )
-        {
-            clear_bit(X86_FEATURE_PAE, regs[3]);
-            clear_bit(X86_FEATURE_PSE36, regs[3]);
-        }
+        regs[2] = info->featureset[featureword_of(X86_FEATURE_SSE3)];
+        regs[3] = (info->featureset[featureword_of(X86_FEATURE_FPU)] |
+                   bitmaskof(X86_FEATURE_HTT));
         break;
 
     case 0x00000007: /* Intel-defined CPU features */
-        if ( input[1] == 0 ) {
-            regs[1] &= (bitmaskof(X86_FEATURE_TSC_ADJUST) |
-                        bitmaskof(X86_FEATURE_BMI1) |
-                        bitmaskof(X86_FEATURE_HLE)  |
-                        bitmaskof(X86_FEATURE_AVX2) |
-                        bitmaskof(X86_FEATURE_SMEP) |
-                        bitmaskof(X86_FEATURE_BMI2) |
-                        bitmaskof(X86_FEATURE_ERMS) |
-                        bitmaskof(X86_FEATURE_INVPCID) |
-                        bitmaskof(X86_FEATURE_RTM)  |
-                        ((info->xfeature_mask != 0) ?
-                        bitmaskof(X86_FEATURE_MPX) : 0)  |
-                        bitmaskof(X86_FEATURE_RDSEED)  |
-                        bitmaskof(X86_FEATURE_ADX)  |
-                        bitmaskof(X86_FEATURE_SMAP) |
-                        bitmaskof(X86_FEATURE_FSGSBASE) |
-                        bitmaskof(X86_FEATURE_PCOMMIT) |
-                        bitmaskof(X86_FEATURE_CLWB) |
-                        bitmaskof(X86_FEATURE_CLFLUSHOPT));
-            regs[2] &= bitmaskof(X86_FEATURE_PKU);
-        } else
-            regs[1] = regs[2] = 0;
-
+        if ( input[1] == 0 )
+        {
+            regs[1] = info->featureset[featureword_of(X86_FEATURE_FSGSBASE)];
+            regs[2] = info->featureset[featureword_of(X86_FEATURE_PREFETCHWT1)];
+        }
+        else
+        {
+            regs[1] = 0;
+            regs[2] = 0;
+        }
         regs[0] = regs[3] = 0;
         break;
 
@@ -448,14 +557,9 @@ static void xc_cpuid_hvm_policy(xc_interface *xch,
         break;
 
     case 0x80000001:
-        if ( !info->pae )
-        {
-            clear_bit(X86_FEATURE_LAHF_LM, regs[2]);
-            clear_bit(X86_FEATURE_LM, regs[3]);
-            clear_bit(X86_FEATURE_NX, regs[3]);
-            clear_bit(X86_FEATURE_PSE36, regs[3]);
-            clear_bit(X86_FEATURE_PAGE1GB, regs[3]);
-        }
+        regs[2] = (info->featureset[featureword_of(X86_FEATURE_LAHF_LM)] &
+                   ~bitmaskof(X86_FEATURE_CMP_LEGACY));
+        regs[3] = info->featureset[featureword_of(X86_FEATURE_SYSCALL)];
         break;
 
     case 0x80000007:
@@ -499,68 +603,34 @@ static void xc_cpuid_pv_policy(xc_interface *xch,
                                const struct cpuid_domain_info *info,
                                const unsigned int *input, unsigned int *regs)
 {
-    if ( (input[0] & 0x7fffffff) == 0x00000001 )
-    {
-        clear_bit(X86_FEATURE_VME, regs[3]);
-        if ( !info->pvh )
-        {
-            clear_bit(X86_FEATURE_PSE, regs[3]);
-            clear_bit(X86_FEATURE_PGE, regs[3]);
-        }
-        clear_bit(X86_FEATURE_MCE, regs[3]);
-        clear_bit(X86_FEATURE_MCA, regs[3]);
-        clear_bit(X86_FEATURE_MTRR, regs[3]);
-        clear_bit(X86_FEATURE_PSE36, regs[3]);
-    }
-
     switch ( input[0] )
     {
     case 0x00000001:
-        if ( info->vendor == VENDOR_AMD )
-            clear_bit(X86_FEATURE_SEP, regs[3]);
-        clear_bit(X86_FEATURE_DS, regs[3]);
-        clear_bit(X86_FEATURE_ACC, regs[3]);
-        clear_bit(X86_FEATURE_PBE, regs[3]);
+    {
+        /* Host topology exposed to PV guest.  Provide host value. */
+        bool host_htt = regs[3] & bitmaskof(X86_FEATURE_HTT);
 
-        clear_bit(X86_FEATURE_DTES64, regs[2]);
-        clear_bit(X86_FEATURE_MWAIT, regs[2]);
-        clear_bit(X86_FEATURE_DSCPL, regs[2]);
-        clear_bit(X86_FEATURE_VMXE, regs[2]);
-        clear_bit(X86_FEATURE_SMXE, regs[2]);
-        clear_bit(X86_FEATURE_EST, regs[2]);
-        clear_bit(X86_FEATURE_TM2, regs[2]);
-        if ( !info->pv64 )
-            clear_bit(X86_FEATURE_CX16, regs[2]);
-        if ( info->xfeature_mask == 0 )
-        {
-            clear_bit(X86_FEATURE_XSAVE, regs[2]);
-            clear_bit(X86_FEATURE_AVX, regs[2]);
-        }
-        clear_bit(X86_FEATURE_XTPR, regs[2]);
-        clear_bit(X86_FEATURE_PDCM, regs[2]);
-        clear_bit(X86_FEATURE_PCID, regs[2]);
-        clear_bit(X86_FEATURE_DCA, regs[2]);
-        set_bit(X86_FEATURE_HYPERVISOR, regs[2]);
+        regs[2] = info->featureset[featureword_of(X86_FEATURE_SSE3)];
+        regs[3] = (info->featureset[featureword_of(X86_FEATURE_FPU)] &
+                   ~bitmaskof(X86_FEATURE_HTT));
+
+        if ( host_htt )
+            regs[3] |= bitmaskof(X86_FEATURE_HTT);
         break;
+    }
 
     case 0x00000007:
         if ( input[1] == 0 )
         {
-            regs[1] &= (bitmaskof(X86_FEATURE_BMI1) |
-                        bitmaskof(X86_FEATURE_HLE)  |
-                        bitmaskof(X86_FEATURE_AVX2) |
-                        bitmaskof(X86_FEATURE_BMI2) |
-                        bitmaskof(X86_FEATURE_ERMS) |
-                        bitmaskof(X86_FEATURE_RTM)  |
-                        bitmaskof(X86_FEATURE_RDSEED)  |
-                        bitmaskof(X86_FEATURE_ADX)  |
-                        bitmaskof(X86_FEATURE_FSGSBASE));
-            if ( info->xfeature_mask == 0 )
-                clear_bit(X86_FEATURE_MPX, regs[1]);
+            regs[1] = info->featureset[featureword_of(X86_FEATURE_FSGSBASE)];
+            regs[2] = info->featureset[featureword_of(X86_FEATURE_PREFETCHWT1)];
         }
         else
+        {
             regs[1] = 0;
-        regs[0] = regs[2] = regs[3] = 0;
+            regs[2] = 0;
+        }
+        regs[0] = regs[3] = 0;
         break;
 
     case 0x0000000d:
@@ -568,30 +638,19 @@ static void xc_cpuid_pv_policy(xc_interface *xch,
         break;
 
     case 0x80000001:
-        if ( !info->pv64 )
-        {
-            clear_bit(X86_FEATURE_LM, regs[3]);
-            clear_bit(X86_FEATURE_LAHF_LM, regs[2]);
-            if ( info->vendor != VENDOR_AMD )
-                clear_bit(X86_FEATURE_SYSCALL, regs[3]);
-        }
-        else
-        {
-            set_bit(X86_FEATURE_SYSCALL, regs[3]);
-        }
-        if ( !info->pvh )
-            clear_bit(X86_FEATURE_PAGE1GB, regs[3]);
-        clear_bit(X86_FEATURE_RDTSCP, regs[3]);
+    {
+        /* Host topology exposed to PV guest.  Provide host CMP_LEGACY value. */
+        bool host_cmp_legacy = regs[2] & bitmaskof(X86_FEATURE_CMP_LEGACY);
 
-        clear_bit(X86_FEATURE_SVM, regs[2]);
-        clear_bit(X86_FEATURE_OSVW, regs[2]);
-        clear_bit(X86_FEATURE_IBS, regs[2]);
-        clear_bit(X86_FEATURE_SKINIT, regs[2]);
-        clear_bit(X86_FEATURE_WDT, regs[2]);
-        clear_bit(X86_FEATURE_LWP, regs[2]);
-        clear_bit(X86_FEATURE_NODEID_MSR, regs[2]);
-        clear_bit(X86_FEATURE_TOPOEXT, regs[2]);
+        regs[2] = (info->featureset[featureword_of(X86_FEATURE_LAHF_LM)] &
+                   ~bitmaskof(X86_FEATURE_CMP_LEGACY));
+        regs[3] = info->featureset[featureword_of(X86_FEATURE_SYSCALL)];
+
+        if ( host_cmp_legacy )
+            regs[2] |= bitmaskof(X86_FEATURE_CMP_LEGACY);
+
         break;
+    }
 
     case 0x00000005: /* MONITOR/MWAIT */
     case 0x0000000a: /* Architectural Performance Monitor Features */
@@ -670,16 +729,99 @@ void xc_cpuid_to_str(const unsigned int *regs, char **strs)
     }
 }
 
-int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid)
+static void sanitise_featureset(struct cpuid_domain_info *info)
+{
+    const uint32_t fs_size = xc_get_cpu_featureset_size();
+    uint32_t disabled_features[fs_size];
+    static const uint32_t deep_features[] = INIT_DEEP_FEATURES;
+    unsigned int i, b;
+
+    if ( info->hvm )
+    {
+        /* HVM Guest */
+
+        if ( !info->pae )
+            clear_bit(X86_FEATURE_PAE, info->featureset);
+
+        if ( !info->nestedhvm )
+        {
+            clear_bit(X86_FEATURE_SVM, info->featureset);
+            clear_bit(X86_FEATURE_VMX, info->featureset);
+        }
+    }
+    else
+    {
+        /* PV or PVH Guest */
+
+        if ( !info->pv64 )
+        {
+            clear_bit(X86_FEATURE_LM, info->featureset);
+            if ( info->vendor != VENDOR_AMD )
+                clear_bit(X86_FEATURE_SYSCALL, info->featureset);
+        }
+
+        if ( !info->pvh )
+        {
+            clear_bit(X86_FEATURE_PSE, info->featureset);
+            clear_bit(X86_FEATURE_PSE36, info->featureset);
+            clear_bit(X86_FEATURE_PGE, info->featureset);
+            clear_bit(X86_FEATURE_PAGE1GB, info->featureset);
+        }
+    }
+
+    if ( info->xfeature_mask == 0 )
+        clear_bit(X86_FEATURE_XSAVE, info->featureset);
+
+    /* Disable deep dependencies of disabled features. */
+    for ( i = 0; i < ARRAY_SIZE(disabled_features); ++i )
+        disabled_features[i] = ~info->featureset[i] & deep_features[i];
+
+    for ( b = 0; b < sizeof(disabled_features) * CHAR_BIT; ++b )
+    {
+        const uint32_t *dfs;
+
+        if ( !test_bit(b, disabled_features) ||
+             !(dfs = xc_get_feature_deep_deps(b)) )
+             continue;
+
+        for ( i = 0; i < ARRAY_SIZE(disabled_features); ++i )
+        {
+            info->featureset[i] &= ~dfs[i];
+            disabled_features[i] &= ~dfs[i];
+        }
+    }
+
+    switch ( info->vendor )
+    {
+    case VENDOR_INTEL:
+        /* Intel clears the common bits in e1d. */
+        info->featureset[featureword_of(X86_FEATURE_SYSCALL)] &= ~COMMON_1D;
+        break;
+
+    case VENDOR_AMD:
+        /* AMD duplicates the common bits between 1d and e1d. */
+        info->featureset[featureword_of(X86_FEATURE_SYSCALL)] =
+            ((info->featureset[featureword_of(X86_FEATURE_FPU)] & COMMON_1D) |
+             (info->featureset[featureword_of(X86_FEATURE_SYSCALL)] & ~COMMON_1D));
+        break;
+
+    default:
+        break;
+    }
+}
+
+int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid,
+                          uint32_t *featureset,
+                          unsigned int nr_features)
 {
     struct cpuid_domain_info info = {};
     unsigned int input[2] = { 0, 0 }, regs[4];
     unsigned int base_max, ext_max;
     int rc;
 
-    rc = get_cpuid_domain_info(xch, domid, &info);
+    rc = get_cpuid_domain_info(xch, domid, &info, featureset, nr_features);
     if ( rc )
-        return rc;
+        goto out;
 
     cpuid(input, regs);
     base_max = (regs[0] <= DEF_MAX_BASE) ? regs[0] : DEF_MAX_BASE;
@@ -690,6 +832,8 @@ int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid)
         ext_max = (regs[0] <= DEF_MAX_AMDEXT) ? regs[0] : DEF_MAX_AMDEXT;
     else
         ext_max = (regs[0] <= DEF_MAX_INTELEXT) ? regs[0] : DEF_MAX_INTELEXT;
+
+    sanitise_featureset(&info);
 
     input[0] = 0;
     input[1] = XEN_CPUID_INPUT_UNUSED;
@@ -702,7 +846,7 @@ int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid)
         {
             rc = xc_cpuid_do_domctl(xch, domid, input, regs);
             if ( rc )
-                return rc;
+                goto out;
         }
 
         /* Intel cache descriptor leaves. */
@@ -730,7 +874,9 @@ int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid)
             break;
     }
 
-    return 0;
+ out:
+    free_cpuid_domain_info(&info);
+    return rc;
 }
 
 /*
@@ -819,9 +965,9 @@ int xc_cpuid_set(
 
     memset(config_transformed, 0, 4 * sizeof(*config_transformed));
 
-    rc = get_cpuid_domain_info(xch, domid, &info);
+    rc = get_cpuid_domain_info(xch, domid, &info, NULL, 0);
     if ( rc )
-        return rc;
+        goto out;
 
     cpuid(input, regs);
 
@@ -860,9 +1006,9 @@ int xc_cpuid_set(
                 val = polval;
 
             if ( val )
-                set_bit(31 - j, regs[i]);
+                set_feature(31 - j, regs[i]);
             else
-                clear_bit(31 - j, regs[i]);
+                clear_feature(31 - j, regs[i]);
 
             config_transformed[i][j] = config[i][j];
             if ( config[i][j] == 's' )
@@ -872,7 +1018,7 @@ int xc_cpuid_set(
 
     rc = xc_cpuid_do_domctl(xch, domid, input, regs);
     if ( rc == 0 )
-        return 0;
+        goto out;
 
  fail:
     for ( i = 0; i < 4; i++ )
@@ -880,5 +1026,8 @@ int xc_cpuid_set(
         free(config_transformed[i]);
         config_transformed[i] = NULL;
     }
+
+ out:
+    free_cpuid_domain_info(&info);
     return rc;
 }

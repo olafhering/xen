@@ -577,6 +577,14 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
             goto fail;
         clear_page(d->arch.pv_domain.gdt_ldt_l1tab);
 
+        if ( levelling_caps & ~LCAP_faulting )
+        {
+            d->arch.pv_domain.cpuidmasks = xmalloc(struct cpuidmasks);
+            if ( !d->arch.pv_domain.cpuidmasks )
+                goto fail;
+            *d->arch.pv_domain.cpuidmasks = cpuidmask_defaults;
+        }
+
         rc = create_perdomain_mapping(d, GDT_LDT_VIRT_START,
                                       GDT_LDT_MBYTES << (20 - PAGE_SHIFT),
                                       NULL, NULL);
@@ -672,7 +680,10 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         paging_final_teardown(d);
     free_perdomain_mappings(d);
     if ( is_pv_domain(d) )
+    {
+        xfree(d->arch.pv_domain.cpuidmasks);
         free_xenheap_page(d->arch.pv_domain.gdt_ldt_l1tab);
+    }
     psr_domain_free(d);
     return rc;
 }
@@ -692,7 +703,10 @@ void arch_domain_destroy(struct domain *d)
 
     free_perdomain_mappings(d);
     if ( is_pv_domain(d) )
+    {
         free_xenheap_page(d->arch.pv_domain.gdt_ldt_l1tab);
+        xfree(d->arch.pv_domain.cpuidmasks);
+    }
 
     free_xenheap_page(d->shared_info);
     cleanup_domain_irq_mapping(d);
@@ -994,7 +1008,7 @@ int arch_set_info_guest(
     init_int80_direct_trap(v);
 
     /* IOPL privileges are virtualised. */
-    v->arch.pv_vcpu.iopl = (v->arch.user_regs.eflags >> 12) & 3;
+    v->arch.pv_vcpu.iopl = v->arch.user_regs.eflags & X86_EFLAGS_IOPL;
     v->arch.user_regs.eflags &= ~X86_EFLAGS_IOPL;
 
     /* Ensure real hardware interrupts are enabled. */
@@ -1735,8 +1749,10 @@ static void load_segments(struct vcpu *n)
             cs_and_mask = (unsigned short)regs->cs |
                 ((unsigned int)vcpu_info(n, evtchn_upcall_mask) << 16);
             /* Fold upcall mask into RFLAGS.IF. */
-            eflags  = regs->_eflags & ~X86_EFLAGS_IF;
+            eflags  = regs->_eflags & ~(X86_EFLAGS_IF|X86_EFLAGS_IOPL);
             eflags |= !vcpu_info(n, evtchn_upcall_mask) << 9;
+            if ( VM_ASSIST(n->domain, architectural_iopl) )
+                eflags |= n->arch.pv_vcpu.iopl;
 
             if ( !ring_1(regs) )
             {
@@ -1763,7 +1779,8 @@ static void load_segments(struct vcpu *n)
                 vcpu_info(n, evtchn_upcall_mask) = 1;
 
             regs->entry_vector |= TRAP_syscall;
-            regs->_eflags      &= 0xFFFCBEFFUL;
+            regs->_eflags      &= ~(X86_EFLAGS_VM|X86_EFLAGS_RF|X86_EFLAGS_NT|
+                                    X86_EFLAGS_IOPL|X86_EFLAGS_TF);
             regs->ss            = FLAT_COMPAT_KERNEL_SS;
             regs->_esp          = (unsigned long)(esp-7);
             regs->cs            = FLAT_COMPAT_KERNEL_CS;
@@ -1781,8 +1798,10 @@ static void load_segments(struct vcpu *n)
             ((unsigned long)vcpu_info(n, evtchn_upcall_mask) << 32);
 
         /* Fold upcall mask into RFLAGS.IF. */
-        rflags  = regs->rflags & ~X86_EFLAGS_IF;
+        rflags  = regs->rflags & ~(X86_EFLAGS_IF|X86_EFLAGS_IOPL);
         rflags |= !vcpu_info(n, evtchn_upcall_mask) << 9;
+        if ( VM_ASSIST(n->domain, architectural_iopl) )
+            rflags |= n->arch.pv_vcpu.iopl;
 
         if ( put_user(regs->ss,            rsp- 1) |
              put_user(regs->rsp,           rsp- 2) |
@@ -1806,7 +1825,7 @@ static void load_segments(struct vcpu *n)
 
         regs->entry_vector |= TRAP_syscall;
         regs->rflags       &= ~(X86_EFLAGS_AC|X86_EFLAGS_VM|X86_EFLAGS_RF|
-                                X86_EFLAGS_NT|X86_EFLAGS_TF);
+                                X86_EFLAGS_NT|X86_EFLAGS_IOPL|X86_EFLAGS_TF);
         regs->ss            = FLAT_KERNEL_SS;
         regs->rsp           = (unsigned long)(rsp-11);
         regs->cs            = FLAT_KERNEL_CS;
@@ -2082,9 +2101,7 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
             load_segments(next);
         }
 
-        set_cpuid_faulting(is_pv_domain(nextd) &&
-                           !is_control_domain(nextd) &&
-                           !is_hardware_domain(nextd));
+        ctxt_switch_levelling(nextd);
     }
 
     context_saved(prev);
