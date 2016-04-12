@@ -27,6 +27,8 @@ typedef void (*vscsictrl_add)(libxl__egc *egc,
                               libxl_device_vscsictrl *vscsictrl,
                               libxl_domain_config *d_config);
 
+#define LIBXL_CTRL_INDEX "libxl_ctrl_index"
+
 #define XLU_WWN_LEN 16
 
 static int vscsi_parse_hctl(char *str, libxl_vscsi_hctl *hctl)
@@ -146,7 +148,7 @@ static bool vscsi_fill_ctrl(libxl__gc *gc,
         goto out;
     ctrl->backend_domid = be_domid;
 
-    tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/idx", be_path));
+    tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/" LIBXL_CTRL_INDEX, be_path));
     if (!tmp)
         goto out;
     ctrl->idx = atoi(tmp);
@@ -579,7 +581,7 @@ static void vscsictrl_new_backend(libxl__egc *egc,
                           "state",
                           GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append_pair(back,
-                          "libxl_ctrl_index",
+                          LIBXL_CTRL_INDEX,
                           GCSPRINTF("%d", vscsictrl->idx));
     flexarray_append_pair(back, "feature-host",
                           libxl_defbool_val(vscsictrl->scsi_raw_cmds) ?
@@ -995,7 +997,7 @@ int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", vscsipath));
     vscsiinfo->vscsictrl_state = val ? strtoul(val, NULL, 10) : -1;
 
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/idx", vscsipath));
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/" LIBXL_CTRL_INDEX, vscsipath));
     vscsiinfo->idx = val ? strtoul(val, NULL, 10) : -1;
 
     vscsiinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
