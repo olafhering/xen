@@ -37,7 +37,8 @@
 #include <asm/setup.h>
 
 /* Processors with enabled flag and sane MPIDR */
-static unsigned int enabled_cpus;
+static unsigned int enabled_cpus = 1;
+static bool __initdata bootcpu_valid;
 
 /* total number of cpus in this system */
 static unsigned int __initdata total_cpus;
@@ -50,6 +51,7 @@ static void __init
 acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
 {
     int i;
+    int rc;
     u64 mpidr = processor->arm_mpidr & MPIDR_HWID_MASK;
     bool_t enabled = !!(processor->flags & ACPI_MADT_ENABLED);
 
@@ -61,7 +63,10 @@ acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
 
     total_cpus++;
     if ( !enabled )
+    {
+        printk("Skipping disabled CPU entry with 0x%"PRIx64" MPIDR\n", mpidr);
         return;
+    }
 
     if ( enabled_cpus >=  NR_CPUS )
     {
@@ -71,10 +76,15 @@ acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
     }
 
     /* Check if GICC structure of boot CPU is available in the MADT */
-    if ( (enabled_cpus == 0) && (cpu_logical_map(0) != mpidr) )
+    if ( cpu_logical_map(0) == mpidr )
     {
-        printk("Firmware bug, invalid CPU MPIDR for cpu0: 0x%"PRIx64" in MADT\n",
-               mpidr);
+        if ( bootcpu_valid )
+        {
+            printk("Firmware bug, duplicate boot CPU MPIDR: 0x%"PRIx64" in MADT\n",
+                   mpidr);
+            return;
+        }
+        bootcpu_valid = true;
         return;
     }
 
@@ -83,7 +93,7 @@ acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
      * all initialized entries and check for
      * duplicates. If any is found just ignore the CPU.
      */
-    for ( i = 0; i < enabled_cpus; i++ )
+    for ( i = 1; i < enabled_cpus; i++ )
     {
         if ( cpu_logical_map(i) == mpidr )
         {
@@ -94,17 +104,21 @@ acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
     }
 
     if ( !acpi_psci_present() )
-        return;
-
-    /* CPU 0 was already initialized */
-    if ( enabled_cpus )
     {
-        if ( arch_cpu_init(enabled_cpus, NULL) < 0 )
-            return;
-
-        /* map the logical cpu id to cpu MPIDR */
-        cpu_logical_map(enabled_cpus) = mpidr;
+        printk("PSCI not present, skipping CPU MPIDR 0x%"PRIx64"\n",
+               mpidr);
+        return;
     }
+
+    if ( (rc = arch_cpu_init(enabled_cpus, NULL)) < 0 )
+    {
+        printk("cpu%d: init failed (0x%"PRIx64" MPIDR): %d\n",
+               enabled_cpus, mpidr, rc);
+        return;
+    }
+
+    /* map the logical cpu id to cpu MPIDR */
+    cpu_logical_map(enabled_cpus) = mpidr;
 
     enabled_cpus++;
 }
@@ -143,7 +157,7 @@ void __init acpi_smp_init_cpus(void)
         return;
     }
 
-    if ( enabled_cpus > 1 )
+    if ( !bootcpu_valid )
     {
         printk("MADT missing boot CPU MPIDR, not enabling secondaries\n");
         return;
