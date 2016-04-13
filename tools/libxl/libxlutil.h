@@ -118,6 +118,25 @@ int xlu_rdm_parse(XLU_Config *cfg, libxl_rdm_reserve *rdm, const char *str);
 int xlu_vif_parse_rate(XLU_Config *cfg, const char *rate,
                        libxl_device_nic *nic);
 
+/* Fill ctrl/dev with device described in str (pdev,vdev[,options]) */
+int xlu_vscsi_get_ctrl(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid,
+                       const char *str,
+                       libxl_device_vscsictrl *ctrl,
+                       libxl_device_vscsidev *dev,
+                       libxl_device_vscsictrl *existing,
+                       bool *found_existing);
+/* Parse config string and fill provided vscsi ctrl and vscsi device */
+int xlu_vscsi_parse(XLU_Config *cfg, libxl_ctx *ctx, const char *str,
+                    libxl_device_vscsictrl *new_ctrl,
+                    libxl_device_vscsidev *new_dev);
+/* Detach vscsi device described in config string (pdev,vdev[,options]) */
+int xlu_vscsi_detach(XLU_Config *cfg, libxl_ctx *ctx, uint32_t domid, char *str);
+/* Add vscsi device described in config string (pdev,vdev[,options]) to d_config */
+int xlu_vscsi_config_add(XLU_Config *cfg,
+                         libxl_ctx *ctx,
+                         const char *str,
+                         int *num_vscsis,
+                         libxl_device_vscsictrl **vscsis);
 #endif /* LIBXLUTIL_H */
 
 /*

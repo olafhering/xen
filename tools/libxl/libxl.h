@@ -874,6 +874,13 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
 #define LIBXL_HAVE_PCITOPOLOGY 1
 
 /*
+ * LIBXL_HAVE_VSCSI
+ *
+ * If this is defined, the PV SCSI feature is supported.
+ */
+#define LIBXL_HAVE_VSCSI 1
+
+/*
  * LIBXL_HAVE_SOCKET_BITMAP
  *
  * If this is defined, then libxl_socket_bitmap_alloc and
@@ -1703,6 +1710,41 @@ libxl_device_channel *libxl_device_channel_list(libxl_ctx *ctx,
 int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
                                  libxl_device_channel *channel,
                                  libxl_channelinfo *channelinfo);
+
+/* Virtual SCSI */
+int libxl_device_vscsictrl_add(libxl_ctx *ctx, uint32_t domid,
+                               libxl_device_vscsictrl *vscsi,
+                               const libxl_asyncop_how *ao_how)
+                               LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_device_vscsictrl_remove(libxl_ctx *ctx, uint32_t domid,
+                                  libxl_device_vscsictrl *vscsi,
+                                  const libxl_asyncop_how *ao_how)
+                                  LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_device_vscsictrl_destroy(libxl_ctx *ctx, uint32_t domid,
+                                   libxl_device_vscsictrl *vscsi,
+                                   const libxl_asyncop_how *ao_how)
+                                   LIBXL_EXTERNAL_CALLERS_ONLY;
+
+libxl_device_vscsictrl *libxl_device_vscsictrl_list(libxl_ctx *ctx, uint32_t domid, int *num);
+int libxl_device_vscsictrl_getinfo(libxl_ctx *ctx, uint32_t domid,
+                                   libxl_device_vscsictrl *vscsictrl,
+                                   libxl_device_vscsidev *vscsidev,
+                                   libxl_vscsiinfo *vscsiinfo);
+int libxl_device_vscsidev_add(libxl_ctx *ctx, uint32_t domid,
+                              libxl_device_vscsidev *dev,
+                              const libxl_asyncop_how *ao_how)
+                              LIBXL_EXTERNAL_CALLERS_ONLY;
+/* Remove vscsidev connected to vscsictrl */
+int libxl_device_vscsidev_remove(libxl_ctx *ctx, uint32_t domid,
+                                 libxl_device_vscsidev *dev,
+                                 const libxl_asyncop_how *ao_how)
+                                 LIBXL_EXTERNAL_CALLERS_ONLY;
+void libxl_device_vscsictrl_append_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            libxl_device_vscsidev *dev);
+void libxl_device_vscsictrl_remove_vscsidev(libxl_ctx *ctx,
+                                            libxl_device_vscsictrl *ctrl,
+                                            unsigned int idx);
 
 /* Virtual TPMs */
 int libxl_device_vtpm_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vtpm *vtpm,
