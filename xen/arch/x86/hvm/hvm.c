@@ -3504,8 +3504,7 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
         break;
 
     case 0x80000008:
-        count = cpuid_eax(0x80000008);
-        count = (count >> 16) & 0xff ?: count & 0xff;
+        count = d->arch.paging.gfn_bits + PAGE_SHIFT;
         if ( (*eax & 0xff) > count )
             *eax = (*eax & ~0xff) | count;
 
@@ -4054,7 +4053,6 @@ static const struct {
     COMPAT_CALL(platform_op),
     COMPAT_CALL(mmuext_op),
     HYPERCALL(xenpmu_op),
-    HYPERCALL(version_op),
     HYPERCALL(arch_1)
 };
 

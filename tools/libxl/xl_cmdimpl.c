@@ -4265,7 +4265,7 @@ static void list_domains(bool verbose, bool context, bool claim, bool numa,
     printf("\n");
     for (i = 0; i < nb_domain; i++) {
         char *domname;
-        unsigned shutdown_reason;
+        libxl_shutdown_reason shutdown_reason;
         domname = libxl_domid_to_name(ctx, info[i].domid);
         shutdown_reason = info[i].shutdown ? info[i].shutdown_reason : 0;
         printf("%-40s %5d %5lu %5d     %c%c%c%c%c%c  %8.1f",
@@ -5905,16 +5905,19 @@ static void output_xeninfo(void)
 {
     const libxl_version_info *info;
     libxl_scheduler sched;
+    int rc;
 
     if (!(info = libxl_get_version_info(ctx))) {
         fprintf(stderr, "libxl_get_version_info failed.\n");
         return;
     }
 
-    if ((sched = libxl_get_scheduler(ctx)) < 0) {
+    rc = libxl_get_scheduler(ctx);
+    if (rc < 0) {
         fprintf(stderr, "get_scheduler sysctl failed.\n");
         return;
     }
+    sched = rc;
 
     printf("xen_major              : %d\n", info->xen_version_major);
     printf("xen_minor              : %d\n", info->xen_version_minor);
@@ -8307,10 +8310,12 @@ int main_cpupoolcreate(int argc, char **argv)
             goto out_cfg;
         }
     } else {
-        if ((sched = libxl_get_scheduler(ctx)) < 0) {
+        rc = libxl_get_scheduler(ctx);
+        if (rc < 0) {
             fprintf(stderr, "get_scheduler sysctl failed.\n");
             goto out_cfg;
         }
+        sched = rc;
     }
 
     if (libxl_get_freecpus(ctx, &freemap)) {

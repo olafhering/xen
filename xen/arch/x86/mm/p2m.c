@@ -325,6 +325,32 @@ void p2m_flush_hardware_cached_dirty(struct domain *d)
     }
 }
 
+/*
+ * Force a synchronous P2M TLB flush if a deferred flush is pending.
+ *
+ * Must be called with the p2m lock held.
+ */
+void p2m_tlb_flush_sync(struct p2m_domain *p2m)
+{
+    if ( p2m->need_flush ) {
+        p2m->need_flush = 0;
+        p2m->tlb_flush(p2m);
+    }
+}
+
+/*
+ * Unlock the p2m lock and do a P2M TLB flush if needed.
+ */
+void p2m_unlock_and_tlb_flush(struct p2m_domain *p2m)
+{
+    if ( p2m->need_flush ) {
+        p2m->need_flush = 0;
+        mm_write_unlock(&p2m->lock);
+        p2m->tlb_flush(p2m);
+    } else
+        mm_write_unlock(&p2m->lock);
+}
+
 mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
                     p2m_type_t *t, p2m_access_t *a, p2m_query_t q,
                     unsigned int *page_order, bool_t locked)
@@ -2080,6 +2106,12 @@ void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
                      p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc)
 {
     struct page_info *page;
+
+    if ( gfn_x(gfn) >> p2m->domain->arch.paging.gfn_bits )
+    {
+        *rc = _PAGE_INVALID_BIT;
+        return NULL;
+    }
 
     /* Translate the gfn, unsharing if shared. */
     page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), p2mt, NULL, q);

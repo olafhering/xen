@@ -36,7 +36,6 @@ CONFIG_$(XEN_OS) := y
 SHELL     ?= /bin/sh
 
 # Tools to run on system hosting the build
-HOSTCC      = gcc
 HOSTCFLAGS  = -Wall -Werror -Wstrict-prototypes -O2 -fomit-frame-pointer
 HOSTCFLAGS += -fno-strict-aliasing
 
@@ -50,8 +49,12 @@ DESTDIR     ?= /
 clang ?= n
 ifeq ($(clang),n)
 gcc := y
+HOSTCC ?= gcc
+HOSTCXX ?= g++
 else
 gcc := n
+HOSTCC ?= clang
+HOSTCXX ?= clang++
 endif
 
 
@@ -251,13 +254,13 @@ MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
 OVMF_UPSTREAM_REVISION ?= 52a99493cce88a9d4ec8a02d7f1bd1a1001ce60d
 QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= 89268f00b0b0215057cb74edd94e866536a02489
-# Fri Jan 15 13:24:03 2016 +0000
-# mini-os: Include libxenforeignmemory with libxc
+MINIOS_UPSTREAM_REVISION ?= e085b7e5613576601e2f100e6f1ee9e0778c3eb9
+# Sun Apr 10 00:46:32 2016 +0200
+# Fix time update
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.9.1
-# Fri Jan 15 15:49:32 2016 +0000
-# biostables: Support SMBIOS 2.6+ UUID format
+SEABIOS_UPSTREAM_REVISION ?= rel-1.9.2
+# Tue, 1 Mar 2016 15:06:45 +0100 (16:06 +0200)
+# fw/pci: add Q35 S3 support
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 

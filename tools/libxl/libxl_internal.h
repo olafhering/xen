@@ -636,7 +636,7 @@ _hidden void *libxl__realloc(libxl__gc *gc_opt, void *ptr, size_t new_size) NN1;
 /* print @fmt into an allocated string large enoughto contain the result.
  * (similar to gc'd asprintf(3)). */
 _hidden char *libxl__sprintf(libxl__gc *gc_opt, const char *fmt, ...) PRINTF_ATTRIBUTE(2, 3) NN1;
-_hidden char *libxl__vsprintf(libxl__gc *gc, const char *format, va_list ap);
+_hidden char *libxl__vsprintf(libxl__gc *gc, const char *format, va_list ap) PRINTF_ATTRIBUTE(2, 0);
 /* duplicate the string @c (similar to a gc'd strdup(3)). */
 _hidden char *libxl__strdup(libxl__gc *gc_opt,
                             const char *c /* may be NULL */) NN1;
@@ -709,7 +709,7 @@ _hidden char *libxl__xs_libxl_path(libxl__gc *gc, uint32_t domid);
  */
 
 int libxl__xs_vprintf(libxl__gc *gc, xs_transaction_t t,
-                      const char *path, const char *fmt, va_list ap);
+                      const char *path, const char *fmt, va_list ap) PRINTF_ATTRIBUTE(4, 0);
 int libxl__xs_printf(libxl__gc *gc, xs_transaction_t t,
                      const char *path, const char *fmt, ...) PRINTF_ATTRIBUTE(4, 5);
 
@@ -1995,9 +1995,10 @@ _hidden libxl__json_object *libxl__json_parse(libxl__gc *gc_opt, const char *s);
 _hidden int libxl__device_model_version_running(libxl__gc *gc, uint32_t domid);
   /* Return the system-wide default device model */
 _hidden libxl_device_model_version libxl__default_device_model(libxl__gc *gc);
-_hidden char *libxl__device_model_xs_path(libxl__gc *gc, uint32_t dm_domid,
-                                          uint32_t domid,
-                                          const char *format, ...) PRINTF_ATTRIBUTE(4, 5);
+
+#define DEVICE_MODEL_XS_PATH(gc, dm_domid, domid, fmt, _a...)              \
+    libxl__sprintf(gc, "/local/domain/%u/device-model/%u" fmt, dm_domid,   \
+                   domid, ##_a)
 
 /*
  * Calling context and GC for event-generating functions:
