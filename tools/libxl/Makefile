@@ -138,7 +138,7 @@ LIBXL_TESTS_INSIDE = $(LIBXL_TESTS) fdevent
 # symbol names must be unique.
 #
 # To run these tests, either use LD_PRELOAD to get libxenlight_test.so
-# loaded, or rename it to libxenlight.so so it is the target of the
+# loaded, or rename it to libxenlight_olh.so so it is the target of the
 # appropriate symlinks.
 
 LIBXL_TEST_OBJS += $(foreach t, $(LIBXL_TESTS_INSIDE),libxl_test_$t.o)
@@ -179,7 +179,7 @@ testidl.c: libxl_types.idl gentest.py libxl.h $(AUTOINCS)
 
 .PHONY: all
 all: $(CLIENTS) $(TEST_PROGS) $(PKG_CONFIG) \
-		libxenlight.so libxenlight.a libxlutil.so libxlutil.a \
+		libxenlight_olh.so libxenlight_olh.a libxlutil.so libxlutil.a \
 	$(AUTOSRCS) $(AUTOINCS)
 
 $(LIBXL_OBJS) $(LIBXLU_OBJS) $(XL_OBJS) $(SAVE_HELPER_OBJS) \
@@ -235,20 +235,20 @@ _libxl_type%.h _libxl_type%_json.h _libxl_type%_private.h _libxl_type%.c: libxl_
 	$(call move-if-changed,__libxl_type$*_json.h,_libxl_type$*_json.h)
 	$(call move-if-changed,__libxl_type$*.c,_libxl_type$*.c)
 
-libxenlight.so: libxenlight.so.$(MAJOR)
+libxenlight_olh.so: libxenlight_olh.so.$(MAJOR)
 	$(SYMLINK_SHLIB) $< $@
 
-libxenlight.so.$(MAJOR): libxenlight.so.$(MAJOR).$(MINOR)
+libxenlight_olh.so.$(MAJOR): libxenlight_olh.so.$(MAJOR).$(MINOR)
 	$(SYMLINK_SHLIB) $< $@
 
-libxenlight.so.$(MAJOR).$(MINOR): $(LIBXL_OBJS)
-	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG) -Wl,libxenlight.so.$(MAJOR) $(SHLIB_LDFLAGS) -o $@ $^ $(LIBXL_LIBS) $(APPEND_LDFLAGS)
+libxenlight_olh.so.$(MAJOR).$(MINOR): $(LIBXL_OBJS)
+	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG) -Wl,libxenlight_olh.so.$(MAJOR) $(SHLIB_LDFLAGS) -o $@ $^ $(LIBXL_LIBS) $(APPEND_LDFLAGS)
 
 libxenlight_test.so: $(LIBXL_OBJS) $(LIBXL_TEST_OBJS)
-	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG) -Wl,libxenlight.so.$(MAJOR) $(SHLIB_LDFLAGS) -o $@ $^ $(LIBXL_LIBS) $(APPEND_LDFLAGS)
+	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG) -Wl,libxenlight_olh.so.$(MAJOR) $(SHLIB_LDFLAGS) -o $@ $^ $(LIBXL_LIBS) $(APPEND_LDFLAGS)
 
-libxenlight.a: $(LIBXL_OBJS)
-	$(AR) rcs libxenlight.a $^
+libxenlight_olh.a: $(LIBXL_OBJS)
+	$(AR) rcs libxenlight_olh.a $^
 
 libxlutil.so: libxlutil.so.$(XLUMAJOR)
 	$(SYMLINK_SHLIB) $< $@
@@ -256,22 +256,22 @@ libxlutil.so: libxlutil.so.$(XLUMAJOR)
 libxlutil.so.$(XLUMAJOR): libxlutil.so.$(XLUMAJOR).$(XLUMINOR)
 	$(SYMLINK_SHLIB) $< $@
 
-libxlutil.so.$(XLUMAJOR).$(XLUMINOR): $(LIBXLU_OBJS) libxenlight.so
+libxlutil.so.$(XLUMAJOR).$(XLUMINOR): $(LIBXLU_OBJS) libxenlight_olh.so
 	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG) -Wl,libxlutil.so.$(XLUMAJOR) $(SHLIB_LDFLAGS) -o $@ $(LIBXLU_OBJS) $(LIBXLU_LIBS) $(APPEND_LDFLAGS)
 
 libxlutil.a: $(LIBXLU_OBJS)
 	$(AR) rcs libxlutil.a $^
 
-xl: $(XL_OBJS) libxlutil.so libxenlight.so
+xl: $(XL_OBJS) libxlutil.so libxenlight_olh.so
 	$(CC) $(LDFLAGS) -o $@ $(XL_OBJS) libxlutil.so $(LDLIBS_libxenlight) $(LDLIBS_libxentoollog) -lyajl $(APPEND_LDFLAGS)
 
 test_%: test_%.o test_common.o libxlutil.so libxenlight_test.so
-	$(CC) $(LDFLAGS) -o $@ $^ $(filter-out %libxenlight.so, $(LDLIBS_libxenlight)) $(LDLIBS_libxentoollog) -lyajl $(APPEND_LDFLAGS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(filter-out %libxenlight_olh.so, $(LDLIBS_libxenlight)) $(LDLIBS_libxentoollog) -lyajl $(APPEND_LDFLAGS)
 
-libxl-save-helper: $(SAVE_HELPER_OBJS) libxenlight.so
+libxl-save-helper: $(SAVE_HELPER_OBJS) libxenlight_olh.so
 	$(CC) $(LDFLAGS) -o $@ $(SAVE_HELPER_OBJS) $(LDLIBS_libxentoollog) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(APPEND_LDFLAGS)
 
-testidl: testidl.o libxlutil.so libxenlight.so
+testidl: testidl.o libxlutil.so libxenlight_olh.so
 	$(CC) $(LDFLAGS) -o $@ testidl.o libxlutil.so $(LDLIBS_libxenlight) $(LDLIBS_libxentoollog) $(APPEND_LDFLAGS)
 
 $(PKG_CONFIG): % : %.in Makefile
@@ -288,10 +288,10 @@ install: all
 	$(INSTALL_DIR) $(DESTDIR)$(SHAREDIR)/pkgconfig
 	$(INSTALL_PROG) xl $(DESTDIR)$(sbindir)
 	$(INSTALL_PROG) libxl-save-helper $(DESTDIR)$(LIBEXEC_BIN)
-	$(INSTALL_SHLIB) libxenlight.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)
-	$(SYMLINK_SHLIB) libxenlight.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)/libxenlight.so.$(MAJOR)
-	$(SYMLINK_SHLIB) libxenlight.so.$(MAJOR) $(DESTDIR)$(libdir)/libxenlight.so
-	$(INSTALL_DATA) libxenlight.a $(DESTDIR)$(libdir)
+	$(INSTALL_SHLIB) libxenlight_olh.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)
+	$(SYMLINK_SHLIB) libxenlight_olh.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)/libxenlight_olh.so.$(MAJOR)
+	$(SYMLINK_SHLIB) libxenlight_olh.so.$(MAJOR) $(DESTDIR)$(libdir)/libxenlight_olh.so
+	$(INSTALL_DATA) libxenlight_olh.a $(DESTDIR)$(libdir)
 	$(INSTALL_SHLIB) libxlutil.so.$(XLUMAJOR).$(XLUMINOR) $(DESTDIR)$(libdir)
 	$(SYMLINK_SHLIB) libxlutil.so.$(XLUMAJOR).$(XLUMINOR) $(DESTDIR)$(libdir)/libxlutil.so.$(XLUMAJOR)
 	$(SYMLINK_SHLIB) libxlutil.so.$(XLUMAJOR) $(DESTDIR)$(libdir)/libxlutil.so

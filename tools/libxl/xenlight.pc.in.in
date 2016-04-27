@@ -8,4 +8,4 @@ Name: Xenlight
 Description: The Xenlight library for Xen hypervisor
 Version: @@version@@
 Cflags: -I${includedir}
-Libs: -L${libdir} -lxenlight
+Libs: -L${libdir} -lxenlight_olh
