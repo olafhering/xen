@@ -134,10 +134,10 @@ static int hvmemul_do_io(
         p = vio->io_req;
 
         /* Verify the emulation request has been correctly re-issued */
-        if ( (p.type != is_mmio ? IOREQ_TYPE_COPY : IOREQ_TYPE_PIO) ||
+        if ( (p.type != (is_mmio ? IOREQ_TYPE_COPY : IOREQ_TYPE_PIO)) ||
              (p.addr != addr) ||
              (p.size != size) ||
-             (p.count != *reps) ||
+             (p.count > *reps) ||
              (p.dir != dir) ||
              (p.df != df) ||
              (p.data_is_ptr != data_is_addr) )
@@ -145,6 +145,8 @@ static int hvmemul_do_io(
 
         if ( data_is_addr )
             return X86EMUL_UNHANDLEABLE;
+
+        *reps = p.count;
         goto finish_access;
     default:
         return X86EMUL_UNHANDLEABLE;
@@ -161,6 +163,13 @@ static int hvmemul_do_io(
     vio->io_req = p;
 
     rc = hvm_io_intercept(&p);
+
+    /*
+     * p.count may have got reduced (see hvm_process_io_intercept()) - inform
+     * our callers and mirror this into latched state.
+     */
+    ASSERT(p.count <= *reps);
+    *reps = vio->io_req.count = p.count;
 
     switch ( rc )
     {
@@ -557,7 +566,8 @@ static int hvmemul_virtual_to_linear(
 
     /* This is a singleton operation: fail it with an exception. */
     hvmemul_ctxt->exn_pending = 1;
-    hvmemul_ctxt->trap.vector = TRAP_gp_fault;
+    hvmemul_ctxt->trap.vector =
+        (seg == x86_seg_ss) ? TRAP_stack_error : TRAP_gp_fault;
     hvmemul_ctxt->trap.type = X86_EVENTTYPE_HW_EXCEPTION;
     hvmemul_ctxt->trap.error_code = 0;
     hvmemul_ctxt->trap.insn_len = 0;
@@ -1598,8 +1608,23 @@ static int hvmemul_invlpg(
     rc = hvmemul_virtual_to_linear(
         seg, offset, 1, &reps, hvm_access_none, hvmemul_ctxt, &addr);
 
+    if ( rc == X86EMUL_EXCEPTION )
+    {
+        /*
+         * `invlpg` takes segment bases into account, but is not subject to
+         * faults from segment type/limit checks, and is specified as a NOP
+         * when issued on non-canonical addresses.
+         *
+         * hvmemul_virtual_to_linear() raises exceptions for type/limit
+         * violations, so squash them.
+         */
+        hvmemul_ctxt->exn_pending = 0;
+        hvmemul_ctxt->trap = (struct hvm_trap){};
+        rc = X86EMUL_OKAY;
+    }
+
     if ( rc == X86EMUL_OKAY )
-        hvm_funcs.invlpg_intercept(addr);
+        paging_invlpg(current, addr);
 
     return rc;
 }

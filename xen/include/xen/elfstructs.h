@@ -40,6 +40,9 @@ typedef uint32_t	Elf64_Word;
 typedef int64_t		Elf64_Sxword;
 typedef uint64_t	Elf64_Xword;
 
+/* Unique build id string format when using --build-id. */
+#define NT_GNU_BUILD_ID 3
+
 /*
  * e_ident[] identification indexes
  * See http://www.caldera.com/developers/gabi/2000-07-17/ch4.eheader.html 
@@ -78,6 +81,7 @@ typedef uint64_t	Elf64_Xword;
 
 /* e_ident[] Operating System/ABI */
 #define ELFOSABI_SYSV		0	/* UNIX System V ABI */
+#define ELFOSABI_NONE		0	/* Same as ELFOSABI_SYSV */
 #define ELFOSABI_HPUX		1	/* HP-UX operating system */
 #define ELFOSABI_NETBSD		2	/* NetBSD */
 #define ELFOSABI_LINUX		3	/* GNU/Linux */
@@ -263,6 +267,7 @@ typedef struct {
 #define SHF_WRITE	0x1		/* Writable */
 #define SHF_ALLOC	0x2		/* occupies memory */
 #define SHF_EXECINSTR	0x4		/* executable */
+#define SHF_MERGE	0x10            /* mergeable */
 #define SHF_MASKPROC	0xf0000000	/* reserved bits for processor */
 					/*  specific section attributes */
 
@@ -348,7 +353,7 @@ typedef struct {
 #define	ELF64_R_TYPE(info)	((info) & 0xFFFFFFFF)
 #define ELF64_R_INFO(s,t) 	(((s) << 32) + (u_int32_t)(t))
 
-/* x86-64 relocation types. We list only the ones xSplice implements. */
+/* x86-64 relocation types. We list only the ones Live Patch implements. */
 #define R_X86_64_NONE		0	/* No reloc */
 #define R_X86_64_64	    	1	/* Direct 64 bit  */
 #define R_X86_64_PC32		2	/* PC relative 32 bit signed */
@@ -472,6 +477,8 @@ typedef struct {
 #endif
 
 #if defined(ELFSIZE) && (ELFSIZE == 32)
+#define PRIxElfAddr	"08x"
+
 #define Elf_Ehdr	Elf32_Ehdr
 #define Elf_Phdr	Elf32_Phdr
 #define Elf_Shdr	Elf32_Shdr
@@ -497,6 +504,8 @@ typedef struct {
 
 #define AuxInfo		Aux32Info
 #elif defined(ELFSIZE) && (ELFSIZE == 64)
+#define PRIxElfAddr	PRIx64
+
 #define Elf_Ehdr	Elf64_Ehdr
 #define Elf_Phdr	Elf64_Phdr
 #define Elf_Shdr	Elf64_Shdr

@@ -847,7 +847,7 @@ static int update_cpumap_range(const char *str, libxl_bitmap *cpumap)
  */
 static int cpurange_parse(const char *cpu, libxl_bitmap *cpumap)
 {
-    char *ptr, *saveptr = NULL, *buf = strdup(cpu);
+    char *ptr, *saveptr = NULL, *buf = xstrdup(cpu);
     int rc = 0;
 
     for (ptr = strtok_r(buf, ",", &saveptr); ptr;
@@ -5934,6 +5934,7 @@ static void output_xeninfo(void)
     printf("cc_compile_by          : %s\n", info->compile_by);
     printf("cc_compile_domain      : %s\n", info->compile_domain);
     printf("cc_compile_date        : %s\n", info->compile_date);
+    printf("build_id               : %s\n", info->build_id);
 
     return;
 }

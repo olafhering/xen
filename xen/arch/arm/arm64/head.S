@@ -267,10 +267,9 @@ common_start:
                                       * find that multiprocessor extensions are
                                       * present and the system is SMP  */
         mrs   x0, mpidr_el1
-        tbz   x0, _MPIDR_SMP, 1f     /* Multiprocessor extension not supported? */
         tbnz  x0, _MPIDR_UP, 1f      /* Uniprocessor system? */
 
-        mov   x13, #(~MPIDR_HWID_MASK)
+        ldr   x13, =(~MPIDR_HWID_MASK)
         bic   x24, x0, x13           /* Mask out flags to get CPU ID */
 1:
 
@@ -360,6 +359,11 @@ skip_bss:
          * MMU translation disabled (for now). */
         ldr   x0, =(HSCTLR_BASE)
         msr   SCTLR_EL2, x0
+
+        /* Ensure that any exceptions encountered at EL2
+         * are handled using the EL2 stack pointer, rather
+         * than SP_EL0. */
+        msr spsel, #1
 
         /* Rebuild the boot pagetable's first-level entries. The structure
          * is described in mm.c.

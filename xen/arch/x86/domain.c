@@ -36,6 +36,7 @@
 #include <xen/cpu.h>
 #include <xen/wait.h>
 #include <xen/guest_access.h>
+#include <xen/livepatch.h>
 #include <public/sysctl.h>
 #include <public/hvm/hvm_vcpu.h>
 #include <asm/regs.h>
@@ -120,6 +121,11 @@ static void idle_loop(void)
         (*pm_idle)();
         do_tasklet();
         do_softirq();
+        /*
+         * We MUST be last (or before pm_idle). Otherwise after we get the
+         * softirq we would execute pm_idle (and sleep) and not patch.
+         */
+        check_for_livepatch_work();
     }
 }
 
@@ -642,20 +648,17 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     }
     spin_lock_init(&d->arch.e820_lock);
 
+    if ( (rc = psr_domain_init(d)) != 0 )
+        goto fail;
+
     if ( has_hvm_container_domain(d) )
     {
         if ( (rc = hvm_domain_initialise(d)) != 0 )
-        {
-            iommu_domain_destroy(d);
             goto fail;
-        }
     }
     else
         /* 64-bit PV guest by default. */
         d->arch.is_32bit_pv = d->arch.has_32bit_shinfo = 0;
-
-    if ( (rc = psr_domain_init(d)) != 0 )
-        goto fail;
 
     /* initialize default tsc behavior in case tools don't */
     tsc_set_info(d, TSC_MODE_DEFAULT, 0UL, 0, 0);
@@ -674,8 +677,11 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
 
  fail:
     d->is_dying = DOMDYING_dead;
+    psr_domain_free(d);
+    iommu_domain_destroy(d);
     cleanup_domain_irq_mapping(d);
     free_xenheap_page(d->shared_info);
+    xfree(d->arch.cpuids);
     if ( paging_initialised )
         paging_final_teardown(d);
     free_perdomain_mappings(d);
@@ -684,7 +690,6 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         xfree(d->arch.pv_domain.cpuidmasks);
         free_xenheap_page(d->arch.pv_domain.gdt_ldt_l1tab);
     }
-    psr_domain_free(d);
     return rc;
 }
 
@@ -694,6 +699,7 @@ void arch_domain_destroy(struct domain *d)
         hvm_domain_destroy(d);
 
     xfree(d->arch.e820);
+    xfree(d->arch.cpuids);
 
     free_domain_pirqs(d);
     if ( !is_idle_domain(d) )

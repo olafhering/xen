@@ -48,7 +48,9 @@
 #include <xen/kexec.h>
 #include <xen/trace.h>
 #include <xen/paging.h>
+#include <xen/virtual_region.h>
 #include <xen/watchdog.h>
+#include <xen/livepatch.h>
 #include <asm/system.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
@@ -148,7 +150,7 @@ static void show_code(const struct cpu_user_regs *regs)
                   : "=&c" (missing_before),
                     "=&D" (tmp), "=&S" (tmp)
                   : "0" (ARRAY_SIZE(insns_before)),
-                    "1" (insns_before + ARRAY_SIZE(insns_before)),
+                    "1" (insns_before + ARRAY_SIZE(insns_before) - 1),
                     "2" (regs->rip - 1));
     clac();
 
@@ -926,6 +928,8 @@ void pv_cpuid(struct cpu_user_regs *regs)
 
     switch ( leaf )
     {
+        uint32_t tmp, _ecx;
+
     case 0x00000001:
         c &= pv_featureset[FEATURESET_1c];
         d &= pv_featureset[FEATURESET_1d];
@@ -1083,13 +1087,32 @@ void pv_cpuid(struct cpu_user_regs *regs)
         break;
 
     case XSTATE_CPUID:
-        if ( !cpu_has_xsave )
+
+        if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
+            domain_cpuid(currd, 1, 0, &tmp, &tmp, &_ecx, &tmp);
+        else
+            _ecx = cpuid_ecx(1);
+        _ecx &= pv_featureset[FEATURESET_1c];
+
+        if ( !(_ecx & cpufeat_mask(X86_FEATURE_XSAVE)) || subleaf >= 63 )
             goto unsupported;
         switch ( subleaf )
         {
         case 0:
         {
-            uint32_t tmp;
+            uint64_t xfeature_mask = XSTATE_FP_SSE;
+            uint32_t xstate_size = XSTATE_AREA_MIN_SIZE;
+
+            if ( _ecx & cpufeat_mask(X86_FEATURE_AVX) )
+            {
+                xfeature_mask |= XSTATE_YMM;
+                xstate_size = (xstate_offsets[_XSTATE_YMM] +
+                               xstate_sizes[_XSTATE_YMM]);
+            }
+
+            a = (uint32_t)xfeature_mask;
+            d = (uint32_t)(xfeature_mask >> 32);
+            c = xstate_size;
 
             /*
              * Always read CPUID.0xD[ECX=0].EBX from hardware, rather than
@@ -1140,10 +1163,12 @@ void pv_cpuid(struct cpu_user_regs *regs)
         break;
 
     case 0x80000007:
-        d &= pv_featureset[FEATURESET_e7d];
+        d &= (pv_featureset[FEATURESET_e7d] |
+              (host_featureset[FEATURESET_e7d] & cpufeat_mask(X86_FEATURE_ITSC)));
         break;
 
     case 0x80000008:
+        a = paddr_bits | (vaddr_bits << 8);
         b &= pv_featureset[FEATURESET_e8b];
         break;
 
@@ -1229,18 +1254,12 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
 
 void do_invalid_op(struct cpu_user_regs *regs)
 {
-    const struct bug_frame *bug;
+    const struct bug_frame *bug = NULL;
     u8 bug_insn[2];
     const char *prefix = "", *filename, *predicate, *eip = (char *)regs->eip;
     unsigned long fixup;
-    int id, lineno;
-    static const struct bug_frame *const stop_frames[] = {
-        __stop_bug_frames_0,
-        __stop_bug_frames_1,
-        __stop_bug_frames_2,
-        __stop_bug_frames_3,
-        NULL
-    };
+    int id = -1, lineno;
+    const struct virtual_region *region;
 
     DEBUGGER_trap_entry(TRAP_invalid_op, regs);
 
@@ -1257,16 +1276,29 @@ void do_invalid_op(struct cpu_user_regs *regs)
          memcmp(bug_insn, "\xf\xb", sizeof(bug_insn)) )
         goto die;
 
-    for ( bug = __start_bug_frames, id = 0; stop_frames[id]; ++bug )
+    region = find_text_region(regs->eip);
+    if ( region )
     {
-        while ( unlikely(bug == stop_frames[id]) )
-            ++id;
-        if ( bug_loc(bug) == eip )
-            break;
-    }
-    if ( !stop_frames[id] )
-        goto die;
+        for ( id = 0; id < BUGFRAME_NR; id++ )
+        {
+            const struct bug_frame *b;
+            unsigned int i;
 
+            for ( i = 0, b = region->frame[id].bugs;
+                  i < region->frame[id].n_bugs; b++, i++ )
+            {
+                if ( bug_loc(b) == eip )
+                {
+                    bug = b;
+                    goto found;
+                }
+            }
+        }
+    }
+
+ found:
+    if ( !bug )
+        goto die;
     eip += sizeof(bug_insn);
     if ( id == BUGFRAME_run_fn )
     {
@@ -1279,7 +1311,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
 
     /* WARN, BUG or ASSERT: decode the filename pointer and line number. */
     filename = bug_ptr(bug);
-    if ( !is_kernel(filename) )
+    if ( !is_kernel(filename) && !is_patch(filename) )
         goto die;
     fixup = strlen(filename);
     if ( fixup > 50 )
@@ -1306,7 +1338,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
     case BUGFRAME_assert:
         /* ASSERT: decode the predicate string pointer. */
         predicate = bug_msg(bug);
-        if ( !is_kernel(predicate) )
+        if ( !is_kernel(predicate) && !is_patch(predicate) )
             predicate = "<unknown>";
 
         printk("Assertion '%s' failed at %s%s:%d\n",

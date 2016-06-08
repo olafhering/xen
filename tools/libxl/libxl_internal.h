@@ -360,7 +360,7 @@ struct libxl__evgen_disk_eject {
     uint32_t domid;
     LIBXL_LIST_ENTRY(libxl_evgen_disk_eject) entry;
     libxl_ev_user user;
-    char *vdev;
+    char *vdev, *be_ptr_path;
 };
 _hidden void
 libxl__evdisable_disk_eject(libxl__gc*, libxl_evgen_disk_eject*);
@@ -702,6 +702,8 @@ _hidden char **libxl__xs_directory(libxl__gc *gc, xs_transaction_t t,
    /* On error: returns NULL, sets errno (no logging) */
 _hidden char *libxl__xs_libxl_path(libxl__gc *gc, uint32_t domid);
 
+_hidden int libxl__backendpath_parse_domid(libxl__gc *gc, const char *be_path,
+                                           libxl_domid *domid_out);
 
 /*----- "checked" xenstore access functions -----*/
 /* Each of these functions will check that it succeeded; if it
@@ -1182,6 +1184,7 @@ _hidden int libxl__device_generic_add(libxl__gc *gc, xs_transaction_t t,
         libxl__device *device, char **bents, char **fents, char **ro_fents);
 _hidden char *libxl__device_backend_path(libxl__gc *gc, libxl__device *device);
 _hidden char *libxl__device_frontend_path(libxl__gc *gc, libxl__device *device);
+_hidden char *libxl__device_libxl_path(libxl__gc *gc, libxl__device *device);
 _hidden int libxl__parse_backend_path(libxl__gc *gc, const char *path,
                                       libxl__device *dev);
 _hidden int libxl__device_destroy(libxl__gc *gc, libxl__device *dev);
@@ -1217,7 +1220,7 @@ _hidden int libxl__device_disk_setdefault(libxl__gc *gc,
                                           libxl_device_disk *disk,
                                           uint32_t domid);
 _hidden int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
-                                         uint32_t domid);
+                                         uint32_t domid, bool hotplug);
 _hidden int libxl__device_vtpm_setdefault(libxl__gc *gc, libxl_device_vtpm *vtpm);
 _hidden int libxl__device_vfb_setdefault(libxl__gc *gc, libxl_device_vfb *vfb);
 _hidden int libxl__device_vkb_setdefault(libxl__gc *gc, libxl_device_vkb *vkb);
@@ -4103,6 +4106,7 @@ static inline void libxl__update_config_nic(libxl__gc *gc,
                                             libxl_device_nic *src)
 {
     dst->devid = src->devid;
+    dst->nictype = src->nictype;
     libxl_mac_copy(CTX, &dst->mac, &src->mac);
 }
 
@@ -4112,6 +4116,21 @@ static inline void libxl__update_config_vtpm(libxl__gc *gc,
 {
     dst->devid = src->devid;
     libxl_uuid_copy(CTX, &dst->uuid, &src->uuid);
+}
+
+/* Target memory in xenstore is different from what user has
+ * asked for. The difference is video_memkb + (possible) fudge.
+ * See libxl_set_memory_target.
+ */
+static inline
+uint64_t libxl__get_targetmem_fudge(libxl__gc *gc,
+                                    const libxl_domain_build_info *info)
+{
+    int64_t mem_target_fudge = (info->type == LIBXL_DOMAIN_TYPE_HVM &&
+                                info->max_memkb > info->target_memkb)
+                                ? LIBXL_MAXMEM_CONSTANT : 0;
+
+    return info->video_memkb + mem_target_fudge;
 }
 
 /* Macros used to compare device identifier. Returns true if the two

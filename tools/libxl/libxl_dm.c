@@ -365,6 +365,20 @@ int libxl__domain_device_construct_rdm(libxl__gc *gc,
     return ERROR_FAIL;
 }
 
+/* XSA-180 / CVE-2014-3672
+ *
+ * The QEMU shipped with Xen has a bodge. It checks for
+ * XEN_QEMU_CONSOLE_LIMIT to see how much data QEMU is allowed
+ * to write to stderr. We set that to 1MB if it is not set by
+ * system administrator.
+ */
+static void libxl__set_qemu_env_for_xsa_180(libxl__gc *gc,
+                                            flexarray_t *dm_envs)
+{
+    if (getenv("XEN_QEMU_CONSOLE_LIMIT")) return;
+    flexarray_append_pair(dm_envs, "XEN_QEMU_CONSOLE_LIMIT", "1048576");
+}
+
 const libxl_vnc_info *libxl__dm_vnc(const libxl_domain_config *guest_config)
 {
     const libxl_vnc_info *vnc = NULL;
@@ -414,6 +428,8 @@ static int libxl__build_device_model_args_old(libxl__gc *gc,
     flexarray_t *dm_args, *dm_envs;
     dm_args = flexarray_make(gc, 16, 1);
     dm_envs = flexarray_make(gc, 16, 1);
+
+    libxl__set_qemu_env_for_xsa_180(gc, dm_envs);
 
     flexarray_vappend(dm_args, dm,
                       "-d", GCSPRINTF("%d", domid), NULL);
@@ -913,6 +929,8 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
     dm_args = flexarray_make(gc, 16, 1);
     dm_envs = flexarray_make(gc, 16, 1);
 
+    libxl__set_qemu_env_for_xsa_180(gc, dm_envs);
+
     flexarray_vappend(dm_args, dm,
                       "-xen-domid",
                       GCSPRINTF("%d", guest_domid), NULL);
@@ -1368,8 +1386,8 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
 
             if (disks[i].is_cdrom) {
                 drive = libxl__sprintf(gc,
-                         "if=ide,index=%d,readonly=%s,media=cdrom,cache=writeback,id=ide-%i",
-                         disk, disks[i].readwrite ? "off" : "on", dev_number);
+                         "if=ide,index=%d,readonly=on,media=cdrom,id=ide-%i",
+                         disk, dev_number);
 
                 if (target_path)
                     drive = libxl__sprintf(gc, "%s,file=%s,format=%s",
@@ -1482,7 +1500,7 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
         }
 
         user = NULL;
-        LOG(WARN, "Could not find user %s, starting QEMU as root",
+        LOG(DEBUG, "Could not find user %s, starting QEMU as root",
             LIBXL_QEMU_USER_SHARED);
 
 end_search:
@@ -1809,7 +1827,8 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
          * called libxl_device_nic_add at this point, but qemu needs
          * the nic information to be complete.
          */
-        ret = libxl__device_nic_setdefault(gc, &dm_config->nics[i], dm_domid);
+        ret = libxl__device_nic_setdefault(gc, &dm_config->nics[i], dm_domid,
+                                           false);
         if (ret)
             goto out;
     }
@@ -2192,8 +2211,8 @@ static void device_model_spawn_outcome(libxl__egc *egc,
 void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
 {
     STATE_AO_GC(dmss->spawn.ao);
-    flexarray_t *dm_args;
-    char **args;
+    flexarray_t *dm_args, *dm_envs;
+    char **args, **envs;
     const char *dm;
     int logfile_w, null = -1, rc;
     uint32_t domid = dmss->guest_domid;
@@ -2202,6 +2221,8 @@ void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
     dm = qemu_xen_path(gc);
 
     dm_args = flexarray_make(gc, 15, 1);
+    dm_envs = flexarray_make(gc, 1, 1);
+
     flexarray_vappend(dm_args, dm, "-xen-domid",
                       GCSPRINTF("%d", domid), NULL);
     flexarray_append(dm_args, "-xen-attach");
@@ -2214,6 +2235,9 @@ void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
     flexarray_vappend(dm_args, "-parallel", "/dev/null", NULL);
     flexarray_append(dm_args, NULL);
     args = (char **) flexarray_contents(dm_args);
+
+    libxl__set_qemu_env_for_xsa_180(gc, dm_envs);
+    envs = (char **) flexarray_contents(dm_envs);
 
     logfile_w = libxl__create_qemu_logfile(gc, GCSPRINTF("qdisk-%u", domid));
     if (logfile_w < 0) {
@@ -2252,7 +2276,7 @@ void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
         goto out;
     if (!rc) { /* inner child */
         setsid();
-        libxl__exec(gc, null, logfile_w, logfile_w, dm, args, NULL);
+        libxl__exec(gc, null, logfile_w, logfile_w, dm, args, envs);
     }
 
     rc = 0;

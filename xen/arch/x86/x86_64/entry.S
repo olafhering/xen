@@ -97,7 +97,7 @@ ENTRY(lstar_enter)
         pushq %rcx
         pushq $0
         SAVE_VOLATILE TRAP_syscall
-        GET_CURRENT(%rbx)
+        GET_CURRENT(bx)
         testb $TF_kernel_mode,VCPU_thread_flags(%rbx)
         jz    switch_to_kernel
 
@@ -246,7 +246,7 @@ GLOBAL(sysenter_eflags_saved)
         pushq $0 /* null rip */
         pushq $0
         SAVE_VOLATILE TRAP_syscall
-        GET_CURRENT(%rbx)
+        GET_CURRENT(bx)
         cmpb  $0,VCPU_sysenter_disables_events(%rbx)
         movq  VCPU_sysenter_addr(%rbx),%rax
         setne %cl
@@ -288,7 +288,7 @@ UNLIKELY_START(ne, msi_check)
         call  check_for_unexpected_msi
 UNLIKELY_END(msi_check)
 
-        GET_CURRENT(%rbx)
+        GET_CURRENT(bx)
 
         /* Check that the callback is non-null. */
         leaq  VCPU_int80_bounce(%rbx),%rdx
@@ -424,10 +424,10 @@ domain_crash_page_fault:
         call  show_page_walk
 ENTRY(dom_crash_sync_extable)
         # Get out of the guest-save area of the stack.
-        GET_STACK_BASE(%rax)
+        GET_STACK_END(ax)
         leaq  STACK_CPUINFO_FIELD(guest_cpu_user_regs)(%rax),%rsp
         # create_bounce_frame() temporarily clobbers CS.RPL. Fix up.
-        __GET_CURRENT(%rax)
+        __GET_CURRENT(ax)
         movq  VCPU_domain(%rax),%rax
         testb $1,DOMAIN_is_32bit_pv(%rax)
         setz  %al
@@ -438,13 +438,14 @@ ENTRY(dom_crash_sync_extable)
 
 ENTRY(common_interrupt)
         SAVE_ALL CLAC
+        CR4_PV32_RESTORE
         movq %rsp,%rdi
         callq do_IRQ
         jmp ret_from_intr
 
 /* No special register assumptions. */
 ENTRY(ret_from_intr)
-        GET_CURRENT(%rbx)
+        GET_CURRENT(bx)
         testb $3,UREGS_cs(%rsp)
         jz    restore_all_xen
         movq  VCPU_domain(%rbx),%rax
@@ -458,13 +459,67 @@ ENTRY(page_fault)
 GLOBAL(handle_exception)
         SAVE_ALL CLAC
 handle_exception_saved:
+        GET_CURRENT(bx)
         testb $X86_EFLAGS_IF>>8,UREGS_eflags+1(%rsp)
         jz    exception_with_ints_disabled
+
+.Lcr4_pv32_orig:
+        jmp   .Lcr4_pv32_done
+        .skip (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt) - (. - .Lcr4_pv32_orig), 0xcc
+        .pushsection .altinstr_replacement, "ax"
+.Lcr4_pv32_alt:
+        mov   VCPU_domain(%rbx),%rax
+.Lcr4_pv32_alt_end:
+        .section .altinstructions, "a"
+        altinstruction_entry .Lcr4_pv32_orig, .Lcr4_pv32_alt, \
+                             X86_FEATURE_SMEP, \
+                             (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt), \
+                             (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt)
+        altinstruction_entry .Lcr4_pv32_orig, .Lcr4_pv32_alt, \
+                             X86_FEATURE_SMAP, \
+                             (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt), \
+                             (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt)
+        .popsection
+
+        testb $3,UREGS_cs(%rsp)
+        jz    .Lcr4_pv32_done
+        cmpb  $0,DOMAIN_is_32bit_pv(%rax)
+        je    .Lcr4_pv32_done
+        call  cr4_pv32_restore
+        /*
+         * An NMI or #MC may occur between clearing CR4.SMEP / CR4.SMAP in
+         * compat_restore_all_guest and it actually returning to guest
+         * context, in which case the guest would run with the two features
+         * enabled. The only bad that can happen from this is a kernel mode
+         * #PF which the guest doesn't expect. Rather than trying to make the
+         * NMI/#MC exit path honor the intended CR4 setting, simply check
+         * whether the wrong CR4 was in use when the #PF occurred, and exit
+         * back to the guest (which will in turn clear the two CR4 bits) to
+         * re-execute the instruction. If we get back here, the CR4 bits
+         * should then be found clear (unless another NMI/#MC occurred at
+         * exactly the right time), and we'll continue processing the
+         * exception as normal.
+         */
+        test  %rax,%rax
+        jnz   .Lcr4_pv32_done
+        /*
+         * The below effectively is
+         * if ( regs->entry_vector == TRAP_page_fault &&
+         *      (regs->error_code & PFEC_page_present) &&
+         *      !(regs->error_code & ~(PFEC_write_access|PFEC_insn_fetch)) )
+         *     goto compat_test_all_events;
+         */
+        mov   $PFEC_page_present,%al
+        cmpb  $TRAP_page_fault,UREGS_entry_vector(%rsp)
+        jne   .Lcr4_pv32_done
+        xor   UREGS_error_code(%rsp),%eax
+        test  $~(PFEC_write_access|PFEC_insn_fetch),%eax
+        jz    compat_test_all_events
+.Lcr4_pv32_done:
         sti
 1:      movq  %rsp,%rdi
         movzbl UREGS_entry_vector(%rsp),%eax
         leaq  exception_table(%rip),%rdx
-        GET_CURRENT(%rbx)
         PERFC_INCR(exceptions, %rax, %rbx)
         callq *(%rdx,%rax,8)
         testb $3,UREGS_cs(%rsp)
@@ -594,10 +649,11 @@ ENTRY(nmi)
         movl  $TRAP_nmi,4(%rsp)
 handle_ist_exception:
         SAVE_ALL CLAC
+        CR4_PV32_RESTORE
         testb $3,UREGS_cs(%rsp)
         jz    1f
         /* Interrupted guest context. Copy the context to stack bottom. */
-        GET_CPUINFO_FIELD(guest_cpu_user_regs,%rdi)
+        GET_CPUINFO_FIELD(guest_cpu_user_regs,di)
         movq  %rsp,%rsi
         movl  $UREGS_kernel_sizeof/8,%ecx
         movq  %rdi,%rsp
@@ -612,7 +668,7 @@ handle_ist_exception:
         /* We want to get straight to the IRET on the NMI exit path. */
         testb $3,UREGS_cs(%rsp)
         jz    restore_all_xen
-        GET_CURRENT(%rbx)
+        GET_CURRENT(bx)
         /* Send an IPI to ourselves to cover for the lack of event checking. */
         movl  VCPU_processor(%rbx),%eax
         shll  $IRQSTAT_shift,%eax

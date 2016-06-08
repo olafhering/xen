@@ -1184,21 +1184,6 @@ out:
     while ( (pg = page_list_remove_head(&free_pages)) )
         free_domheap_page(pg);
 
-    if ( rc < 0 && ( op == INSERT || op == ALLOCATE ) &&
-         addr != start_gpaddr )
-    {
-        BUG_ON(addr == end_gpaddr);
-        /*
-         * addr keeps the address of the last successfully-inserted mapping,
-         * while apply_p2m_changes() considers an address range which is
-         * exclusive of end_gpaddr: add level_size to addr to obtain the
-         * right end of the range
-         */
-        apply_p2m_changes(d, REMOVE,
-                          start_gpaddr, addr + level_sizes[level], orig_maddr,
-                          mattr, 0, p2m_invalid, d->arch.p2m.default_access);
-    }
-
     for ( level = P2M_ROOT_LEVEL; level < 4; level ++ )
     {
         if ( mappings[level] )
@@ -1206,6 +1191,18 @@ out:
     }
 
     spin_unlock(&p2m->lock);
+
+    if ( rc < 0 && ( op == INSERT || op == ALLOCATE ) &&
+         addr != start_gpaddr )
+    {
+        BUG_ON(addr == end_gpaddr);
+        /*
+         * addr keeps the address of the end of the last successfully-inserted
+         * mapping.
+         */
+        apply_p2m_changes(d, REMOVE, start_gpaddr, addr, orig_maddr,
+                          mattr, 0, p2m_invalid, d->arch.p2m.default_access);
+    }
 
     return rc;
 }
@@ -1411,7 +1408,8 @@ void p2m_teardown(struct domain *d)
     while ( (pg = page_list_remove_head(&p2m->pages)) )
         free_domheap_page(pg);
 
-    free_domheap_pages(p2m->root, P2M_ROOT_ORDER);
+    if ( p2m->root )
+        free_domheap_pages(p2m->root, P2M_ROOT_ORDER);
 
     p2m->root = NULL;
 

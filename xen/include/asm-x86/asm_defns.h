@@ -127,19 +127,19 @@ void ret_from_intr(void);
         UNLIKELY_DONE(mp, tag);   \
         __UNLIKELY_END(tag)
 
-#define STACK_CPUINFO_FIELD(field) (STACK_SIZE-CPUINFO_sizeof+CPUINFO_##field)
-#define GET_STACK_BASE(reg)                       \
-        movq $~(STACK_SIZE-1),reg;                \
-        andq %rsp,reg
+#define STACK_CPUINFO_FIELD(field) (1 - CPUINFO_sizeof + CPUINFO_##field)
+#define GET_STACK_END(reg)                        \
+        movl $STACK_SIZE-1, %e##reg;              \
+        orq  %rsp, %r##reg
 
 #define GET_CPUINFO_FIELD(field, reg)             \
-        GET_STACK_BASE(reg);                      \
-        addq $STACK_CPUINFO_FIELD(field),reg
+        GET_STACK_END(reg);                       \
+        addq $STACK_CPUINFO_FIELD(field), %r##reg
 
 #define __GET_CURRENT(reg)                        \
-        movq STACK_CPUINFO_FIELD(current_vcpu)(reg),reg
+        movq STACK_CPUINFO_FIELD(current_vcpu)(%r##reg), %r##reg
 #define GET_CURRENT(reg)                          \
-        GET_STACK_BASE(reg);                      \
+        GET_STACK_END(reg);                       \
         __GET_CURRENT(reg)
 
 #ifndef NDEBUG
@@ -204,11 +204,23 @@ void ret_from_intr(void);
         662: __ASM_##op;                                               \
         .popsection;                                                   \
         .pushsection .altinstructions, "a";                            \
+        altinstruction_entry 661b, 661b, X86_FEATURE_ALWAYS, 3, 0;     \
         altinstruction_entry 661b, 662b, X86_FEATURE_SMAP, 3, 3;       \
         .popsection
 
 #define ASM_STAC ASM_AC(STAC)
 #define ASM_CLAC ASM_AC(CLAC)
+
+#define CR4_PV32_RESTORE                                           \
+        667: ASM_NOP5;                                             \
+        .pushsection .altinstr_replacement, "ax";                  \
+        668: call cr4_pv32_restore;                                \
+        .section .altinstructions, "a";                            \
+        altinstruction_entry 667b, 667b, X86_FEATURE_ALWAYS, 5, 0; \
+        altinstruction_entry 667b, 668b, X86_FEATURE_SMEP, 5, 5;   \
+        altinstruction_entry 667b, 668b, X86_FEATURE_SMAP, 5, 5;   \
+        .popsection
+
 #else
 static always_inline void clac(void)
 {
@@ -301,6 +313,13 @@ static always_inline void stac(void)
 987:
 .endm
 
+#define LOAD_ONE_REG(reg, compat) \
+.if !(compat); \
+        movq  UREGS_r##reg(%rsp),%r##reg; \
+.else; \
+        movl  UREGS_r##reg(%rsp),%e##reg; \
+.endif
+
 /*
  * Reload registers not preserved by C code from frame.
  *
@@ -308,18 +327,20 @@ static always_inline void stac(void)
  *
  * For the way it is used in RESTORE_ALL, this macro must preserve EFLAGS.ZF.
  */
-.macro LOAD_C_CLOBBERED compat=0
+.macro LOAD_C_CLOBBERED compat=0 ax=1
 .if !\compat
         movq  UREGS_r11(%rsp),%r11
         movq  UREGS_r10(%rsp),%r10
         movq  UREGS_r9(%rsp),%r9
         movq  UREGS_r8(%rsp),%r8
 .endif
-        movq  UREGS_rax(%rsp),%rax
-        movq  UREGS_rcx(%rsp),%rcx
-        movq  UREGS_rdx(%rsp),%rdx
-        movq  UREGS_rsi(%rsp),%rsi
-        movq  UREGS_rdi(%rsp),%rdi
+.if \ax
+        LOAD_ONE_REG(ax, \compat)
+.endif
+        LOAD_ONE_REG(cx, \compat)
+        LOAD_ONE_REG(dx, \compat)
+        LOAD_ONE_REG(si, \compat)
+        LOAD_ONE_REG(di, \compat)
 .endm
 
 /*
@@ -356,8 +377,9 @@ static always_inline void stac(void)
         .subsection 0
 #endif
 .endif
-987:    movq  UREGS_rbp(%rsp),%rbp
-        movq  UREGS_rbx(%rsp),%rbx
+987:
+        LOAD_ONE_REG(bp, \compat)
+        LOAD_ONE_REG(bx, \compat)
         subq  $-(UREGS_error_code-UREGS_r15+\adj), %rsp
 .endm
 

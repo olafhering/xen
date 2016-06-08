@@ -21,10 +21,10 @@
 #define PAGE_TO_MEMKB(pages) ((pages) * 4)
 #define BACKEND_STRING_SIZE 5
 
-/* Utility to read backend xenstore keys */
-#define READ_BACKEND(tgc, subpath) ({                                   \
+/* Utility to read /libxl xenstore keys, from libxl_path */
+#define READ_LIBXLDEV(tgc, subpath) ({                                  \
         rc = libxl__xs_read_checked(tgc, XBT_NULL,                      \
-                                    GCSPRINTF("%s/" subpath, be_path),  \
+                                    GCSPRINTF("%s/" subpath, libxl_path),  \
                                     &tmp);                              \
         if (rc) goto out;                                               \
         (char*)tmp;                                                     \
@@ -1312,9 +1312,10 @@ static void disk_eject_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
                                         const char *wpath, const char *epath) {
     EGC_GC;
     libxl_evgen_disk_eject *evg = (void*)w;
-    char *backend;
+    const char *backend;
     char *value;
     char backend_type[BACKEND_STRING_SIZE+1];
+    int rc;
 
     value = libxl__xs_read(gc, XBT_NULL, wpath);
 
@@ -1330,9 +1331,16 @@ static void disk_eject_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
     libxl_event *ev = NEW_EVENT(egc, DISK_EJECT, evg->domid, evg->user);
     libxl_device_disk *disk = &ev->u.disk_eject.disk;
     
-    backend = libxl__xs_read(gc, XBT_NULL,
-                             GCSPRINTF("%.*s/backend", (int)strlen(wpath)-6,
-                                       wpath));
+    rc = libxl__xs_read_checked(gc, XBT_NULL, evg->be_ptr_path, &backend);
+    if (rc) {
+        LIBXL__EVENT_DISASTER(egc, "xs_read failed reading be_ptr_path",
+                              errno, LIBXL_EVENT_TYPE_DISK_EJECT);
+        return;
+    }
+    if (!backend) {
+        /* device has been removed, not simply ejected */
+        return;
+    }
 
     sscanf(backend,
             "/local/domain/%d/backend/%" TOSTRING(BACKEND_STRING_SIZE)
@@ -1349,8 +1357,7 @@ static void disk_eject_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
     disk->pdev_path = strdup(""); /* xxx fixme malloc failure */
     disk->format = LIBXL_DISK_FORMAT_EMPTY;
     /* this value is returned to the user: do not free right away */
-    disk->vdev = xs_read(CTX->xsh, XBT_NULL,
-                         GCSPRINTF("%s/dev", backend), NULL);
+    disk->vdev = libxl__strdup(NOGC, evg->vdev);
     disk->removable = 1;
     disk->readwrite = 0;
     disk->is_cdrom = 1;
@@ -1373,18 +1380,29 @@ int libxl_evenable_disk_eject(libxl_ctx *ctx, uint32_t guest_domid,
     evg->domid = guest_domid;
     LIBXL_LIST_INSERT_HEAD(&CTX->disk_eject_evgens, evg, entry);
 
-    evg->vdev = strdup(vdev);
-    if (!evg->vdev) { rc = ERROR_NOMEM; goto out; }
-
     uint32_t domid = libxl_get_stubdom_id(ctx, guest_domid);
 
     if (!domid)
         domid = guest_domid;
 
+    int devid = libxl__device_disk_dev_number(vdev, NULL, NULL);
+
     path = GCSPRINTF("%s/device/vbd/%d/eject",
                  libxl__xs_get_dompath(gc, domid),
-                 libxl__device_disk_dev_number(vdev, NULL, NULL));
+                 devid);
     if (!path) { rc = ERROR_NOMEM; goto out; }
+
+    const char *libxl_path = GCSPRINTF("%s/device/vbd/%d",
+                                 libxl__xs_libxl_path(gc, domid),
+                                 devid);
+    evg->be_ptr_path = libxl__sprintf(NOGC, "%s/backend", libxl_path);
+
+    const char *configured_vdev;
+    rc = libxl__xs_read_checked(gc, XBT_NULL,
+            GCSPRINTF("%s/vdev", libxl_path), &configured_vdev);
+    if (rc) goto out;
+
+    evg->vdev = libxl__strdup(NOGC, configured_vdev);
 
     rc = libxl__ev_xswatch_register(gc, &evg->watch,
                                     disk_eject_xswatch_callback, path);
@@ -1412,6 +1430,7 @@ void libxl__evdisable_disk_eject(libxl__gc *gc, libxl_evgen_disk_eject *evg) {
         libxl__ev_xswatch_deregister(gc, &evg->watch);
 
     free(evg->vdev);
+    free(evg->be_ptr_path);
     free(evg);
 
     CTX_UNLOCK;
@@ -1986,15 +2005,16 @@ out:
 /* common function to get next device id */
 int libxl__device_nextid(libxl__gc *gc, uint32_t domid, char *device)
 {
-    char *dompath, **l;
+    char *libxl_dom_path, **l;
     unsigned int nb;
     int nextid = -1;
 
-    if (!(dompath = libxl__xs_get_dompath(gc, domid)))
+    if (!(libxl_dom_path = libxl__xs_libxl_path(gc, domid)))
         return nextid;
 
     l = libxl__xs_directory(gc, XBT_NULL,
-                            GCSPRINTF("%s/device/%s", dompath, device), &nb);
+        GCSPRINTF("%s/device/%s", libxl_dom_path, device),
+                            &nb);
     if (l == NULL || nb == 0)
         nextid = 0;
     else
@@ -2159,14 +2179,15 @@ libxl_device_vtpm *libxl_device_vtpm_list(libxl_ctx *ctx, uint32_t domid, int *n
     GC_INIT(ctx);
 
     libxl_device_vtpm* vtpms = NULL;
-    char* fe_path = NULL;
+    char *libxl_path;
     char** dir = NULL;
     unsigned int ndirs = 0;
+    int rc;
 
     *num = 0;
 
-    fe_path = GCSPRINTF("%s/device/vtpm", libxl__xs_get_dompath(gc, domid));
-    dir = libxl__xs_directory(gc, XBT_NULL, fe_path, &ndirs);
+    libxl_path = GCSPRINTF("%s/device/vtpm", libxl__xs_libxl_path(gc, domid));
+    dir = libxl__xs_directory(gc, XBT_NULL, libxl_path, &ndirs);
     if (dir && ndirs) {
        vtpms = malloc(sizeof(*vtpms) * ndirs);
        libxl_device_vtpm* vtpm;
@@ -2175,18 +2196,17 @@ libxl_device_vtpm *libxl_device_vtpm_list(libxl_ctx *ctx, uint32_t domid, int *n
           char* tmp;
           const char* be_path = libxl__xs_read(gc, XBT_NULL,
                 GCSPRINTF("%s/%s/backend",
-                   fe_path, *dir));
+                   libxl_path, *dir));
 
           libxl_device_vtpm_init(vtpm);
 
           vtpm->devid = atoi(*dir);
 
-          tmp = libxl__xs_read(gc, XBT_NULL,
-                GCSPRINTF("%s/%s/backend-id",
-                   fe_path, *dir));
-          vtpm->backend_domid = atoi(tmp);
+          rc = libxl__backendpath_parse_domid(gc, be_path,
+                                              &vtpm->backend_domid);
+          if (rc) return NULL;
 
-          tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/uuid", be_path));
+          tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/uuid", libxl_path));
           if (tmp) {
               if(libxl_uuid_from_string(&(vtpm->uuid), tmp)) {
                   LOG(ERROR, "%s/uuid is a malformed uuid?? (%s) Probably a bug!!\n", be_path, tmp);
@@ -2208,7 +2228,7 @@ int libxl_device_vtpm_getinfo(libxl_ctx *ctx,
                               libxl_vtpminfo *vtpminfo)
 {
     GC_INIT(ctx);
-    char *dompath, *vtpmpath;
+    char *libxl_path, *dompath, *vtpmpath;
     char *val;
     int rc = 0;
 
@@ -2217,18 +2237,17 @@ int libxl_device_vtpm_getinfo(libxl_ctx *ctx,
     vtpminfo->devid = vtpm->devid;
 
     vtpmpath = GCSPRINTF("%s/device/vtpm/%d", dompath, vtpminfo->devid);
+    libxl_path = GCSPRINTF("%s/device/vtpm/%d",
+                           libxl__xs_libxl_path(gc, domid), vtpminfo->devid);
     vtpminfo->backend = xs_read(ctx->xsh, XBT_NULL,
-          GCSPRINTF("%s/backend", vtpmpath), NULL);
+          GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!vtpminfo->backend) {
         goto err;
     }
-    if(!libxl__xs_read(gc, XBT_NULL, vtpminfo->backend)) {
-       goto err;
-    }
 
-    val = libxl__xs_read(gc, XBT_NULL,
-          GCSPRINTF("%s/backend-id", vtpmpath));
-    vtpminfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
+    rc = libxl__backendpath_parse_domid(gc, vtpminfo->backend,
+                                        &vtpminfo->backend_id);
+    if (rc) goto exit;
 
     val = libxl__xs_read(gc, XBT_NULL,
           GCSPRINTF("%s/state", vtpmpath));
@@ -2243,14 +2262,11 @@ int libxl_device_vtpm_getinfo(libxl_ctx *ctx,
     vtpminfo->rref = val ? strtoul(val, NULL, 10) : -1;
 
     vtpminfo->frontend = xs_read(ctx->xsh, XBT_NULL,
-          GCSPRINTF("%s/frontend", vtpminfo->backend), NULL);
+          GCSPRINTF("%s/frontend", libxl_path), NULL);
+    vtpminfo->frontend_id = domid;
 
     val = libxl__xs_read(gc, XBT_NULL,
-          GCSPRINTF("%s/frontend-id", vtpminfo->backend));
-    vtpminfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
-
-    val = libxl__xs_read(gc, XBT_NULL,
-          GCSPRINTF("%s/uuid", vtpminfo->backend));
+          GCSPRINTF("%s/uuid", libxl_path));
     if(val == NULL) {
        LOG(ERROR, "%s/uuid does not exist!", vtpminfo->backend);
        goto err;
@@ -2619,8 +2635,8 @@ void libxl__device_disk_add(libxl__egc *egc, uint32_t domid,
     device_disk_add(egc, domid, disk, aodev, NULL, NULL);
 }
 
-static int libxl__device_disk_from_xs_be(libxl__gc *gc,
-                                         const char *be_path,
+static int libxl__device_disk_from_xenstore(libxl__gc *gc,
+                                         const char *libxl_path,
                                          libxl_device_disk *disk)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
@@ -2630,10 +2646,22 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
 
     libxl_device_disk_init(disk);
 
-    rc = sscanf(be_path, "/local/domain/%d/", &disk->backend_domid);
-    if (rc != 1) {
-        LOG(ERROR, "Unable to fetch device backend domid from %s", be_path);
-        goto cleanup;
+    const char *backend_path;
+    rc = libxl__xs_read_checked(gc, XBT_NULL,
+                                GCSPRINTF("%s/backend", libxl_path),
+                                &backend_path);
+    if (rc) goto out;
+
+    if (!backend_path) {
+        LOG(ERROR, "disk %s does not exist (no backend path", libxl_path);
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    rc = libxl__backendpath_parse_domid(gc, backend_path, &disk->backend_domid);
+    if (rc) {
+        LOG(ERROR, "Unable to fetch device backend domid from %s", backend_path);
+        goto out;
     }
 
     /*
@@ -2643,7 +2671,7 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
      * enabled.
      */
     tmp = xs_read(ctx->xsh, XBT_NULL,
-                  GCSPRINTF("%s/params", be_path), &len);
+                  GCSPRINTF("%s/params", libxl_path), &len);
     if (tmp && strchr(tmp, ':')) {
         disk->pdev_path = strdup(strchr(tmp, ':') + 1);
         free(tmp);
@@ -2652,24 +2680,24 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
     }
 
     tmp = xs_read(ctx->xsh, XBT_NULL,
-                  GCSPRINTF("%s/colo-host", be_path), &len);
+                  GCSPRINTF("%s/colo-host", libxl_path), &len);
     if (tmp) {
         libxl_defbool_set(&disk->colo_enable, true);
         disk->colo_host = tmp;
 
         tmp = xs_read(ctx->xsh, XBT_NULL,
-                      GCSPRINTF("%s/colo-port", be_path), &len);
+                      GCSPRINTF("%s/colo-port", libxl_path), &len);
         if (!tmp) {
-            LOG(ERROR, "Missing xenstore node %s/colo-port", be_path);
+            LOG(ERROR, "Missing xenstore node %s/colo-port", libxl_path);
             goto cleanup;
         }
         disk->colo_port = atoi(tmp);
 
 #define XS_READ_COLO(param, item) do {                                  \
         tmp = xs_read(ctx->xsh, XBT_NULL,                               \
-                      GCSPRINTF("%s/"#param"", be_path), &len);         \
+                      GCSPRINTF("%s/"#param"", libxl_path), &len);         \
         if (!tmp) {                                                     \
-            LOG(ERROR, "Missing xenstore node %s/"#param"", be_path);   \
+            LOG(ERROR, "Missing xenstore node %s/"#param"", libxl_path);   \
             goto cleanup;                                               \
         }                                                               \
         disk->item = tmp;                                               \
@@ -2683,31 +2711,31 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
     }
 
     tmp = libxl__xs_read(gc, XBT_NULL,
-                         GCSPRINTF("%s/type", be_path));
+                         GCSPRINTF("%s/type", libxl_path));
     if (!tmp) {
-        LOG(ERROR, "Missing xenstore node %s/type", be_path);
+        LOG(ERROR, "Missing xenstore node %s/type", libxl_path);
         goto cleanup;
     }
     libxl_string_to_backend(ctx, tmp, &(disk->backend));
 
     disk->vdev = xs_read(ctx->xsh, XBT_NULL,
-                         GCSPRINTF("%s/dev", be_path), &len);
+                         GCSPRINTF("%s/dev", libxl_path), &len);
     if (!disk->vdev) {
-        LOG(ERROR, "Missing xenstore node %s/dev", be_path);
+        LOG(ERROR, "Missing xenstore node %s/dev", libxl_path);
         goto cleanup;
     }
 
     tmp = libxl__xs_read(gc, XBT_NULL, libxl__sprintf
-                         (gc, "%s/removable", be_path));
+                         (gc, "%s/removable", libxl_path));
     if (!tmp) {
-        LOG(ERROR, "Missing xenstore node %s/removable", be_path);
+        LOG(ERROR, "Missing xenstore node %s/removable", libxl_path);
         goto cleanup;
     }
     disk->removable = atoi(tmp);
 
-    tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/mode", be_path));
+    tmp = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/mode", libxl_path));
     if (!tmp) {
-        LOG(ERROR, "Missing xenstore node %s/mode", be_path);
+        LOG(ERROR, "Missing xenstore node %s/mode", libxl_path);
         goto cleanup;
     }
     if (!strcmp(tmp, "w"))
@@ -2716,9 +2744,9 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
         disk->readwrite = 0;
 
     tmp = libxl__xs_read(gc, XBT_NULL,
-                         GCSPRINTF("%s/device-type", be_path));
+                         GCSPRINTF("%s/device-type", libxl_path));
     if (!tmp) {
-        LOG(ERROR, "Missing xenstore node %s/device-type", be_path);
+        LOG(ERROR, "Missing xenstore node %s/device-type", libxl_path);
         goto cleanup;
     }
     disk->is_cdrom = !strcmp(tmp, "cdrom");
@@ -2727,15 +2755,17 @@ static int libxl__device_disk_from_xs_be(libxl__gc *gc,
 
     return 0;
 cleanup:
+    rc = ERROR_FAIL;
+ out:
     libxl_device_disk_dispose(disk);
-    return ERROR_FAIL;
+    return rc;
 }
 
 int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
                               const char *vdev, libxl_device_disk *disk)
 {
     GC_INIT(ctx);
-    char *dompath, *path;
+    char *dom_xl_path, *libxl_path;
     int devid = libxl__device_disk_dev_number(vdev, NULL, NULL);
     int rc = ERROR_FAIL;
 
@@ -2744,39 +2774,34 @@ int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
 
     libxl_device_disk_init(disk);
 
-    dompath = libxl__xs_get_dompath(gc, domid);
-    if (!dompath) {
+    dom_xl_path = libxl__xs_libxl_path(gc, domid);
+    if (!dom_xl_path) {
         goto out;
     }
-    path = libxl__xs_read(gc, XBT_NULL,
-                          GCSPRINTF("%s/device/vbd/%d/backend", dompath,
-                                    devid));
-    if (!path)
-        goto out;
+    libxl_path = GCSPRINTF("%s/device/vbd/%d", dom_xl_path, devid);
 
-    rc = libxl__device_disk_from_xs_be(gc, path, disk);
+    rc = libxl__device_disk_from_xenstore(gc, libxl_path, disk);
 out:
     GC_FREE;
     return rc;
 }
 
 
-static int libxl__append_disk_list_of_type(libxl__gc *gc,
+static int libxl__append_disk_list(libxl__gc *gc,
                                            uint32_t domid,
-                                           const char *type,
                                            libxl_device_disk **disks,
                                            int *ndisks)
 {
-    char *be_path = NULL;
+    char *libxl_dir_path = NULL;
     char **dir = NULL;
     unsigned int n = 0;
     libxl_device_disk *pdisk = NULL, *pdisk_end = NULL;
     int rc=0;
     int initial_disks = *ndisks;
 
-    be_path = GCSPRINTF("%s/backend/%s/%d",
-                        libxl__xs_get_dompath(gc, 0), type, domid);
-    dir = libxl__xs_directory(gc, XBT_NULL, be_path, &n);
+    libxl_dir_path = GCSPRINTF("%s/device/vbd",
+                        libxl__xs_libxl_path(gc, domid));
+    dir = libxl__xs_directory(gc, XBT_NULL, libxl_dir_path, &n);
     if (dir && n) {
         libxl_device_disk *tmp;
         tmp = realloc(*disks, sizeof (libxl_device_disk) * (*ndisks + n));
@@ -2787,10 +2812,9 @@ static int libxl__append_disk_list_of_type(libxl__gc *gc,
         pdisk_end = *disks + initial_disks + n;
         for (; pdisk < pdisk_end; pdisk++, dir++) {
             const char *p;
-            p = GCSPRINTF("%s/%s", be_path, *dir);
-            if ((rc=libxl__device_disk_from_xs_be(gc, p, pdisk)))
+            p = GCSPRINTF("%s/%s", libxl_dir_path, *dir);
+            if ((rc=libxl__device_disk_from_xenstore(gc, p, pdisk)))
                 goto out;
-            pdisk->backend_domid = 0;
             *ndisks += 1;
         }
     }
@@ -2806,13 +2830,7 @@ libxl_device_disk *libxl_device_disk_list(libxl_ctx *ctx, uint32_t domid, int *n
 
     *num = 0;
 
-    rc = libxl__append_disk_list_of_type(gc, domid, "vbd", &disks, num);
-    if (rc) goto out_err;
-
-    rc = libxl__append_disk_list_of_type(gc, domid, "tap", &disks, num);
-    if (rc) goto out_err;
-
-    rc = libxl__append_disk_list_of_type(gc, domid, "qdisk", &disks, num);
+    rc = libxl__append_disk_list(gc, domid, &disks, num);
     if (rc) goto out_err;
 
     GC_FREE;
@@ -2832,35 +2850,45 @@ int libxl_device_disk_getinfo(libxl_ctx *ctx, uint32_t domid,
                               libxl_device_disk *disk, libxl_diskinfo *diskinfo)
 {
     GC_INIT(ctx);
-    char *dompath, *diskpath;
+    char *dompath, *fe_path, *libxl_path;
     char *val;
+    int rc;
+
+    diskinfo->backend = NULL;
 
     dompath = libxl__xs_get_dompath(gc, domid);
     diskinfo->devid = libxl__device_disk_dev_number(disk->vdev, NULL, NULL);
 
     /* tap devices entries in xenstore are written as vbd devices. */
-    diskpath = GCSPRINTF("%s/device/vbd/%d", dompath, diskinfo->devid);
+    fe_path = GCSPRINTF("%s/device/vbd/%d", dompath, diskinfo->devid);
+    libxl_path = GCSPRINTF("%s/device/vbd/%d",
+                           libxl__xs_libxl_path(gc, domid), diskinfo->devid);
     diskinfo->backend = xs_read(ctx->xsh, XBT_NULL,
-                                GCSPRINTF("%s/backend", diskpath), NULL);
+                                GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!diskinfo->backend) {
         GC_FREE;
         return ERROR_FAIL;
     }
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/backend-id", diskpath));
-    diskinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", diskpath));
+    rc = libxl__backendpath_parse_domid(gc, diskinfo->backend,
+                                        &diskinfo->backend_id);
+    if (rc) goto out;
+
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", fe_path));
     diskinfo->state = val ? strtoul(val, NULL, 10) : -1;
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", diskpath));
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", fe_path));
     diskinfo->evtch = val ? strtoul(val, NULL, 10) : -1;
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/ring-ref", diskpath));
+    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/ring-ref", fe_path));
     diskinfo->rref = val ? strtoul(val, NULL, 10) : -1;
     diskinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
-                                 GCSPRINTF("%s/frontend", diskinfo->backend), NULL);
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/frontend-id", diskinfo->backend));
-    diskinfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
+                                 GCSPRINTF("%s/frontend", libxl_path), NULL);
+    diskinfo->frontend_id = domid;
 
     GC_FREE;
     return 0;
+
+ out:
+    free(diskinfo->backend);
+    return rc;
 }
 
 int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
@@ -2872,7 +2900,7 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
     libxl_domain_config d_config;
     int rc, dm_ver;
     libxl__device device;
-    const char * path;
+    const char *be_path, *libxl_path;
     char * tmp;
     libxl__domain_userdata_lock *lock = NULL;
     xs_transaction_t t = XBT_NULL;
@@ -2945,7 +2973,8 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
     rc = libxl__device_from_disk(gc, domid, disk, &device);
     if (rc) goto out;
 
-    path = libxl__device_backend_path(gc, &device);
+    be_path = libxl__device_backend_path(gc, &device);
+    libxl_path = libxl__device_libxl_path(gc, &device);
 
     insert = flexarray_make(gc, 4, 1);
 
@@ -2984,18 +3013,22 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
         if (rc) goto out;
-        /* Sanity check: make sure the backend exists before writing here */
-        tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/frontend", path));
+        /* Sanity check: make sure the device exists before writing here */
+        tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/frontend", libxl_path));
         if (!tmp)
         {
             LOG(ERROR, "Internal error: %s does not exist",
-                GCSPRINTF("%s/frontend", path));
+                GCSPRINTF("%s/frontend", libxl_path));
             rc = ERROR_FAIL;
             goto out;
         }
 
-        rc = libxl__xs_writev(gc, t, path,
-                              libxl__xs_kvs_of_flexarray(gc, empty, empty->count));
+        char **kvs = libxl__xs_kvs_of_flexarray(gc, empty, empty->count);
+
+        rc = libxl__xs_writev(gc, t, be_path, kvs);
+        if (rc) goto out;
+
+        rc = libxl__xs_writev(gc, t, libxl_path, kvs);
         if (rc) goto out;
 
         rc = libxl__xs_transaction_commit(gc, &t);
@@ -3019,12 +3052,12 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
         if (rc) goto out;
-        /* Sanity check: make sure the backend exists before writing here */
-        tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/frontend", path));
+        /* Sanity check: make sure the device exists before writing here */
+        tmp = libxl__xs_read(gc, t, GCSPRINTF("%s/frontend", libxl_path));
         if (!tmp)
         {
             LOG(ERROR, "Internal error: %s does not exist",
-                GCSPRINTF("%s/frontend", path));
+                GCSPRINTF("%s/frontend", libxl_path));
             rc = ERROR_FAIL;
             goto out;
         }
@@ -3032,8 +3065,12 @@ int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
         rc = libxl__set_domain_configuration(gc, domid, &d_config);
         if (rc) goto out;
 
-        rc = libxl__xs_writev(gc, t, path,
-                              libxl__xs_kvs_of_flexarray(gc, insert, insert->count));
+        char **kvs = libxl__xs_kvs_of_flexarray(gc, insert, insert->count);
+
+        rc = libxl__xs_writev(gc, t, be_path, kvs);
+        if (rc) goto out;
+
+        rc = libxl__xs_writev(gc, t, libxl_path, kvs);
         if (rc) goto out;
 
         rc = libxl__xs_transaction_commit(gc, &t);
@@ -3068,7 +3105,7 @@ static char * libxl__alloc_vdev(libxl__gc *gc, void *get_vdev_user,
 {
     const char *blkdev_start = (const char *) get_vdev_user;
     int devid = 0, disk = 0, part = 0;
-    char *dompath = libxl__xs_get_dompath(gc, LIBXL_TOOLSTACK_DOMID);
+    char *libxl_dom_path = libxl__xs_libxl_path(gc, LIBXL_TOOLSTACK_DOMID);
 
     libxl__device_disk_dev_number(blkdev_start, &disk, &part);
     if (part != 0) {
@@ -3083,7 +3120,7 @@ static char * libxl__alloc_vdev(libxl__gc *gc, void *get_vdev_user,
             return NULL;
         if (libxl__xs_read(gc, t,
                     GCSPRINTF("%s/device/vbd/%d/backend",
-                        dompath, devid)) == NULL) {
+                        libxl_dom_path, devid)) == NULL) {
             if (errno == ENOENT)
                 return libxl__devid_to_vdev(gc, devid);
             else
@@ -3319,7 +3356,7 @@ out:
 /******************************************************************************/
 
 int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
-                                 uint32_t domid)
+                                 uint32_t domid, bool hotplug)
 {
     int rc;
 
@@ -3357,8 +3394,9 @@ int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
     switch (libxl__domain_type(gc, domid)) {
     case LIBXL_DOMAIN_TYPE_HVM:
         if (!nic->nictype) {
-            if (libxl__device_model_version_running(gc, domid) ==
-                LIBXL_DEVICE_MODEL_VERSION_NONE)
+            if (hotplug ||
+                (libxl__device_model_version_running(gc, domid) ==
+                 LIBXL_DEVICE_MODEL_VERSION_NONE))
                 nic->nictype = LIBXL_NIC_TYPE_VIF;
             else
                 nic->nictype = LIBXL_NIC_TYPE_VIF_IOEMU;
@@ -3411,7 +3449,7 @@ void libxl__device_nic_add(libxl__egc *egc, uint32_t domid,
     libxl_device_nic_init(&nic_saved);
     libxl_device_nic_copy(CTX, &nic_saved, nic);
 
-    rc = libxl__device_nic_setdefault(gc, nic, domid);
+    rc = libxl__device_nic_setdefault(gc, nic, domid, aodev->update_json);
     if (rc) goto out;
 
     front = flexarray_make(gc, 16, 1);
@@ -3548,8 +3586,8 @@ out:
     return;
 }
 
-static int libxl__device_nic_from_xs_be(libxl__gc *gc,
-                                        const char *be_path,
+static int libxl__device_nic_from_xenstore(libxl__gc *gc,
+                                        const char *libxl_path,
                                         libxl_device_nic *nic)
 {
     const char *tmp;
@@ -3557,7 +3595,7 @@ static int libxl__device_nic_from_xs_be(libxl__gc *gc,
 
     libxl_device_nic_init(nic);
 
-    tmp = READ_BACKEND(gc, "handle");
+    tmp = READ_LIBXLDEV(gc, "handle");
     if (tmp)
         nic->devid = atoi(tmp);
     else
@@ -3565,7 +3603,7 @@ static int libxl__device_nic_from_xs_be(libxl__gc *gc,
 
     /* nic->mtu = */
 
-    tmp = READ_BACKEND(gc, "mac");
+    tmp = READ_LIBXLDEV(gc, "mac");
     if (tmp) {
         rc = libxl__parse_mac(tmp, nic->mac);
         if (rc) goto out;
@@ -3573,13 +3611,13 @@ static int libxl__device_nic_from_xs_be(libxl__gc *gc,
         memset(nic->mac, 0, sizeof(nic->mac));
     }
 
-    nic->ip = READ_BACKEND(NOGC, "ip");
-    nic->bridge = READ_BACKEND(NOGC, "bridge");
-    nic->script = READ_BACKEND(NOGC, "script");
-    nic->coloft_forwarddev = READ_BACKEND(NOGC, "forwarddev");
+    nic->ip = READ_LIBXLDEV(NOGC, "ip");
+    nic->bridge = READ_LIBXLDEV(NOGC, "bridge");
+    nic->script = READ_LIBXLDEV(NOGC, "script");
+    nic->coloft_forwarddev = READ_LIBXLDEV(NOGC, "forwarddev");
 
     /* vif_ioemu nics use the same xenstore entries as vif interfaces */
-    tmp = READ_BACKEND(gc, "type");
+    tmp = READ_LIBXLDEV(gc, "type");
     if (tmp) {
         rc = libxl_nic_type_from_string(tmp, &nic->nictype);
         if (rc) goto out;
@@ -3598,21 +3636,17 @@ int libxl_devid_to_device_nic(libxl_ctx *ctx, uint32_t domid,
                               int devid, libxl_device_nic *nic)
 {
     GC_INIT(ctx);
-    char *dompath, *path;
+    char *libxl_dom_path, *libxl_path;
     int rc = ERROR_FAIL;
 
     libxl_device_nic_init(nic);
-    dompath = libxl__xs_get_dompath(gc, domid);
-    if (!dompath)
+    libxl_dom_path = libxl__xs_libxl_path(gc, domid);
+    if (!libxl_dom_path)
         goto out;
 
-    path = libxl__xs_read(gc, XBT_NULL,
-                          GCSPRINTF("%s/device/vif/%d/backend", dompath,
-                                    devid));
-    if (!path)
-        goto out;
+    libxl_path = GCSPRINTF("%s/device/vif/%d", libxl_dom_path, devid);
 
-    rc = libxl__device_nic_from_xs_be(gc, path, nic);
+    rc = libxl__device_nic_from_xenstore(gc, libxl_path, nic);
     if (rc) goto out;
 
     rc = 0;
@@ -3621,21 +3655,20 @@ out:
     return rc;
 }
 
-static int libxl__append_nic_list_of_type(libxl__gc *gc,
+static int libxl__append_nic_list(libxl__gc *gc,
                                            uint32_t domid,
-                                           const char *type,
                                            libxl_device_nic **nics,
                                            int *nnics)
 {
-    char *be_path = NULL;
+    char *libxl_dir_path = NULL;
     char **dir = NULL;
     unsigned int n = 0;
     libxl_device_nic *pnic = NULL, *pnic_end = NULL;
     int rc;
 
-    be_path = GCSPRINTF("%s/backend/%s/%d", libxl__xs_get_dompath(gc, 0),
-                        type, domid);
-    dir = libxl__xs_directory(gc, XBT_NULL, be_path, &n);
+    libxl_dir_path = GCSPRINTF("%s/device/vif",
+                               libxl__xs_libxl_path(gc, domid));
+    dir = libxl__xs_directory(gc, XBT_NULL, libxl_dir_path, &n);
     if (dir && n) {
         libxl_device_nic *tmp;
         tmp = realloc(*nics, sizeof (libxl_device_nic) * (*nnics + n));
@@ -3646,10 +3679,9 @@ static int libxl__append_nic_list_of_type(libxl__gc *gc,
         pnic_end = *nics + *nnics + n;
         for (; pnic < pnic_end; pnic++, dir++) {
             const char *p;
-            p = GCSPRINTF("%s/%s", be_path, *dir);
-            rc = libxl__device_nic_from_xs_be(gc, p, pnic);
+            p = GCSPRINTF("%s/%s", libxl_dir_path, *dir);
+            rc = libxl__device_nic_from_xenstore(gc, p, pnic);
             if (rc) goto out;
-            pnic->backend_domid = 0;
         }
         *nnics += n;
     }
@@ -3667,7 +3699,7 @@ libxl_device_nic *libxl_device_nic_list(libxl_ctx *ctx, uint32_t domid, int *num
 
     *num = 0;
 
-    rc = libxl__append_nic_list_of_type(gc, domid, "vif", &nics, num);
+    rc = libxl__append_nic_list(gc, domid, &nics, num);
     if (rc) goto out_err;
 
     GC_FREE;
@@ -3687,21 +3719,26 @@ int libxl_device_nic_getinfo(libxl_ctx *ctx, uint32_t domid,
                               libxl_device_nic *nic, libxl_nicinfo *nicinfo)
 {
     GC_INIT(ctx);
-    char *dompath, *nicpath;
+    char *dompath, *nicpath, *libxl_path;
     char *val;
+    int rc;
 
     dompath = libxl__xs_get_dompath(gc, domid);
     nicinfo->devid = nic->devid;
 
     nicpath = GCSPRINTF("%s/device/vif/%d", dompath, nicinfo->devid);
+    libxl_path = GCSPRINTF("%s/device/vif/%d",
+                           libxl__xs_libxl_path(gc, domid), nicinfo->devid);
     nicinfo->backend = xs_read(ctx->xsh, XBT_NULL,
-                                GCSPRINTF("%s/backend", nicpath), NULL);
+                                GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!nicinfo->backend) {
         GC_FREE;
         return ERROR_FAIL;
     }
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/backend-id", nicpath));
-    nicinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
+    rc = libxl__backendpath_parse_domid(gc, nicinfo->backend,
+                                        &nicinfo->backend_id);
+    if (rc) goto out;
+
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", nicpath));
     nicinfo->state = val ? strtoul(val, NULL, 10) : -1;
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/event-channel", nicpath));
@@ -3710,13 +3747,13 @@ int libxl_device_nic_getinfo(libxl_ctx *ctx, uint32_t domid,
     nicinfo->rref_tx = val ? strtoul(val, NULL, 10) : -1;
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/rx-ring-ref", nicpath));
     nicinfo->rref_rx = val ? strtoul(val, NULL, 10) : -1;
-    nicinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
-                                 GCSPRINTF("%s/frontend", nicinfo->backend), NULL);
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/frontend-id", nicinfo->backend));
-    nicinfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
+    nicinfo->frontend = libxl__strdup(NOGC, nicpath);
+    nicinfo->frontend_id = domid;
 
+    rc = 0;
+ out:
     GC_FREE;
-    return 0;
+    return rc;
 }
 
 const char *libxl__device_nic_devname(libxl__gc *gc,
@@ -3777,6 +3814,8 @@ int libxl__device_console_add(libxl__gc *gc, uint32_t domid,
     if (console->name) {
         flexarray_append(ro_front, "name");
         flexarray_append(ro_front, console->name);
+        flexarray_append(back, "name");
+        flexarray_append(back, console->name);
     }
     if (console->connection) {
         flexarray_append(back, "connection");
@@ -3888,8 +3927,8 @@ int libxl__init_console_from_channel(libxl__gc *gc,
     return 0;
 }
 
-static int libxl__device_channel_from_xs_be(libxl__gc *gc,
-                                            const char *be_path,
+static int libxl__device_channel_from_xenstore(libxl__gc *gc,
+                                            const char *libxl_path,
                                             libxl_device_channel *channel)
 {
     const char *tmp;
@@ -3897,14 +3936,14 @@ static int libxl__device_channel_from_xs_be(libxl__gc *gc,
 
     libxl_device_channel_init(channel);
 
-    /* READ_BACKEND is from libxl__device_nic_from_xs_be above */
-    channel->name = READ_BACKEND(NOGC, "name");
-    tmp = READ_BACKEND(gc, "connection");
+    /* READ_BACKEND is from libxl__device_nic_from_xenstore above */
+    channel->name = READ_LIBXLDEV(NOGC, "name");
+    tmp = READ_LIBXLDEV(gc, "connection");
     if (!strcmp(tmp, "pty")) {
         channel->connection = LIBXL_CHANNEL_CONNECTION_PTY;
     } else if (!strcmp(tmp, "socket")) {
         channel->connection = LIBXL_CHANNEL_CONNECTION_SOCKET;
-        channel->u.socket.path = READ_BACKEND(NOGC, "path");
+        channel->u.socket.path = READ_LIBXLDEV(NOGC, "path");
     } else {
         rc = ERROR_INVAL;
         goto out;
@@ -3915,34 +3954,32 @@ static int libxl__device_channel_from_xs_be(libxl__gc *gc,
     return rc;
 }
 
-static int libxl__append_channel_list_of_type(libxl__gc *gc,
+static int libxl__append_channel_list(libxl__gc *gc,
                                               uint32_t domid,
-                                              const char *type,
                                               libxl_device_channel **channels,
                                               int *nchannels)
 {
-    char *fe_path = NULL, *be_path = NULL;
+    char *libxl_dir_path = NULL;
     char **dir = NULL;
     unsigned int n = 0, devid = 0;
     libxl_device_channel *next = NULL;
     int rc = 0, i;
 
-    fe_path = GCSPRINTF("%s/device/%s",
-                        libxl__xs_get_dompath(gc, domid), type);
-    dir = libxl__xs_directory(gc, XBT_NULL, fe_path, &n);
+    libxl_dir_path = GCSPRINTF("%s/device/console",
+                               libxl__xs_libxl_path(gc, domid));
+    dir = libxl__xs_directory(gc, XBT_NULL, libxl_dir_path, &n);
     if (!dir || !n)
       goto out;
 
     for (i = 0; i < n; i++) {
-        const char *p, *name;
+        const char *libxl_path, *name;
         libxl_device_channel *tmp;
 
-        p = GCSPRINTF("%s/%s", fe_path, dir[i]);
-        name = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/name", p));
+        libxl_path = GCSPRINTF("%s/%s", libxl_dir_path, dir[i]);
+        name = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/name", libxl_path));
         /* 'channels' are consoles with names, so ignore all consoles
            without names */
         if (!name) continue;
-        be_path = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/backend", p));
         tmp = realloc(*channels,
                       sizeof(libxl_device_channel) * (*nchannels + devid + 1));
         if (!tmp) {
@@ -3951,7 +3988,7 @@ static int libxl__append_channel_list_of_type(libxl__gc *gc,
         }
         *channels = tmp;
         next = *channels + *nchannels + devid;
-        rc = libxl__device_channel_from_xs_be(gc, be_path, next);
+        rc = libxl__device_channel_from_xenstore(gc, libxl_path, next);
         if (rc) goto out;
         next->devid = devid;
         devid++;
@@ -3973,7 +4010,7 @@ libxl_device_channel *libxl_device_channel_list(libxl_ctx *ctx,
 
     *num = 0;
 
-    rc = libxl__append_channel_list_of_type(gc, domid, "console", &channels, num);
+    rc = libxl__append_channel_list(gc, domid, &channels, num);
     if (rc) goto out_err;
 
     GC_FREE;
@@ -3994,30 +4031,32 @@ int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
                                  libxl_channelinfo *channelinfo)
 {
     GC_INIT(ctx);
-    char *dompath, *fe_path;
+    char *dompath, *fe_path, *libxl_path;
     char *val;
+    int rc;
 
     dompath = libxl__xs_get_dompath(gc, domid);
     channelinfo->devid = channel->devid;
 
     fe_path = GCSPRINTF("%s/device/console/%d", dompath,
                         channelinfo->devid + 1);
+    libxl_path = GCSPRINTF("%s/device/console/%d",
+                           libxl__xs_libxl_path(gc, domid),
+                           channelinfo->devid + 1);
     channelinfo->backend = xs_read(ctx->xsh, XBT_NULL,
-                                   GCSPRINTF("%s/backend", fe_path), NULL);
+                                   GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!channelinfo->backend) {
         GC_FREE;
         return ERROR_FAIL;
     }
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/backend-id", fe_path));
-    channelinfo->backend_id = val ? strtoul(val, NULL, 10) : -1;
+    rc = libxl__backendpath_parse_domid(gc, channelinfo->backend,
+                                        &channelinfo->backend_id);
+    if (rc) goto out;
+
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/state", fe_path));
     channelinfo->state = val ? strtoul(val, NULL, 10) : -1;
-    channelinfo->frontend = xs_read(ctx->xsh, XBT_NULL,
-                                    GCSPRINTF("%s/frontend",
-                                    channelinfo->backend), NULL);
-    val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/frontend-id",
-                         channelinfo->backend));
-    channelinfo->frontend_id = val ? strtoul(val, NULL, 10) : -1;
+    channelinfo->frontend = libxl__strdup(NOGC, fe_path);
+    channelinfo->frontend_id = domid;
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/ring-ref", fe_path));
     channelinfo->rref = val ? strtoul(val, NULL, 10) : -1;
     val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/port", fe_path));
@@ -4027,13 +4066,36 @@ int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
     switch (channel->connection) {
          case LIBXL_CHANNEL_CONNECTION_PTY:
              val = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/tty", fe_path));
+             /*
+              * It is obviously very wrong for this value to be in the
+              * frontend.  But in XSA-175 we don't want to re-engineer
+              * this because other xenconsole code elsewhere (some
+              * even out of tree, perhaps) expects this node to be
+              * here.
+              *
+              * FE/pty is readonly for the guest.  It always exists if
+              * FE does because libxl__device_console_add
+              * unconditionally creates it and nothing deletes it.
+              *
+              * The guest can delete the whole FE (which it has write
+              * privilege on) but the containing directories
+              * /local/GUEST[/device[/console]] are also RO for the
+              * guest.  So if the guest deletes FE it cannot recreate
+              * it.
+              *
+              * Therefore the guest cannot cause FE/pty to contain bad
+              * data, although it can cause it to not exist.
+              */
+             if (!val) val = "/NO-SUCH-PATH";
              channelinfo->u.pty.path = strdup(val);
              break;
          default:
              break;
     }
+    rc = 0;
+ out:
     GC_FREE;
-    return 0;
+    return rc;
 }
 
 /******************************************************************************/
@@ -5357,6 +5419,38 @@ libxl_numainfo *libxl_get_numainfo(libxl_ctx *ctx, int *nr)
     return ret;
 }
 
+static int libxl__xc_version_wrap(libxl__gc *gc, libxl_version_info *info,
+                                  xen_build_id_t *build)
+{
+    int r;
+
+    r = xc_version(CTX->xch, XENVER_build_id, build);
+    switch (r) {
+    case -EPERM:
+    case -ENODATA:
+    case 0:
+        info->build_id = libxl__strdup(NOGC, "");
+        break;
+
+    case -ENOBUFS:
+        break;
+
+    default:
+        if (r > 0) {
+            unsigned int i;
+
+            info->build_id = libxl__zalloc(NOGC, (r * 2) + 1);
+
+            for (i = 0; i < r ; i++)
+                snprintf(&info->build_id[i * 2], 3, "%02hhx", build->buf[i]);
+
+            r = 0;
+        }
+        break;
+    }
+    return r;
+}
+
 const libxl_version_info* libxl_get_version_info(libxl_ctx *ctx)
 {
     GC_INIT(ctx);
@@ -5367,8 +5461,10 @@ const libxl_version_info* libxl_get_version_info(libxl_ctx *ctx)
         xen_capabilities_info_t xen_caps;
         xen_platform_parameters_t p_parms;
         xen_commandline_t xen_commandline;
+        xen_build_id_t build_id;
     } u;
     long xen_version;
+    int r;
     libxl_version_info *info = &ctx->version_info;
 
     if (info->xen_version_extra != NULL)
@@ -5401,6 +5497,16 @@ const libxl_version_info* libxl_get_version_info(libxl_ctx *ctx)
     xc_version(ctx->xch, XENVER_commandline, &u.xen_commandline);
     info->commandline = libxl__strdup(NOGC, u.xen_commandline);
 
+    u.build_id.len = sizeof(u) - sizeof(u.build_id);
+    r = libxl__xc_version_wrap(gc, info, &u.build_id);
+    if (r == -ENOBUFS) {
+            xen_build_id_t *build_id;
+
+            build_id = libxl__zalloc(gc, info->pagesize);
+            build_id->len = info->pagesize - sizeof(*build_id);
+            r = libxl__xc_version_wrap(gc, info, build_id);
+            if (r) LOGEV(ERROR, r, "getting build_id");
+    }
  out:
     GC_FREE;
     return info;
@@ -7188,12 +7294,12 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
             LOG(ERROR, "fail to get memory target for domain %d", domid);
             goto out;
         }
-        /* Target memory in xenstore is different from what user has
-         * asked for. The difference is video_memkb. See
-         * libxl_set_memory_target.
+
+        /* libxl__get_targetmem_fudge() calculates the difference from
+         * what is in xenstore to what we have in the domain build info.
          */
         d_config->b_info.target_memkb = target_memkb +
-            d_config->b_info.video_memkb;
+            libxl__get_targetmem_fudge(gc, &d_config->b_info);
 
         d_config->b_info.max_memkb = max_memkb;
     }

@@ -55,7 +55,7 @@ static inline struct cpu_info *get_cpu_info(void)
     register unsigned long sp asm("rsp");
 #endif
 
-    return (struct cpu_info *)((sp & ~(STACK_SIZE-1)) + STACK_SIZE) - 1;
+    return (struct cpu_info *)((sp | (STACK_SIZE - 1)) + 1) - 1;
 }
 
 #define get_current()         (get_cpu_info()->current_vcpu)
@@ -86,10 +86,18 @@ static inline struct cpu_info *get_cpu_info(void)
 unsigned long get_stack_trace_bottom(unsigned long sp);
 unsigned long get_stack_dump_bottom (unsigned long sp);
 
+#ifdef CONFIG_LIVEPATCH
+# define CHECK_FOR_LIVEPATCH_WORK "call check_for_livepatch_work;"
+#else
+# define CHECK_FOR_LIVEPATCH_WORK ""
+#endif
+
 #define reset_stack_and_jump(__fn)                                      \
     ({                                                                  \
         __asm__ __volatile__ (                                          \
-            "mov %0,%%"__OP"sp; jmp %c1"                                \
+            "mov %0,%%"__OP"sp;"                                        \
+            CHECK_FOR_LIVEPATCH_WORK                                      \
+             "jmp %c1"                                                  \
             : : "r" (guest_cpu_user_regs()), "i" (__fn) : "memory" );   \
         unreachable();                                                  \
     })

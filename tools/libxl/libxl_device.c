@@ -40,12 +40,21 @@ char *libxl__device_backend_path(libxl__gc *gc, libxl__device *device)
                      device->domid, device->devid);
 }
 
+char *libxl__device_libxl_path(libxl__gc *gc, libxl__device *device)
+{
+    char *libxl_dom_path = libxl__xs_libxl_path(gc, device->domid);
+
+    return GCSPRINTF("%s/device/%s/%d", libxl_dom_path,
+                     libxl__device_kind_to_string(device->kind),
+                     device->devid);
+}
+
 /* Returns 1 if device exists, 0 if not, ERROR_* (<0) on error. */
 int libxl__device_exists(libxl__gc *gc, xs_transaction_t t,
                          libxl__device *device)
 {
     int rc;
-    char *be_path = libxl__device_backend_path(gc, device);
+    char *be_path = libxl__device_libxl_path(gc, device);
     const char *dir;
 
     rc = libxl__xs_read_checked(gc, t, be_path, &dir);
@@ -105,14 +114,16 @@ int libxl__device_generic_add(libxl__gc *gc, xs_transaction_t t,
         libxl__device *device, char **bents, char **fents, char **ro_fents)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    char *frontend_path, *backend_path;
+    char *frontend_path, *backend_path, *libxl_path;
     struct xs_permissions frontend_perms[2];
     struct xs_permissions ro_frontend_perms[2];
     struct xs_permissions backend_perms[2];
     int create_transaction = t == XBT_NULL;
+    int rc;
 
     frontend_path = libxl__device_frontend_path(gc, device);
     backend_path = libxl__device_backend_path(gc, device);
+    libxl_path = libxl__device_libxl_path(gc, device);
 
     frontend_perms[0].id = device->domid;
     frontend_perms[0].perms = XS_PERM_NONE;
@@ -127,7 +138,21 @@ int libxl__device_generic_add(libxl__gc *gc, xs_transaction_t t,
 retry_transaction:
     if (create_transaction)
         t = xs_transaction_start(ctx->xsh);
+
     /* FIXME: read frontend_path and check state before removing stuff */
+
+    rc = libxl__xs_rm_checked(gc, t, libxl_path);
+    if (rc) goto out;
+
+    rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/frontend",libxl_path),
+                                 frontend_path);
+    if (rc) goto out;
+
+    rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/backend",libxl_path),
+                                 backend_path);
+    if (rc) goto out;
+
+    /* xxx much of this function lacks error checks! */
 
     if (fents || ro_fents) {
         xs_rm(ctx->xsh, t, frontend_path);
@@ -160,6 +185,29 @@ retry_transaction:
         xs_write(ctx->xsh, t, GCSPRINTF("%s/frontend", backend_path),
                  frontend_path, strlen(frontend_path));
         libxl__xs_writev(gc, t, backend_path, bents);
+
+        /*
+         * We make a copy of everything for the backend in the libxl
+         * path as well.  This means we don't need to trust the
+         * backend.  Ideally this information would not be used and we
+         * would use the information from the json configuration
+         * instead.  But there are still places in libxl that try to
+         * reconstruct a config from xenstore.
+         *
+         * This duplication will typically produces duplicate keys
+         * which will go out of date, but that's OK because nothing
+         * reads those.  For example, there is usually
+         *   /libxl/$guest/device/$kind/$devid/state
+         * which starts out containing XenbusStateInitialising ("1")
+         * just like the copy in
+         *  /local/domain/$driverdom/backend/$guest/$kind/$devid/state
+         * but which won't ever be updated.
+         *
+         * This duplication is superfluous and messy but as discussed
+         * the proper fix is more intrusive than we want to do now.
+         */
+        rc = libxl__xs_writev(gc, t, libxl_path, bents);
+        if (rc) goto out;
     }
 
     if (!create_transaction)
@@ -174,6 +222,11 @@ retry_transaction:
         }
     }
     return 0;
+
+ out:
+    if (create_transaction && t)
+        libxl__xs_transaction_abort(gc, &t);
+    return rc;
 }
 
 typedef struct {
@@ -265,6 +318,21 @@ static int disk_try_backend(disk_try_backend_args *a,
  bad_colo:
     LOG(DEBUG, "Disk vdev=%s, backend %s not compatible with colo",
         a->disk->vdev, libxl_disk_backend_to_string(backend));
+    return 0;
+}
+
+int libxl__backendpath_parse_domid(libxl__gc *gc, const char *be_path,
+                                   libxl_domid *domid_out) {
+    int r;
+    unsigned int domid_sc;
+    char delim_sc;
+
+    r = sscanf(be_path, "/local/domain/%u%c", &domid_sc, &delim_sc);
+    if (!(r==2 && delim_sc=='/')) {
+        LOG(ERROR, "internal error: backend path %s unparseable!", be_path);
+        return ERROR_FAIL;
+    }
+    *domid_out = domid_sc;
     return 0;
 }
 
@@ -651,6 +719,7 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
 {
     const char *be_path = libxl__device_backend_path(gc, dev);
     const char *fe_path = libxl__device_frontend_path(gc, dev);
+    const char *libxl_path = libxl__device_libxl_path(gc, dev);
     const char *tapdisk_path = GCSPRINTF("%s/%s", be_path, "tapdisk-params");
     const char *tapdisk_params;
     xs_transaction_t t = 0;
@@ -671,9 +740,10 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
         if (domid == LIBXL_TOOLSTACK_DOMID) {
             /*
              * The toolstack domain is in charge of removing the
-             * frontend path.
+             * frontend and libxl paths.
              */
             libxl__xs_path_cleanup(gc, t, fe_path);
+            libxl__xs_path_cleanup(gc, t, libxl_path);
         }
         if (dev->backend_domid == domid) {
             /*
@@ -717,7 +787,7 @@ void libxl__devices_destroy(libxl__egc *egc, libxl__devices_remove_state *drs)
     libxl__multidev_begin(ao, multidev);
     multidev->callback = devices_remove_callback;
 
-    path = GCSPRINTF("/local/domain/%d/device", domid);
+    path = GCSPRINTF("/libxl/%d/device", domid);
     kinds = libxl__xs_directory(gc, XBT_NULL, path, &num_kinds);
     if (!kinds) {
         if (errno != ENOENT) {
@@ -730,12 +800,12 @@ void libxl__devices_destroy(libxl__egc *egc, libxl__devices_remove_state *drs)
         if (libxl__device_kind_from_string(kinds[i], &kind))
             continue;
 
-        path = GCSPRINTF("/local/domain/%d/device/%s", domid, kinds[i]);
+        path = GCSPRINTF("/libxl/%d/device/%s", domid, kinds[i]);
         devs = libxl__xs_directory(gc, XBT_NULL, path, &num_dev_xsentries);
         if (!devs)
             continue;
         for (j = 0; j < num_dev_xsentries; j++) {
-            path = GCSPRINTF("/local/domain/%d/device/%s/%s/backend",
+            path = GCSPRINTF("/libxl/%d/device/%s/%s/backend",
                              domid, kinds[i], devs[j]);
             path = libxl__xs_read(gc, XBT_NULL, path);
             GCNEW(dev);
@@ -762,22 +832,6 @@ void libxl__devices_destroy(libxl__egc *egc, libxl__devices_remove_state *drs)
                     libxl__initiate_device_generic_remove(egc, aodev);
             }
         }
-    }
-
-    /* console 0 frontend directory is not under /local/domain/<domid>/device */
-    path = GCSPRINTF("/local/domain/%d/console/backend", domid);
-    path = libxl__xs_read(gc, XBT_NULL, path);
-    GCNEW(dev);
-    if (path && strcmp(path, "") &&
-        libxl__parse_backend_path(gc, path, dev) == 0) {
-        dev->domid = domid;
-        dev->kind = LIBXL__DEVICE_KIND_CONSOLE;
-        dev->devid = 0;
-
-        /* Currently console devices can be destroyed synchronously by just
-         * removing xenstore entries, this is what libxl__device_destroy does.
-         */
-        libxl__device_destroy(gc, dev);
     }
 
 out:

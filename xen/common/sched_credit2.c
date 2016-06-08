@@ -867,7 +867,7 @@ csched2_alloc_vdata(const struct scheduler *ops, struct vcpu *vc, void *dd)
         svc->weight = svc->sdom->weight;
         /* Starting load of 50% */
         svc->avgload = 1ULL << (CSCHED2_PRIV(ops)->load_window_shift - 1);
-        svc->load_last_update = NOW();
+        svc->load_last_update = NOW() >> LOADAVG_GRANULARITY_SHIFT;
     }
     else
     {
@@ -1028,7 +1028,7 @@ static void
 csched2_vcpu_wake(const struct scheduler *ops, struct vcpu *vc)
 {
     struct csched2_vcpu * const svc = CSCHED2_VCPU(vc);
-    s_time_t now = 0;
+    s_time_t now;
 
     /* Schedule lock should be held at this point. */
 
@@ -1085,8 +1085,8 @@ static void
 csched2_context_saved(const struct scheduler *ops, struct vcpu *vc)
 {
     struct csched2_vcpu * const svc = CSCHED2_VCPU(vc);
-    s_time_t now = NOW();
     spinlock_t *lock = vcpu_schedule_lock_irq(vc);
+    s_time_t now = NOW();
 
     BUG_ON( !is_idle_vcpu(vc) && svc->rqd != RQD(ops, vc->processor));
 
@@ -1301,7 +1301,7 @@ static void migrate(const struct scheduler *ops,
         if ( __vcpu_on_runq(svc) )
         {
             __runq_remove(svc);
-            update_load(ops, svc->rqd, svc, -1, now);
+            update_load(ops, svc->rqd, NULL, -1, now);
             on_runq=1;
         }
         __runq_deassign(svc);
@@ -1314,7 +1314,7 @@ static void migrate(const struct scheduler *ops,
         __runq_assign(svc, trqd);
         if ( on_runq )
         {
-            update_load(ops, svc->rqd, svc, 1, now);
+            update_load(ops, svc->rqd, NULL, 1, now);
             runq_insert(ops, svc->vcpu->processor, svc);
             runq_tickle(ops, svc->vcpu->processor, svc, now);
             SCHED_STAT_CRANK(migrate_on_runq);
@@ -2201,6 +2201,12 @@ csched2_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
     unsigned long flags;
     unsigned rqi;
 
+    /*
+     * pdata contains what alloc_pdata returned. But since we don't (need to)
+     * implement alloc_pdata, either that's NULL, or something is very wrong!
+     */
+    ASSERT(!pdata);
+
     spin_lock_irqsave(&prv->lock, flags);
     old_lock = pcpu_schedule_lock(cpu);
 
@@ -2232,7 +2238,8 @@ csched2_switch_sched(struct scheduler *new_ops, unsigned int cpu,
      * And owning exactly that one (the lock of the old scheduler of this
      * cpu) is what is necessary to prevent races.
      */
-    spin_lock_irq(&prv->lock);
+    ASSERT(!local_irq_is_enabled());
+    spin_lock(&prv->lock);
 
     idle_vcpu[cpu]->sched_priv = vdata;
 
@@ -2257,11 +2264,11 @@ csched2_switch_sched(struct scheduler *new_ops, unsigned int cpu,
     smp_mb();
     per_cpu(schedule_data, cpu).schedule_lock = &prv->rqd[rqi].lock;
 
-    spin_unlock_irq(&prv->lock);
+    spin_unlock(&prv->lock);
 }
 
 static void
-csched2_free_pdata(const struct scheduler *ops, void *pcpu, int cpu)
+csched2_deinit_pdata(const struct scheduler *ops, void *pcpu, int cpu)
 {
     unsigned long flags;
     struct csched2_private *prv = CSCHED2_PRIV(ops);
@@ -2270,7 +2277,11 @@ csched2_free_pdata(const struct scheduler *ops, void *pcpu, int cpu)
 
     spin_lock_irqsave(&prv->lock, flags);
 
-    ASSERT(cpumask_test_cpu(cpu, &prv->initialized));
+    /*
+     * alloc_pdata is not implemented, so pcpu must be NULL. On the other
+     * hand, init_pdata must have been called for this pCPU.
+     */
+    ASSERT(!pcpu && cpumask_test_cpu(cpu, &prv->initialized));
     
     /* Find the old runqueue and remove this cpu from it */
     rqi = prv->runq_map[cpu];
@@ -2387,7 +2398,7 @@ static const struct scheduler sched_credit2_def = {
     .alloc_vdata    = csched2_alloc_vdata,
     .free_vdata     = csched2_free_vdata,
     .init_pdata     = csched2_init_pdata,
-    .free_pdata     = csched2_free_pdata,
+    .deinit_pdata   = csched2_deinit_pdata,
     .switch_sched   = csched2_switch_sched,
     .alloc_domdata  = csched2_alloc_domdata,
     .free_domdata   = csched2_free_domdata,

@@ -18,10 +18,13 @@
 #define MPIDR_SMP           (_AC(1,U) << _MPIDR_SMP)
 #define MPIDR_AFF0_SHIFT    (0)
 #define MPIDR_AFF0_MASK     (_AC(0xff,U) << MPIDR_AFF0_SHIFT)
+#ifdef CONFIG_ARM_64
+#define MPIDR_HWID_MASK     _AC(0xff00ffffff,UL)
+#else
 #define MPIDR_HWID_MASK     _AC(0xffffff,U)
+#endif
 #define MPIDR_INVALID       (~MPIDR_HWID_MASK)
 #define MPIDR_LEVEL_BITS    (8)
-#define AFFINITY_MASK(level)    ~((_AC(0x1,U) << ((level) * MPIDR_LEVEL_BITS)) - 1)
 
 
 /*
@@ -36,6 +39,8 @@
 
 #define MPIDR_AFFINITY_LEVEL(mpidr, level) \
          ((mpidr >> MPIDR_LEVEL_SHIFT(level)) & MPIDR_LEVEL_MASK)
+
+#define AFFINITY_MASK(level)    ~((_AC(0x1,UL) << MPIDR_LEVEL_SHIFT(level)) - 1)
 
 /* TTBCR Translation Table Base Control Register */
 #define TTBCR_EAE    _AC(0x80000000,U)
@@ -348,7 +353,7 @@ extern void identify_cpu(struct cpuinfo_arm *);
 extern struct cpuinfo_arm cpu_data[];
 #define current_cpu_data cpu_data[smp_processor_id()]
 
-extern u32 __cpu_logical_map[];
+extern register_t __cpu_logical_map[];
 #define cpu_logical_map(cpu) __cpu_logical_map[cpu]
 
 /* HSR data abort size definition */
@@ -564,6 +569,13 @@ union hsr {
 #define FSC_CPR        (0x3a) /* Coprocossor Abort */
 
 #define FSC_LL_MASK    (_AC(0x03,U)<<0)
+
+/* HPFAR_EL2: Hypervisor IPA Fault Address Register */
+#ifdef CONFIG_ARM_64
+#define HPFAR_MASK	GENMASK(39, 4)
+#else
+#define HPFAR_MASK	GENMASK(31, 4)
+#endif
 
 /* Time counter hypervisor control register */
 #define CNTHCTL_EL2_EL1PCTEN (1u<<0) /* Kernel/user access to physical counter */

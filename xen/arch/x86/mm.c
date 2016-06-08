@@ -3386,10 +3386,8 @@ long do_mmuext_op(
         case MMUEXT_INVLPG_LOCAL:
             if ( unlikely(d != pg_owner) )
                 rc = -EPERM;
-            else if ( !paging_mode_enabled(d)
-                      ? __addr_ok(op.arg1.linear_addr)
-                      : paging_invlpg(curr, op.arg1.linear_addr) )
-                flush_tlb_one_local(op.arg1.linear_addr);
+            else
+                paging_invlpg(curr, op.arg1.linear_addr);
             break;
 
         case MMUEXT_TLB_FLUSH_MULTI:
@@ -4510,8 +4508,7 @@ static int __do_update_va_mapping(
         switch ( (bmap_ptr = flags & ~UVMF_FLUSHTYPE_MASK) )
         {
         case UVMF_LOCAL:
-            if ( !paging_mode_enabled(d) || paging_invlpg(v, va) )
-                flush_tlb_one_local(va);
+            paging_invlpg(v, va);
             break;
         case UVMF_ALL:
             flush_tlb_one_mask(d->domain_dirty_cpumask, va);
@@ -4772,7 +4769,7 @@ static int handle_iomem_range(unsigned long s, unsigned long e, void *p)
 int xenmem_add_to_physmap_one(
     struct domain *d,
     unsigned int space,
-    domid_t foreign_domid,
+    union xen_add_to_physmap_batch_extra extra,
     unsigned long idx,
     xen_pfn_t gpfn)
 {
@@ -4833,7 +4830,7 @@ int xenmem_add_to_physmap_one(
             break;
         }
         case XENMAPSPACE_gmfn_foreign:
-            return p2m_add_foreign(d, idx, gpfn, foreign_domid);
+            return p2m_add_foreign(d, idx, gpfn, extra.foreign_domid);
         default:
             break;
     }
@@ -6179,7 +6176,7 @@ void __iomem *ioremap(paddr_t pa, size_t len)
         unsigned int offs = pa & (PAGE_SIZE - 1);
         unsigned int nr = PFN_UP(offs + len);
 
-        va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_NOCACHE) + offs;
+        va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_NOCACHE, VMAP_DEFAULT) + offs;
     }
 
     return (void __force __iomem *)va;
@@ -6476,6 +6473,21 @@ const unsigned long *__init get_platform_badpages(unsigned int *array_size)
         return NULL;
 
     return bad_pages;
+}
+
+void paging_invlpg(struct vcpu *v, unsigned long va)
+{
+    if ( !is_canonical_address(va) )
+        return;
+
+    if ( paging_mode_enabled(v->domain) &&
+         !paging_get_hostmode(v)->invlpg(v, va) )
+        return;
+
+    if ( is_pv_vcpu(v) )
+        flush_tlb_one_local(va);
+    else
+        hvm_funcs.invlpg(v, va);
 }
 
 /*

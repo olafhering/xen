@@ -17,6 +17,7 @@
 #include <xen/lib.h>
 #include <xen/string.h>
 #include <xen/spinlock.h>
+#include <xen/virtual_region.h>
 #include <public/platform.h>
 #include <xen/guest_access.h>
 
@@ -29,6 +30,8 @@ extern const unsigned long symbols_addresses[];
 #endif
 extern const unsigned int symbols_num_syms;
 extern const u8 symbols_names[];
+
+extern const struct symbol_offset symbols_sorted_offsets[];
 
 extern const u8 symbols_token_table[];
 extern const u16 symbols_token_index[];
@@ -97,8 +100,7 @@ static unsigned int get_symbol_offset(unsigned long pos)
 
 bool_t is_active_kernel_text(unsigned long addr)
 {
-    return (is_kernel_text(addr) ||
-            (system_state < SYS_STATE_active && is_kernel_inittext(addr)));
+    return !!find_text_region(addr);
 }
 
 const char *symbols_lookup(unsigned long addr,
@@ -108,12 +110,17 @@ const char *symbols_lookup(unsigned long addr,
 {
     unsigned long i, low, high, mid;
     unsigned long symbol_end = 0;
+    const struct virtual_region *region;
 
     namebuf[KSYM_NAME_LEN] = 0;
     namebuf[0] = 0;
 
-    if (!is_active_kernel_text(addr))
+    region = find_text_region(addr);
+    if (!region)
         return NULL;
+
+    if (region->symbols_lookup)
+        return region->symbols_lookup(addr, symbolsize, offset, namebuf);
 
         /* do a binary search on the sorted symbols_addresses array */
     low = 0;
@@ -165,7 +172,7 @@ static char symbols_get_symbol_type(unsigned int off)
 }
 
 int xensyms_read(uint32_t *symnum, char *type,
-                 uint64_t *address, char *name)
+                 unsigned long *address, char *name)
 {
     /*
      * Symbols are most likely accessed sequentially so we remember position
@@ -202,3 +209,63 @@ int xensyms_read(uint32_t *symnum, char *type,
 
     return 0;
 }
+
+unsigned long symbols_lookup_by_name(const char *symname)
+{
+    char name[KSYM_NAME_LEN + 1];
+#ifdef CONFIG_FAST_SYMBOL_LOOKUP
+    unsigned long low, high;
+#else
+    uint32_t symnum = 0;
+    char type;
+    unsigned long addr;
+    int rc;
+#endif
+
+    if ( *symname == '\0' )
+        return 0;
+
+#ifdef CONFIG_FAST_SYMBOL_LOOKUP
+    low = 0;
+    high = symbols_num_syms;
+    while ( low < high )
+    {
+        unsigned long mid = low + ((high - low) / 2);
+        const struct symbol_offset *s;
+        int rc;
+
+        s = &symbols_sorted_offsets[mid];
+        (void)symbols_expand_symbol(s->stream, name);
+        /* Format is: [filename]#<symbol>. symbols_expand_symbol eats type.*/
+        rc = strcmp(symname, name);
+        if ( rc < 0 )
+            high = mid;
+        else if ( rc > 0 )
+            low = mid + 1;
+        else
+            return symbols_address(s->addr);
+    }
+#else
+    do {
+        rc = xensyms_read(&symnum, &type, &addr, name);
+        if ( rc )
+           break;
+
+        if ( !strcmp(name, symname) )
+            return addr;
+
+    } while ( name[0] != '\0' );
+
+#endif
+    return 0;
+}
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

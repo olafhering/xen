@@ -770,7 +770,8 @@ void __init setup_frametable_mappings(paddr_t ps, paddr_t pe)
     base_mfn = alloc_boot_pages(frametable_size >> PAGE_SHIFT, 32<<(20-12));
 
 #ifdef CONFIG_ARM_64
-    nr_second = frametable_size >> SECOND_SHIFT;
+    /* Compute the number of second level pages. */
+    nr_second = ROUNDUP(frametable_size, FIRST_SIZE) >> FIRST_SHIFT;
     second_base = alloc_boot_pages(nr_second, 1);
     second = mfn_to_virt(second_base);
     for ( i = 0; i < nr_second; i++ )
@@ -807,7 +808,7 @@ void *ioremap_attr(paddr_t pa, size_t len, unsigned int attributes)
     mfn_t mfn = _mfn(PFN_DOWN(pa));
     unsigned int offs = pa & (PAGE_SIZE - 1);
     unsigned int nr = PFN_UP(offs + len);
-    void *ptr = __vmap(&mfn, nr, 1, 1, attributes);
+    void *ptr = __vmap(&mfn, nr, 1, 1, attributes, VMAP_DEFAULT);
 
     if ( ptr == NULL )
         return NULL;
@@ -1046,7 +1047,7 @@ void share_xen_page_with_privileged_guests(
 int xenmem_add_to_physmap_one(
     struct domain *d,
     unsigned int space,
-    domid_t foreign_domid,
+    union xen_add_to_physmap_batch_extra extra,
     unsigned long idx,
     xen_pfn_t gpfn)
 {
@@ -1102,7 +1103,8 @@ int xenmem_add_to_physmap_one(
     {
         struct domain *od;
         p2m_type_t p2mt;
-        od = rcu_lock_domain_by_any_id(foreign_domid);
+
+        od = rcu_lock_domain_by_any_id(extra.foreign_domid);
         if ( od == NULL )
             return -ESRCH;
 
@@ -1142,6 +1144,10 @@ int xenmem_add_to_physmap_one(
         break;
     }
     case XENMAPSPACE_dev_mmio:
+        /* extra should be 0. Reserved for future use. */
+        if ( extra.res0 )
+            return -EOPNOTSUPP;
+
         rc = map_dev_mmio_region(d, gpfn, 1, idx);
         return rc;
 

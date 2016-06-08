@@ -17,6 +17,7 @@ obj-y += keyhandler.o
 obj-$(CONFIG_KEXEC) += kexec.o
 obj-$(CONFIG_KEXEC) += kimage.o
 obj-y += lib.o
+obj-$(CONFIG_LIVEPATCH) += livepatch.o livepatch_elf.o
 obj-y += lzo.o
 obj-$(CONFIG_HAS_MEM_ACCESS) += mem_access.o
 obj-y += memory.o
@@ -51,6 +52,7 @@ obj-y += time.o
 obj-y += timer.o
 obj-y += trace.o
 obj-y += version.o
+obj-y += virtual_region.o
 obj-y += vm_event.o
 obj-y += vmap.o
 obj-y += vsprintf.o
@@ -65,7 +67,7 @@ obj-$(crash_debug) += gdbstub.o
 
 obj-$(CONFIG_COMPAT) += $(addprefix compat/,domain.o kernel.o memory.o multicall.o xlat.o)
 
-tmem-y := tmem.o tmem_xen.o
+tmem-y := tmem.o tmem_xen.o tmem_control.o
 tmem-$(CONFIG_COMPAT) += compat/tmem_xen.o
 obj-$(CONFIG_TMEM) += $(tmem-y)
 

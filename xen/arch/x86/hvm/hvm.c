@@ -884,7 +884,7 @@ const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
 
         ASSERT(v->domain == current->domain);
         hvm_cpuid(0x80000000, &level, NULL, NULL, NULL);
-        if ( level >= 0x80000001 )
+        if ( (level >> 16) == 0x8000 && level > 0x80000000 )
         {
             unsigned int dummy;
 
@@ -2411,7 +2411,7 @@ int hvm_set_cr4(unsigned long value, bool_t may_defer)
     return X86EMUL_EXCEPTION;
 }
 
-int hvm_virtual_to_linear_addr(
+bool_t hvm_virtual_to_linear_addr(
     enum x86_segment seg,
     struct segment_register *reg,
     unsigned long offset,
@@ -2421,6 +2421,7 @@ int hvm_virtual_to_linear_addr(
     unsigned long *linear_addr)
 {
     unsigned long addr = offset, last_byte;
+    bool_t okay = 0;
 
     if ( !(current->arch.hvm_vcpu.guest_cr[0] & X86_CR0_PE) )
     {
@@ -2431,7 +2432,7 @@ int hvm_virtual_to_linear_addr(
         addr = (uint32_t)(addr + reg->base);
         last_byte = (uint32_t)addr + bytes - !!bytes;
         if ( last_byte < addr )
-            return 0;
+            goto out;
     }
     else if ( addr_size != 64 )
     {
@@ -2439,15 +2440,21 @@ int hvm_virtual_to_linear_addr(
          * COMPATIBILITY MODE: Apply segment checks and add base.
          */
 
+        /*
+         * Hardware truncates to 32 bits in compatibility mode.
+         * It does not truncate to 16 bits in 16-bit address-size mode.
+         */
+        addr = (uint32_t)(addr + reg->base);
+
         switch ( access_type )
         {
         case hvm_access_read:
             if ( (reg->attr.fields.type & 0xa) == 0x8 )
-                return 0; /* execute-only code segment */
+                goto out; /* execute-only code segment */
             break;
         case hvm_access_write:
             if ( (reg->attr.fields.type & 0xa) != 0x2 )
-                return 0; /* not a writable data segment */
+                goto out; /* not a writable data segment */
             break;
         default:
             break;
@@ -2464,16 +2471,10 @@ int hvm_virtual_to_linear_addr(
 
             /* Check first byte and last byte against respective bounds. */
             if ( (offset <= reg->limit) || (last_byte < offset) )
-                return 0;
+                goto out;
         }
         else if ( (last_byte > reg->limit) || (last_byte < offset) )
-            return 0; /* last byte is beyond limit or wraps 0xFFFFFFFF */
-
-        /*
-         * Hardware truncates to 32 bits in compatibility mode.
-         * It does not truncate to 16 bits in 16-bit address-size mode.
-         */
-        addr = (uint32_t)(addr + reg->base);
+            goto out; /* last byte is beyond limit or wraps 0xFFFFFFFF */
     }
     else
     {
@@ -2487,11 +2488,19 @@ int hvm_virtual_to_linear_addr(
         last_byte = addr + bytes - !!bytes;
         if ( !is_canonical_address(addr) || last_byte < addr ||
              !is_canonical_address(last_byte) )
-            return 0;
+            goto out;
     }
 
+    /* All checks ok. */
+    okay = 1;
+
+ out:
+    /*
+     * Always return the correct linear address, even if a permission check
+     * failed.  The permissions failure is not relevant to some callers.
+     */
     *linear_addr = addr;
-    return 1;
+    return okay;
 }
 
 struct hvm_write_map {
@@ -3353,7 +3362,7 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
 
     switch ( input )
     {
-        unsigned int sub_leaf, _eax, _ebx, _ecx, _edx;
+        unsigned int _ebx, _ecx, _edx;
 
     case 0x1:
         /* Fix up VLAPIC details. */
@@ -3424,43 +3433,87 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
         *edx = v->vcpu_id * 2;
         break;
 
-    case 0xd:
-        /* EBX value of main leaf 0 depends on enabled xsave features */
-        if ( count == 0 && v->arch.xcr0 ) 
+    case XSTATE_CPUID:
+        hvm_cpuid(1, NULL, NULL, &_ecx, NULL);
+        if ( !(_ecx & cpufeat_mask(X86_FEATURE_XSAVE)) || count >= 63 )
         {
-            /* reset EBX to default value first */
-            *ebx = XSTATE_AREA_MIN_SIZE; 
-            for ( sub_leaf = 2; sub_leaf < 63; sub_leaf++ )
+            *eax = *ebx = *ecx = *edx = 0;
+            break;
+        }
+        switch ( count )
+        {
+        case 0:
+        {
+            uint64_t xfeature_mask = XSTATE_FP_SSE;
+            uint32_t xstate_size = XSTATE_AREA_MIN_SIZE;
+
+            if ( _ecx & cpufeat_mask(X86_FEATURE_AVX) )
             {
-                if ( !(v->arch.xcr0 & (1ULL << sub_leaf)) )
-                    continue;
-                domain_cpuid(d, input, sub_leaf, &_eax, &_ebx, &_ecx, 
-                             &_edx);
-                if ( (_eax + _ebx) > *ebx )
-                    *ebx = _eax + _ebx;
+                xfeature_mask |= XSTATE_YMM;
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_YMM] +
+                                  xstate_sizes[_XSTATE_YMM]);
             }
+
+            _ecx = 0;
+            hvm_cpuid(7, NULL, &_ebx, &_ecx, NULL);
+
+            if ( _ebx & cpufeat_mask(X86_FEATURE_MPX) )
+            {
+                xfeature_mask |= XSTATE_BNDREGS | XSTATE_BNDCSR;
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_BNDCSR] +
+                                  xstate_sizes[_XSTATE_BNDCSR]);
+            }
+
+            if ( _ebx & cpufeat_mask(X86_FEATURE_PKU) )
+            {
+                xfeature_mask |= XSTATE_PKRU;
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_PKRU] +
+                                  xstate_sizes[_XSTATE_PKRU]);
+            }
+
+            hvm_cpuid(0x80000001, NULL, NULL, &_ecx, NULL);
+
+            if ( _ecx & cpufeat_mask(X86_FEATURE_LWP) )
+            {
+                xfeature_mask |= XSTATE_LWP;
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_LWP] +
+                                  xstate_sizes[_XSTATE_LWP]);
+            }
+
+            *eax = (uint32_t)xfeature_mask;
+            *edx = (uint32_t)(xfeature_mask >> 32);
+            *ecx = xstate_size;
+
+            /*
+             * Always read CPUID[0xD,0].EBX from hardware, rather than domain
+             * policy.  It varies with enabled xstate, and the correct xcr0 is
+             * in context.
+             */
+            cpuid_count(input, count, &dummy, ebx, &dummy, &dummy);
+            break;
         }
 
-        if ( count == 1 )
-        {
+        case 1:
             *eax &= hvm_featureset[FEATURESET_Da1];
 
             if ( *eax & cpufeat_mask(X86_FEATURE_XSAVES) )
             {
-                uint64_t xfeatures = v->arch.xcr0 | v->arch.hvm_vcpu.msr_xss;
-
-                *ebx = XSTATE_AREA_MIN_SIZE;
-                if ( xfeatures & ~XSTATE_FP_SSE )
-                    for ( sub_leaf = 2; sub_leaf < 63; sub_leaf++ )
-                        if ( xfeatures & (1ULL << sub_leaf) )
-                        {
-                            if ( test_bit(sub_leaf, &xstate_align) )
-                                *ebx = ROUNDUP(*ebx, 64);
-                            *ebx += xstate_sizes[sub_leaf];
-                        }
+                /*
+                 * Always read CPUID[0xD,1].EBX from hardware, rather than
+                 * domain policy.  It varies with enabled xstate, and the
+                 * correct xcr0/xss are in context.
+                 */
+                cpuid_count(input, count, &dummy, ebx, &dummy, &dummy);
             }
             else
-                *ebx = *ecx = *edx = 0;
+                *ebx = 0;
+
+            *ecx = *edx = 0;
+            break;
         }
         break;
 
@@ -3500,23 +3553,24 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
         break;
 
     case 0x80000007:
-        *edx &= hvm_featureset[FEATURESET_e7d];
+        *edx &= (hvm_featureset[FEATURESET_e7d] |
+                 (host_featureset[FEATURESET_e7d] & cpufeat_mask(X86_FEATURE_ITSC)));
         break;
 
     case 0x80000008:
+        *eax &= 0xff;
         count = d->arch.paging.gfn_bits + PAGE_SHIFT;
-        if ( (*eax & 0xff) > count )
-            *eax = (*eax & ~0xff) | count;
+        if ( *eax > count )
+            *eax = count;
 
         hvm_cpuid(1, NULL, NULL, NULL, &_edx);
         count = _edx & (cpufeat_mask(X86_FEATURE_PAE) |
                         cpufeat_mask(X86_FEATURE_PSE36)) ? 36 : 32;
-        if ( (*eax & 0xff) < count )
-            *eax = (*eax & ~0xff) | count;
+        if ( *eax < count )
+            *eax = count;
 
         hvm_cpuid(0x80000001, NULL, NULL, NULL, &_edx);
-        *eax = (*eax & ~0xffff00) | (_edx & cpufeat_mask(X86_FEATURE_LM)
-                                     ? 0x3000 : 0x2000);
+        *eax |= (_edx & cpufeat_mask(X86_FEATURE_LM) ? vaddr_bits : 32) << 8;
 
         *ebx &= hvm_featureset[FEATURESET_e8b];
         break;
@@ -5497,8 +5551,6 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
             get_gfn_query_unlocked(d, a.pfn, &t);
             if ( p2m_is_mmio(t) )
                 a.mem_type =  HVMMEM_mmio_dm;
-            else if ( t == p2m_mmio_write_dm )
-                a.mem_type = HVMMEM_mmio_write_dm;
             else if ( p2m_is_readonly(t) )
                 a.mem_type =  HVMMEM_ram_ro;
             else if ( p2m_is_ram(t) )
@@ -5529,7 +5581,7 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
             [HVMMEM_ram_rw]  = p2m_ram_rw,
             [HVMMEM_ram_ro]  = p2m_ram_ro,
             [HVMMEM_mmio_dm] = p2m_mmio_dm,
-            [HVMMEM_mmio_write_dm] = p2m_mmio_write_dm
+            [HVMMEM_unused] = p2m_invalid
         };
 
         if ( copy_from_guest(&a, arg, 1) )
@@ -5553,7 +5605,8 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
              ((a.first_pfn + a.nr - 1) > domain_get_maximum_gpfn(d)) )
             goto setmemtype_fail;
             
-        if ( a.hvmmem_type >= ARRAY_SIZE(memtype) )
+        if ( a.hvmmem_type >= ARRAY_SIZE(memtype) ||
+             unlikely(a.hvmmem_type == HVMMEM_unused) )
             goto setmemtype_fail;
 
         while ( a.nr > start_iter )

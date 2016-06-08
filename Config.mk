@@ -45,6 +45,12 @@ DESTDIR     ?= /
 # Allow phony attribute to be listed as dependency rather than fake target
 .PHONY: .phony
 
+# If we are not cross-compiling, default HOSTC{C/XX} to C{C/XX}
+ifeq ($(XEN_TARGET_ARCH), $(XEN_COMPILE_ARCH))
+HOSTCC ?= $(CC)
+HOSTCXX ?= $(CXX)
+endif
+
 # Use Clang/LLVM instead of GCC?
 clang ?= n
 ifeq ($(clang),n)
@@ -129,10 +135,23 @@ endef
 check-$(gcc) = $(call cc-ver-check,CC,0x040100,"Xen requires at least gcc-4.1")
 $(eval $(check-y))
 
+ld-ver-build-id = $(shell $(1) --build-id 2>&1 | \
+					grep -q build-id && echo n || echo y)
+
+export XEN_HAS_BUILD_ID ?= n
+ifeq ($(call ld-ver-build-id,$(LD)),n)
+build_id_linker :=
+else
+CFLAGS += -DBUILD_ID
+export XEN_HAS_BUILD_ID=y
+build_id_linker := --build-id=sha1
+endif
+
 # as-insn: Check whether assembler supports an instruction.
 # Usage: cflags-y += $(call as-insn "insn",option-yes,option-no)
 as-insn = $(if $(shell echo 'void _(void) { asm volatile ( $(2) ); }' \
-                       | $(1) -c -x c -o /dev/null - 2>&1),$(4),$(3))
+                       | $(1) $(filter-out -M% %.d -include %/include/xen/config.h,$(AFLAGS)) \
+                              -c -x c -o /dev/null - 2>&1),$(4),$(3))
 
 # as-insn-check: Add an option to compilation flags, but only if insn is
 #                supported by assembler.
@@ -254,9 +273,9 @@ MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
 OVMF_UPSTREAM_REVISION ?= 52a99493cce88a9d4ec8a02d7f1bd1a1001ce60d
 QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= e085b7e5613576601e2f100e6f1ee9e0778c3eb9
-# Sun Apr 10 00:46:32 2016 +0200
-# Fix time update
+MINIOS_UPSTREAM_REVISION ?= 1a3ee6eeca136525aa2e6917ae500e7cf731c09d
+# Fri May 13 15:21:10 2016 +0100
+# lib/sys.c: enclose file_types in define guards
 
 SEABIOS_UPSTREAM_REVISION ?= rel-1.9.2
 # Tue, 1 Mar 2016 15:06:45 +0100 (16:06 +0200)
@@ -265,9 +284,9 @@ SEABIOS_UPSTREAM_REVISION ?= rel-1.9.2
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= 21f6526d1da331611ac5fe12967549d1a04e149b
-# Fri Jan 15 13:23:56 2016 +0000
-# qemu-xen-traditional: Add libxenforeignmemory to rpath-link
+QEMU_TRADITIONAL_REVISION ?= df553c056104e3dd8a2bd2e72539a57c4c085bae
+# Thu May 5 11:14:44 2016 +0100
+# Fix build with newer version of GNUTLS
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

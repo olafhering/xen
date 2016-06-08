@@ -49,7 +49,13 @@ if [ ! -e /dev/xen/privcmd ] && [ ! -e /proc/xen/privcmd ]; then
 	exit 0
 fi
 
-LOCKFILE=${XEN_LOCK_DIR}/xendomains
+# RHEL-based systems only shutdown a service if they find a lockfile
+# in /var/lock/subsys
+if [[ -d ${XEN_LOCK_DIR}/subsys ]] ; then
+    LOCKFILE=${XEN_LOCK_DIR}/subsys/xendomains
+else
+    LOCKFILE=${XEN_LOCK_DIR}/xendomains
+fi
 
 XENDOM_CONFIG=@CONFIG_DIR@/@CONFIG_LEAF_DIR@/xendomains
 
@@ -249,12 +255,13 @@ start()
 	return;
     fi
 
+    mkdir -p $(dirname "$LOCKFILE")
+    touch $LOCKFILE
+
     saved_domains=" "
     if [ "$XENDOMAINS_RESTORE" = "true" ] &&
        contains_something "$XENDOMAINS_SAVE"
     then
-	mkdir -p $(dirname "$LOCKFILE")
-	touch $LOCKFILE
 	echo -n "Restoring Xen domains:"
 	saved_domains=`ls $XENDOMAINS_SAVE`
         for dom in $XENDOMAINS_SAVE/*; do
@@ -280,7 +287,6 @@ start()
 
     if contains_something "$XENDOMAINS_AUTO"
     then
-	touch $LOCKFILE
 	echo -n "Starting auto Xen domains:"
 	# We expect config scripts for auto starting domains to be in
 	# XENDOMAINS_AUTO - they could just be symlinks to files elsewhere

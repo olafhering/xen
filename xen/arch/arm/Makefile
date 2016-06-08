@@ -40,6 +40,7 @@ obj-y += device.o
 obj-y += decode.o
 obj-y += processor.o
 obj-y += smc.o
+obj-$(CONFIG_LIVEPATCH) += livepatch.o
 
 #obj-bin-y += ....o
 
@@ -55,6 +56,9 @@ $(TARGET): $(TARGET)-syms $(TARGET).axf
 ifeq ($(CONFIG_ARM_64),y)
 	ln -sf $(notdir $@)  ../../$(notdir $@).efi
 endif
+
+.PHONY: tests
+tests:
 
 $(TARGET).axf: $(TARGET)-syms
 	# XXX: VE model loads by VMA so instead of
@@ -89,7 +93,7 @@ $(TARGET)-syms: prelink.o xen.lds $(BASEDIR)/common/symbols-dummy.o
 	$(NM) -pa --format=sysv $(@D)/.$(@F).1 \
 		| $(BASEDIR)/tools/symbols --sysv --sort >$(@D)/.$(@F).1.S
 	$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).1.o
-	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
+	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o $(build_id_linker) \
 	    $(@D)/.$(@F).1.o -o $@
 	rm -f $(@D)/.$(@F).[0-9]*
 

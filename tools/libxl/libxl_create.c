@@ -617,6 +617,8 @@ retry_transaction:
 
     xs_rm(ctx->xsh, t, libxl_path);
     libxl__xs_mknod(gc, t, libxl_path, noperm, ARRAY_SIZE(noperm));
+    libxl__xs_mknod(gc, t, GCSPRINTF("%s/device", libxl_path),
+                    noperm, ARRAY_SIZE(noperm));
 
     xs_write(ctx->xsh, t, GCSPRINTF("%s/vm", dom_path), vm_path, strlen(vm_path));
     rc = libxl__domain_rename(gc, *domid, 0, info->name, t);
@@ -948,7 +950,8 @@ static void initiate_domain_create(libxl__egc *egc,
          * called libxl_device_nic_add when domcreate_launch_dm gets called,
          * but qemu needs the nic information to be complete.
          */
-        ret = libxl__device_nic_setdefault(gc, &d_config->nics[i], domid);
+        ret = libxl__device_nic_setdefault(gc, &d_config->nics[i], domid,
+                                           false);
         if (ret) {
             LOG(ERROR, "Unable to set nic defaults for nic %d", i);
             goto error_out;

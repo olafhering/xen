@@ -16,15 +16,17 @@ ENTRY(compat_hypercall)
         ASM_CLAC
         pushq $0
         SAVE_VOLATILE type=TRAP_syscall compat=1
+        CR4_PV32_RESTORE
 
         cmpb  $0,untrusted_msi(%rip)
 UNLIKELY_START(ne, msi_check)
         movl  $HYPERCALL_VECTOR,%edi
         call  check_for_unexpected_msi
-        LOAD_C_CLOBBERED
+        LOAD_C_CLOBBERED compat=1 ax=0
 UNLIKELY_END(msi_check)
 
-        GET_CURRENT(%rbx)
+        movl  UREGS_rax(%rsp),%eax
+        GET_CURRENT(bx)
 
         cmpl  $NR_hypercalls,%eax
         jae   compat_bad_hypercall
@@ -33,7 +35,6 @@ UNLIKELY_END(msi_check)
         pushq UREGS_rbx(%rsp); pushq %rcx; pushq %rdx; pushq %rsi; pushq %rdi
         pushq UREGS_rbp+5*8(%rsp)
         leaq  compat_hypercall_args_table(%rip),%r10
-        movl  %eax,%eax
         movl  $6,%ecx
         subb  (%r10,%rax,1),%cl
         movq  %rsp,%rdi
@@ -48,7 +49,6 @@ UNLIKELY_END(msi_check)
 #define SHADOW_BYTES 16 /* Shadow EIP + shadow hypercall # */
 #else
         /* Relocate argument registers and zero-extend to 64 bits. */
-        movl  %eax,%eax              /* Hypercall #  */
         xchgl %ecx,%esi              /* Arg 2, Arg 4 */
         movl  %edx,%edx              /* Arg 3        */
         movl  %edi,%r8d              /* Arg 5        */
@@ -174,9 +174,76 @@ compat_bad_hypercall:
 /* %rbx: struct vcpu, interrupts disabled */
 ENTRY(compat_restore_all_guest)
         ASSERT_INTERRUPTS_DISABLED
+.Lcr4_orig:
+        .skip .Lcr4_alt_end - .Lcr4_alt, 0x90
+.Lcr4_orig_end:
+        .pushsection .altinstr_replacement, "ax"
+.Lcr4_alt:
+        testb $3,UREGS_cs(%rsp)
+        jpe   .Lcr4_alt_end
+        mov   CPUINFO_cr4-CPUINFO_guest_cpu_user_regs(%rsp), %rax
+        and   $~XEN_CR4_PV32_BITS, %rax
+1:
+        mov   %rax, CPUINFO_cr4-CPUINFO_guest_cpu_user_regs(%rsp)
+        mov   %rax, %cr4
+        /*
+         * An NMI or MCE may have occurred between the previous two
+         * instructions, leaving register and cache in a state where
+         * the next exit from the guest would trigger the BUG in
+         * cr4_pv32_restore. If this happened, the cached value is no
+         * longer what we just set it to, which we can utilize to
+         * correct that state. Note that we do not have to fear this
+         * loop to cause a live lock: If NMIs/MCEs occurred at that
+         * high a rate, we'd be live locked anyway.
+         */
+        cmp   %rax, CPUINFO_cr4-CPUINFO_guest_cpu_user_regs(%rsp)
+        jne   1b
+.Lcr4_alt_end:
+        .section .altinstructions, "a"
+        altinstruction_entry .Lcr4_orig, .Lcr4_orig, X86_FEATURE_ALWAYS, \
+                             (.Lcr4_orig_end - .Lcr4_orig), 0
+        altinstruction_entry .Lcr4_orig, .Lcr4_alt, X86_FEATURE_SMEP, \
+                             (.Lcr4_orig_end - .Lcr4_orig), \
+                             (.Lcr4_alt_end - .Lcr4_alt)
+        altinstruction_entry .Lcr4_orig, .Lcr4_alt, X86_FEATURE_SMAP, \
+                             (.Lcr4_orig_end - .Lcr4_orig), \
+                             (.Lcr4_alt_end - .Lcr4_alt)
+        .popsection
         RESTORE_ALL adj=8 compat=1
 .Lft0:  iretq
         _ASM_PRE_EXTABLE(.Lft0, handle_exception)
+
+/* This mustn't modify registers other than %rax. */
+ENTRY(cr4_pv32_restore)
+        push  %rdx
+        GET_CPUINFO_FIELD(cr4, dx)
+        mov   (%rdx), %rax
+        test  $XEN_CR4_PV32_BITS, %eax
+        jnz   0f
+        or    cr4_pv32_mask(%rip), %rax
+        mov   %rax, %cr4
+        mov   %rax, (%rdx)
+        pop   %rdx
+        ret
+0:
+#ifndef NDEBUG
+        /* Check that _all_ of the bits intended to be set actually are. */
+        mov   %cr4, %rax
+        and   cr4_pv32_mask(%rip), %rax
+        cmp   cr4_pv32_mask(%rip), %rax
+        je    1f
+        /* Cause cr4_pv32_mask to be visible in the BUG register dump. */
+        mov   cr4_pv32_mask(%rip), %rdx
+        /* Avoid coming back here while handling the #UD we cause below. */
+        mov   %cr4, %rcx
+        or    %rdx, %rcx
+        mov   %rcx, %cr4
+        BUG
+1:
+#endif
+        pop   %rdx
+        xor   %eax, %eax
+        ret
 
 /* %rdx: trap_bounce, %rbx: struct vcpu */
 ENTRY(compat_post_handle_exception)
@@ -190,6 +257,7 @@ ENTRY(compat_post_handle_exception)
 /* See lstar_enter for entry register state. */
 ENTRY(cstar_enter)
         sti
+        CR4_PV32_RESTORE
         movq  8(%rsp),%rax /* Restore %rax. */
         movq  $FLAT_KERNEL_SS,8(%rsp)
         pushq %r11
@@ -197,7 +265,7 @@ ENTRY(cstar_enter)
         pushq %rcx
         pushq $0
         SAVE_VOLATILE TRAP_syscall
-        GET_CURRENT(%rbx)
+        GET_CURRENT(bx)
         movq  VCPU_domain(%rbx),%rcx
         cmpb  $0,DOMAIN_is_32bit_pv(%rcx)
         je    switch_to_kernel
@@ -225,6 +293,7 @@ UNLIKELY_END(compat_syscall_gpf)
         jmp   .Lcompat_bounce_exception
 
 ENTRY(compat_sysenter)
+        CR4_PV32_RESTORE
         movq  VCPU_trap_ctxt(%rbx),%rcx
         cmpb  $TRAP_gp_fault,UREGS_entry_vector(%rsp)
         movzwl VCPU_sysenter_sel(%rbx),%eax
@@ -238,6 +307,7 @@ ENTRY(compat_sysenter)
         jmp   compat_test_all_events
 
 ENTRY(compat_int80_direct_trap)
+        CR4_PV32_RESTORE
         call  compat_create_bounce_frame
         jmp   compat_test_all_events
 

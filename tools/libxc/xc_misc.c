@@ -696,6 +696,356 @@ int xc_hvm_inject_trap(
     return rc;
 }
 
+int xc_livepatch_upload(xc_interface *xch,
+                        char *name,
+                        unsigned char *payload,
+                        uint32_t size)
+{
+    int rc;
+    DECLARE_SYSCTL;
+    DECLARE_HYPERCALL_BUFFER(char, local);
+    DECLARE_HYPERCALL_BOUNCE(name, 0 /* later */, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+    xen_livepatch_name_t def_name = { .pad = { 0, 0, 0 } };
+
+    if ( !name || !payload )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    def_name.size = strlen(name) + 1;
+    if ( def_name.size > XEN_LIVEPATCH_NAME_SIZE )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    HYPERCALL_BOUNCE_SET_SIZE(name, def_name.size);
+
+    if ( xc_hypercall_bounce_pre(xch, name) )
+        return -1;
+
+    local = xc_hypercall_buffer_alloc(xch, local, size);
+    if ( !local )
+    {
+        xc_hypercall_bounce_post(xch, name);
+        return -1;
+    }
+    memcpy(local, payload, size);
+
+    sysctl.cmd = XEN_SYSCTL_livepatch_op;
+    sysctl.u.livepatch.cmd = XEN_SYSCTL_LIVEPATCH_UPLOAD;
+    sysctl.u.livepatch.pad = 0;
+    sysctl.u.livepatch.u.upload.size = size;
+    set_xen_guest_handle(sysctl.u.livepatch.u.upload.payload, local);
+
+    sysctl.u.livepatch.u.upload.name = def_name;
+    set_xen_guest_handle(sysctl.u.livepatch.u.upload.name.name, name);
+
+    rc = do_sysctl(xch, &sysctl);
+
+    xc_hypercall_buffer_free(xch, local);
+    xc_hypercall_bounce_post(xch, name);
+
+    return rc;
+}
+
+int xc_livepatch_get(xc_interface *xch,
+                     char *name,
+                     xen_livepatch_status_t *status)
+{
+    int rc;
+    DECLARE_SYSCTL;
+    DECLARE_HYPERCALL_BOUNCE(name, 0 /*adjust later */, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+    xen_livepatch_name_t def_name = { .pad = { 0, 0, 0 } };
+
+    if ( !name )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    def_name.size = strlen(name) + 1;
+    if ( def_name.size > XEN_LIVEPATCH_NAME_SIZE )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    HYPERCALL_BOUNCE_SET_SIZE(name, def_name.size);
+
+    if ( xc_hypercall_bounce_pre(xch, name) )
+        return -1;
+
+    sysctl.cmd = XEN_SYSCTL_livepatch_op;
+    sysctl.u.livepatch.cmd = XEN_SYSCTL_LIVEPATCH_GET;
+    sysctl.u.livepatch.pad = 0;
+
+    sysctl.u.livepatch.u.get.status.state = 0;
+    sysctl.u.livepatch.u.get.status.rc = 0;
+
+    sysctl.u.livepatch.u.get.name = def_name;
+    set_xen_guest_handle(sysctl.u.livepatch.u.get.name.name, name);
+
+    rc = do_sysctl(xch, &sysctl);
+
+    xc_hypercall_bounce_post(xch, name);
+
+    memcpy(status, &sysctl.u.livepatch.u.get.status, sizeof(*status));
+
+    return rc;
+}
+
+/*
+ * The heart of this function is to get an array of xen_livepatch_status_t.
+ *
+ * However it is complex because it has to deal with the hypervisor
+ * returning some of the requested data or data being stale
+ * (another hypercall might alter the list).
+ *
+ * The parameters that the function expects to contain data from
+ * the hypervisor are: 'info', 'name', and 'len'. The 'done' and
+ * 'left' are also updated with the number of entries filled out
+ * and respectively the number of entries left to get from hypervisor.
+ *
+ * It is expected that the caller of this function will take the
+ * 'left' and use the value for 'start'. This way we have an
+ * cursor in the array. Note that the 'info','name', and 'len' will
+ * be updated at the subsequent calls.
+ *
+ * The 'max' is to be provided by the caller with the maximum
+ * number of entries that 'info', 'name', and 'len' arrays can
+ * be filled up with.
+ *
+ * Each entry in the 'name' array is expected to be of XEN_LIVEPATCH_NAME_SIZE
+ * length.
+ *
+ * Each entry in the 'info' array is expected to be of xen_livepatch_status_t
+ * structure size.
+ *
+ * Each entry in the 'len' array is expected to be of uint32_t size.
+ *
+ * The return value is zero if the hypercall completed successfully.
+ * Note that the return value is _not_ the amount of entries filled
+ * out - that is saved in 'done'.
+ *
+ * If there was an error performing the operation, the return value
+ * will contain an negative -EXX type value. The 'done' and 'left'
+ * will contain the number of entries that had been succesfully
+ * retrieved (if any).
+ */
+int xc_livepatch_list(xc_interface *xch, unsigned int max, unsigned int start,
+                      xen_livepatch_status_t *info,
+                      char *name, uint32_t *len,
+                      unsigned int *done,
+                      unsigned int *left)
+{
+    int rc;
+    DECLARE_SYSCTL;
+    /* The sizes are adjusted later - hence zero. */
+    DECLARE_HYPERCALL_BOUNCE(info, 0, XC_HYPERCALL_BUFFER_BOUNCE_OUT);
+    DECLARE_HYPERCALL_BOUNCE(name, 0, XC_HYPERCALL_BUFFER_BOUNCE_OUT);
+    DECLARE_HYPERCALL_BOUNCE(len, 0, XC_HYPERCALL_BUFFER_BOUNCE_OUT);
+    uint32_t max_batch_sz, nr;
+    uint32_t version = 0, retries = 0;
+    uint32_t adjust = 0;
+    ssize_t sz;
+
+    if ( !max || !info || !name || !len )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    sysctl.cmd = XEN_SYSCTL_livepatch_op;
+    sysctl.u.livepatch.cmd = XEN_SYSCTL_LIVEPATCH_LIST;
+    sysctl.u.livepatch.pad = 0;
+    sysctl.u.livepatch.u.list.version = 0;
+    sysctl.u.livepatch.u.list.idx = start;
+    sysctl.u.livepatch.u.list.pad = 0;
+
+    max_batch_sz = max;
+    /* Convience value. */
+    sz = sizeof(*name) * XEN_LIVEPATCH_NAME_SIZE;
+    *done = 0;
+    *left = 0;
+    do {
+        /*
+         * The first time we go in this loop our 'max' may be bigger
+         * than what the hypervisor is comfortable with - hence the first
+         * couple of loops may adjust the number of entries we will
+         * want filled (tracked by 'nr').
+         *
+         * N.B. This is a do { } while loop and the right hand side of
+         * the conditional when adjusting will evaluate to false (as
+         * *left is set to zero before the loop. Hence we need this
+         * adjust - even if we reset it at the start of the loop.
+         */
+        if ( adjust )
+            adjust = 0; /* Used when adjusting the 'max_batch_sz' or 'retries'. */
+
+        nr = min(max - *done, max_batch_sz);
+
+        sysctl.u.livepatch.u.list.nr = nr;
+        /* Fix the size (may vary between hypercalls). */
+        HYPERCALL_BOUNCE_SET_SIZE(info, nr * sizeof(*info));
+        HYPERCALL_BOUNCE_SET_SIZE(name, nr * nr);
+        HYPERCALL_BOUNCE_SET_SIZE(len, nr * sizeof(*len));
+        /* Move the pointer to proper offset into 'info'. */
+        (HYPERCALL_BUFFER(info))->ubuf = info + *done;
+        (HYPERCALL_BUFFER(name))->ubuf = name + (sz * *done);
+        (HYPERCALL_BUFFER(len))->ubuf = len + *done;
+        /* Allocate memory. */
+        rc = xc_hypercall_bounce_pre(xch, info);
+        if ( rc )
+            break;
+
+        rc = xc_hypercall_bounce_pre(xch, name);
+        if ( rc )
+            break;
+
+        rc = xc_hypercall_bounce_pre(xch, len);
+        if ( rc )
+            break;
+
+        set_xen_guest_handle(sysctl.u.livepatch.u.list.status, info);
+        set_xen_guest_handle(sysctl.u.livepatch.u.list.name, name);
+        set_xen_guest_handle(sysctl.u.livepatch.u.list.len, len);
+
+        rc = do_sysctl(xch, &sysctl);
+        /*
+         * From here on we MUST call xc_hypercall_bounce. If rc < 0 we
+         * end up doing it (outside the loop), so using a break is OK.
+         */
+        if ( rc < 0 && errno == E2BIG )
+        {
+            if ( max_batch_sz <= 1 )
+                break;
+            max_batch_sz >>= 1;
+            adjust = 1; /* For the loop conditional to let us loop again. */
+            /* No memory leaks! */
+            xc_hypercall_bounce_post(xch, info);
+            xc_hypercall_bounce_post(xch, name);
+            xc_hypercall_bounce_post(xch, len);
+            continue;
+        }
+        else if ( rc < 0 ) /* For all other errors we bail out. */
+            break;
+
+        if ( !version )
+            version = sysctl.u.livepatch.u.list.version;
+
+        if ( sysctl.u.livepatch.u.list.version != version )
+        {
+            /* We could make this configurable as parameter? */
+            if ( retries++ > 3 )
+            {
+                rc = -1;
+                errno = EBUSY;
+                break;
+            }
+            *done = 0; /* Retry from scratch. */
+            version = sysctl.u.livepatch.u.list.version;
+            adjust = 1; /* And make sure we continue in the loop. */
+            /* No memory leaks. */
+            xc_hypercall_bounce_post(xch, info);
+            xc_hypercall_bounce_post(xch, name);
+            xc_hypercall_bounce_post(xch, len);
+            continue;
+        }
+
+        /* We should never hit this, but just in case. */
+        if ( rc > nr )
+        {
+            errno = EOVERFLOW; /* Overflow! */
+            rc = -1;
+            break;
+        }
+        *left = sysctl.u.livepatch.u.list.nr; /* Total remaining count. */
+        /* Copy only up 'rc' of data' - we could add 'min(rc,nr) if desired. */
+        HYPERCALL_BOUNCE_SET_SIZE(info, (rc * sizeof(*info)));
+        HYPERCALL_BOUNCE_SET_SIZE(name, (rc * sz));
+        HYPERCALL_BOUNCE_SET_SIZE(len, (rc * sizeof(*len)));
+        /* Bounce the data and free the bounce buffer. */
+        xc_hypercall_bounce_post(xch, info);
+        xc_hypercall_bounce_post(xch, name);
+        xc_hypercall_bounce_post(xch, len);
+        /* And update how many elements of info we have copied into. */
+        *done += rc;
+        /* Update idx. */
+        sysctl.u.livepatch.u.list.idx = *done;
+    } while ( adjust || (*done < max && *left != 0) );
+
+    if ( rc < 0 )
+    {
+        xc_hypercall_bounce_post(xch, len);
+        xc_hypercall_bounce_post(xch, name);
+        xc_hypercall_bounce_post(xch, info);
+    }
+
+    return rc > 0 ? 0 : rc;
+}
+
+static int _xc_livepatch_action(xc_interface *xch,
+                                char *name,
+                                unsigned int action,
+                                uint32_t timeout)
+{
+    int rc;
+    DECLARE_SYSCTL;
+    /* The size is figured out when we strlen(name) */
+    DECLARE_HYPERCALL_BOUNCE(name, 0, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+    xen_livepatch_name_t def_name = { .pad = { 0, 0, 0 } };
+
+    def_name.size = strlen(name) + 1;
+
+    if ( def_name.size > XEN_LIVEPATCH_NAME_SIZE )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    HYPERCALL_BOUNCE_SET_SIZE(name, def_name.size);
+
+    if ( xc_hypercall_bounce_pre(xch, name) )
+        return -1;
+
+    sysctl.cmd = XEN_SYSCTL_livepatch_op;
+    sysctl.u.livepatch.cmd = XEN_SYSCTL_LIVEPATCH_ACTION;
+    sysctl.u.livepatch.pad = 0;
+    sysctl.u.livepatch.u.action.cmd = action;
+    sysctl.u.livepatch.u.action.timeout = timeout;
+
+    sysctl.u.livepatch.u.action.name = def_name;
+    set_xen_guest_handle(sysctl.u.livepatch.u.action.name.name, name);
+
+    rc = do_sysctl(xch, &sysctl);
+
+    xc_hypercall_bounce_post(xch, name);
+
+    return rc;
+}
+
+int xc_livepatch_apply(xc_interface *xch, char *name, uint32_t timeout)
+{
+    return _xc_livepatch_action(xch, name, LIVEPATCH_ACTION_APPLY, timeout);
+}
+
+int xc_livepatch_revert(xc_interface *xch, char *name, uint32_t timeout)
+{
+    return _xc_livepatch_action(xch, name, LIVEPATCH_ACTION_REVERT, timeout);
+}
+
+int xc_livepatch_unload(xc_interface *xch, char *name, uint32_t timeout)
+{
+    return _xc_livepatch_action(xch, name, LIVEPATCH_ACTION_UNLOAD, timeout);
+}
+
+int xc_livepatch_replace(xc_interface *xch, char *name, uint32_t timeout)
+{
+    return _xc_livepatch_action(xch, name, LIVEPATCH_ACTION_REPLACE, timeout);
+}
+
 /*
  * Local variables:
  * mode: C

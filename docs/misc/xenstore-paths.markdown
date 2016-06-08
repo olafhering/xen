@@ -283,7 +283,7 @@ The primary PV console device. Described in [console.txt](console.txt)
 
 A secondary PV console device. Described in [console.txt](console.txt)
 
-#### ~/device/serial/$DEVID/* [HVM]
+#### ~/serial/$DEVID/* [HVM]
 
 An emulated serial device. Described in [console.txt](console.txt)
 
@@ -533,6 +533,25 @@ The guest's virtual time offset from UTC in seconds.
 ## Platform-Level paths
 
 ### libxl Specific Paths
+
+#### /libxl/$DOMID/device/$KIND/$DEVID
+
+Created by libxl for every frontend/backend pair created for $DOMID.
+Used by libxl for enumeration and management of the device.
+
+#### /libxl/$DOMID/device/$KIND/$DEVID/frontend
+
+Path in xenstore to the frontend, normally
+/local/domain/$DOMID/device/$KIND/$DEVID
+
+#### /libxl/$DOMID/device/$KIND/$DEVID/backend
+
+Path in xenstore to the backend, normally
+/local/domain/$BACKEND_DOMID/backend/$KIND/$DOMID/$DEVID
+
+#### /libxl/$DOMID/device/$KIND/$DEVID/$NODE
+
+Trustworthy copy of /local/domain/$DOMID/backend/$KIND/$DEVID/$NODE.
 
 #### /libxl/$DOMID/dm-version ("qemu\_xen"|"qemu\_xen\_traditional") = [n,INTERNAL]
 

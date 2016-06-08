@@ -74,6 +74,7 @@ allow dom0_t xen_t:xen2 {
     get_symbol
     get_cpu_levelling_caps
     get_cpu_featureset
+    livepatch_op
 };
 
 # Allow dom0 to use all XENVER_ subops that have checks.
@@ -81,6 +82,7 @@ allow dom0_t xen_t:xen2 {
 allow dom0_t xen_t:version {
     xen_extraversion xen_compile_info xen_capabilities
     xen_changeset xen_pagesize xen_guest_handle xen_commandline
+    xen_build_id
 };
 
 allow dom0_t xen_t:mmu memorymap;
@@ -151,6 +153,15 @@ allow domain_type xen_t:xen2 pmu_use;
 allow domain_type xen_t:version {
     xen_extraversion xen_compile_info xen_capabilities
     xen_changeset xen_pagesize xen_guest_handle
+};
+
+# These queries don't need auditing when denied.  They can be
+# encountered in normal operation by xl or by reading sysfs files in
+# Linux, so without this they will show up in the logs.  Since these
+# operations return valid responses (like "denied"), hiding the denials
+# should not break anything.
+dontaudit domain_type xen_t:version {
+    xen_commandline xen_build_id
 };
 
 ###############################################################################

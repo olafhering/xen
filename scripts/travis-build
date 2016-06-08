@@ -1,5 +1,7 @@
 #!/bin/bash -ex
 
+$CC --version
+
 # random config or default config
 if [[ "${RANDCONFIG}" == "y" ]]; then
     make -C xen randconfig
@@ -18,12 +20,6 @@ if [[ "${XEN_TARGET_ARCH}" == "x86_64" ]]; then
     cfgargs+=("--enable-tools")
 else
     cfgargs+=("--disable-tools") # we don't have the cross depends installed
-fi
-
-# Due to multiple build failures and the desire to get more
-# build testing (GCC only) enabled this is disabled
-if [[ "${clang}" == "y" ]]; then
-    cfgargs+=("--disable-tools")
 fi
 
 ./configure "${cfgargs[@]}"

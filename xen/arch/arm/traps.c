@@ -31,6 +31,7 @@
 #include <xen/softirq.h>
 #include <xen/domain_page.h>
 #include <xen/perfc.h>
+#include <xen/virtual_region.h>
 #include <public/sched.h>
 #include <public/xen.h>
 #include <asm/debugger.h>
@@ -124,7 +125,8 @@ void init_traps(void)
 
     /* Setup hypervisor traps */
     WRITE_SYSREG(HCR_PTW|HCR_BSU_INNER|HCR_AMO|HCR_IMO|HCR_FMO|HCR_VM|
-                 HCR_TWE|HCR_TWI|HCR_TSC|HCR_TAC|HCR_SWIO|HCR_TIDCP, HCR_EL2);
+                 HCR_TWE|HCR_TWI|HCR_TSC|HCR_TAC|HCR_SWIO|HCR_TIDCP|HCR_FB,
+                 HCR_EL2);
     isb();
 }
 
@@ -1116,27 +1118,33 @@ void do_unexpected_trap(const char *msg, struct cpu_user_regs *regs)
 
 int do_bug_frame(struct cpu_user_regs *regs, vaddr_t pc)
 {
-    const struct bug_frame *bug;
+    const struct bug_frame *bug = NULL;
     const char *prefix = "", *filename, *predicate;
     unsigned long fixup;
-    int id, lineno;
-    static const struct bug_frame *const stop_frames[] = {
-        __stop_bug_frames_0,
-        __stop_bug_frames_1,
-        __stop_bug_frames_2,
-        NULL
-    };
+    int id = -1, lineno;
+    const struct virtual_region *region;
 
-    for ( bug = __start_bug_frames, id = 0; stop_frames[id]; ++bug )
+    region = find_text_region(pc);
+    if ( region )
     {
-        while ( unlikely(bug == stop_frames[id]) )
-            ++id;
+        for ( id = 0; id < BUGFRAME_NR; id++ )
+        {
+            const struct bug_frame *b;
+            unsigned int i;
 
-        if ( ((vaddr_t)bug_loc(bug)) == pc )
-            break;
+            for ( i = 0, b = region->frame[id].bugs;
+                  i < region->frame[id].n_bugs; b++, i++ )
+            {
+                if ( ((vaddr_t)bug_loc(b)) == pc )
+                {
+                    bug = b;
+                    goto found;
+                }
+            }
+        }
     }
-
-    if ( !stop_frames[id] )
+ found:
+    if ( !bug )
         return -ENOENT;
 
     /* WARN, BUG or ASSERT: decode the filename pointer and line number. */
@@ -2362,6 +2370,13 @@ done:
     if (first) unmap_domain_page(first);
 }
 
+static inline paddr_t get_faulting_ipa(void)
+{
+    register_t hpfar = READ_SYSREG(HPFAR_EL2);
+
+    return ((paddr_t)(hpfar & HPFAR_MASK) << (12 - 4));
+}
+
 static void do_trap_instr_abort_guest(struct cpu_user_regs *regs,
                                       const union hsr hsr)
 {
@@ -2380,7 +2395,7 @@ static void do_trap_instr_abort_guest(struct cpu_user_regs *regs,
         };
 
         if ( hsr.iabt.s1ptw )
-            gpa = READ_SYSREG(HPFAR_EL2);
+            gpa = get_faulting_ipa();
         else
         {
             /*
@@ -2430,7 +2445,7 @@ static void do_trap_data_abort_guest(struct cpu_user_regs *regs,
 #endif
 
     if ( dabt.s1ptw )
-        info.gpa = READ_SYSREG(HPFAR_EL2);
+        info.gpa = get_faulting_ipa();
     else
     {
         rc = gva_to_ipa(info.gva, &info.gpa, GV2M_READ);
