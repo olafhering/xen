@@ -12,6 +12,4 @@
  * GNU Lesser General Public License for more details.
  *)
 
-external sd_listen_fds: string -> Unix.file_descr = "ocaml_sd_listen_fds"
-external sd_booted: unit -> bool = "ocaml_sd_booted"
 external sd_notify_ready: unit -> unit = "ocaml_sd_notify_ready"
