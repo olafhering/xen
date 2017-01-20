@@ -205,12 +205,22 @@ static int nr_vcpus_on_nodes(libxl__gc *gc, libxl_cputopology *tinfo,
     }
 
     for (i = 0; i < nr_doms; i++) {
-        libxl_vcpuinfo *vinfo;
-        int nr_dom_vcpus;
+        libxl_vcpuinfo *vinfo = NULL;
+        int nr_dom_vcpus = 0;
+        libxl_cpupoolinfo cpupool_info;
+        int cpupool;
+
+        libxl_cpupoolinfo_init(&cpupool_info);
+
+        cpupool = libxl__domain_cpupool(gc, dinfo[i].domid);
+        if (cpupool < 0)
+            goto next;
+        if (libxl_cpupool_info(CTX, &cpupool_info, cpupool))
+            goto next;
 
         vinfo = libxl_list_vcpu(CTX, dinfo[i].domid, &nr_dom_vcpus, &nr_cpus);
         if (vinfo == NULL)
-            continue;
+            goto next;
 
         /* Retrieve the domain's node-affinity map */
         libxl_domain_get_nodeaffinity(CTX, dinfo[i].domid, &dom_nodemap);
@@ -220,6 +230,12 @@ static int nr_vcpus_on_nodes(libxl__gc *gc, libxl_cputopology *tinfo,
              * For each vcpu of each domain, it must have both vcpu-affinity
              * and node-affinity to (a pcpu belonging to) a certain node to
              * cause an increment in the corresponding element of the array.
+             *
+             * Note that we also need to check whether the cpu actually
+             * belongs to the domain's cpupool (the cpupool of the domain
+             * being checked). In fact, it could be that the vcpu has affinity
+             * with cpus in suitable_cpumask, but that are not in its own
+             * cpupool, and we don't want to consider those!
              */
             libxl_bitmap_set_none(&nodes_counted);
             libxl_for_each_set_bit(k, vinfo[j].cpumap) {
@@ -228,6 +244,7 @@ static int nr_vcpus_on_nodes(libxl__gc *gc, libxl_cputopology *tinfo,
                 int node = tinfo[k].node;
 
                 if (libxl_bitmap_test(suitable_cpumap, k) &&
+                    libxl_bitmap_test(&cpupool_info.cpumap, k) &&
                     libxl_bitmap_test(&dom_nodemap, node) &&
                     !libxl_bitmap_test(&nodes_counted, node)) {
                     libxl_bitmap_set(&nodes_counted, node);
@@ -236,6 +253,8 @@ static int nr_vcpus_on_nodes(libxl__gc *gc, libxl_cputopology *tinfo,
             }
         }
 
+ next:
+        libxl_cpupoolinfo_dispose(&cpupool_info);
         libxl_vcpuinfo_list_free(vinfo, nr_dom_vcpus);
     }
 
@@ -285,7 +304,7 @@ static int count_cpus_per_node(libxl_cputopology *tinfo, int nr_cpus,
  * comparison function.
  */
 int libxl__get_numa_candidate(libxl__gc *gc,
-                              uint32_t min_free_memkb, int min_cpus,
+                              uint64_t min_free_memkb, int min_cpus,
                               int min_nodes, int max_nodes,
                               const libxl_bitmap *suitable_cpumap,
                               libxl__numa_candidate_cmpf numa_cmpf,
@@ -436,7 +455,7 @@ int libxl__get_numa_candidate(libxl__gc *gc,
         for (comb_ok = comb_init(gc, &comb_iter, nr_suit_nodes, min_nodes);
              comb_ok;
              comb_ok = comb_next(comb_iter, nr_suit_nodes, min_nodes)) {
-            uint32_t nodes_free_memkb;
+            uint64_t nodes_free_memkb;
             int nodes_cpus;
 
             /* Get the nodemap for the combination, only considering
@@ -478,7 +497,7 @@ int libxl__get_numa_candidate(libxl__gc *gc,
 
                 LOG(DEBUG, "New best NUMA placement candidate found: "
                            "nr_nodes=%d, nr_cpus=%d, nr_vcpus=%d, "
-                           "free_memkb=%"PRIu32"", new_cndt.nr_nodes,
+                           "free_memkb=%"PRIu64"", new_cndt.nr_nodes,
                            new_cndt.nr_cpus, new_cndt.nr_vcpus,
                            new_cndt.free_memkb / 1024);
 

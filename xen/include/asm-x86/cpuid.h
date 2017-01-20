@@ -1,11 +1,12 @@
 #ifndef __X86_CPUID_H__
 #define __X86_CPUID_H__
 
-#include <asm/cpufeatureset.h>
 #include <asm/cpuid-autogen.h>
-#include <asm/percpu.h>
 
 #define FSCAPINTS FEATURESET_NR_ENTRIES
+
+#include <asm/cpufeatureset.h>
+#include <asm/percpu.h>
 
 #define FEATURESET_1d     0 /* 0x00000001.edx      */
 #define FEATURESET_1c     1 /* 0x00000001.ecx      */
@@ -62,6 +63,9 @@ DECLARE_PER_CPU(struct cpuidmasks, cpuidmasks);
 
 /* Default masking MSR values, calculated at boot. */
 extern struct cpuidmasks cpuidmask_defaults;
+
+/* Whether or not cpuid faulting is available for the current domain. */
+DECLARE_PER_CPU(bool, cpuid_faulting_enabled);
 
 #endif /* __ASSEMBLY__ */
 #endif /* !__X86_CPUID_H__ */

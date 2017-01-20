@@ -48,10 +48,9 @@ struct arch_domain
 
     /* Virtual MMU */
     struct p2m_domain p2m;
-    uint64_t vttbr;
 
     struct hvm_domain hvm_domain;
-    xen_pfn_t *grant_table_gpfn;
+    gfn_t *grant_table_gfn;
 
     struct vmmio vmmio;
 
@@ -107,7 +106,7 @@ struct arch_domain
             paddr_t base;                   /* Base address */
             paddr_t size;                   /* Size */
             unsigned int first_cpu;         /* First CPU handled */
-        } rdist_regions[MAX_RDIST_COUNT];
+        } *rdist_regions;
         int nr_regions;                     /* Number of rdist regions */
         uint32_t rdist_stride;              /* Re-Distributor stride */
 #endif
@@ -127,6 +126,11 @@ struct arch_domain
     paddr_t efi_acpi_gpa;
     paddr_t efi_acpi_len;
 #endif
+
+    /* Monitor options */
+    struct {
+        uint8_t privileged_call_enabled : 1;
+    } monitor;
 }  __cacheline_aligned;
 
 struct arch_vcpu

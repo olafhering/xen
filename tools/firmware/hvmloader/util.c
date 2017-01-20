@@ -21,10 +21,15 @@
 #include "config.h"
 #include "hypercall.h"
 #include "ctype.h"
+#include "vnuma.h"
+#include <acpi2_0.h>
+#include <libacpi.h>
 #include <stdint.h>
 #include <xen/xen.h>
 #include <xen/memory.h>
 #include <xen/sched.h>
+#include <xen/hvm/hvm_xs_strings.h>
+#include <xen/hvm/params.h>
 
 /*
  * Check whether there exists overlap in the specified memory range.
@@ -490,14 +495,14 @@ void *scratch_alloc(uint32_t size, uint32_t align)
 
 uint32_t ioapic_read(uint32_t reg)
 {
-    *(volatile uint32_t *)(IOAPIC_BASE_ADDRESS + 0x00) = reg;
-    return *(volatile uint32_t *)(IOAPIC_BASE_ADDRESS + 0x10);
+    *(volatile uint32_t *)(ioapic_base_address + 0x00) = reg;
+    return *(volatile uint32_t *)(ioapic_base_address + 0x10);
 }
 
 void ioapic_write(uint32_t reg, uint32_t val)
 {
-    *(volatile uint32_t *)(IOAPIC_BASE_ADDRESS + 0x00) = reg;
-    *(volatile uint32_t *)(IOAPIC_BASE_ADDRESS + 0x10) = val;
+    *(volatile uint32_t *)(ioapic_base_address + 0x00) = reg;
+    *(volatile uint32_t *)(ioapic_base_address + 0x10) = val;
 }
 
 uint32_t lapic_read(uint32_t reg)
@@ -854,6 +859,117 @@ int hpet_exists(unsigned long hpet_base)
 {
     uint32_t hpet_id = *(uint32_t *)hpet_base;
     return ((hpet_id >> 16) == 0x8086);
+}
+
+static uint8_t battery_port_exists(void)
+{
+    return (inb(0x88) == 0x1F);
+}
+
+static unsigned long acpi_v2p(struct acpi_ctxt *ctxt, void *v)
+{
+    return virt_to_phys(v);
+}
+
+static void *acpi_mem_alloc(struct acpi_ctxt *ctxt,
+                            uint32_t size, uint32_t align)
+{
+    return mem_alloc(size, align);
+}
+
+static void acpi_mem_free(struct acpi_ctxt *ctxt,
+                          void *v, uint32_t size)
+{
+    /* ACPI builder currently doesn't free memory so this is just a stub */
+}
+
+static uint8_t acpi_lapic_id(unsigned cpu)
+{
+    return LAPIC_ID(cpu);
+}
+
+void hvmloader_acpi_build_tables(struct acpi_config *config,
+                                 unsigned int physical)
+{
+    const char *s;
+    struct acpi_ctxt ctxt;
+
+    /* Allocate and initialise the acpi info area. */
+    mem_hole_populate_ram(ACPI_INFO_PHYSICAL_ADDRESS >> PAGE_SHIFT, 1);
+
+    config->lapic_base_address = LAPIC_BASE_ADDRESS;
+    config->lapic_id = acpi_lapic_id;
+    config->ioapic_base_address = ioapic_base_address;
+    config->ioapic_id = IOAPIC_ID;
+    config->pci_isa_irq_mask = PCI_ISA_IRQ_MASK; 
+
+    if ( uart_exists(0x3f8)  )
+        config->table_flags |= ACPI_HAS_COM1;
+    if (  uart_exists(0x2f8) )
+        config->table_flags |= ACPI_HAS_COM2;
+    if ( lpt_exists(0x378) )
+        config->table_flags |= ACPI_HAS_LPT1;
+    if (  hpet_exists(ACPI_HPET_ADDRESS) )
+        config->table_flags |= ACPI_HAS_HPET;
+
+    config->pci_start = pci_mem_start;
+    config->pci_len = pci_mem_end - pci_mem_start;
+    if ( pci_hi_mem_end > pci_hi_mem_start )
+    {
+        config->pci_hi_start = pci_hi_mem_start;
+        config->pci_hi_len = pci_hi_mem_end - pci_hi_mem_start;
+    }
+
+    s = xenstore_read("platform/generation-id", "0:0");
+    if ( s )
+    {
+        char *end;
+
+        config->vm_gid[0] = strtoll(s, &end, 0);
+        config->vm_gid[1] = 0;
+        if ( end && end[0] == ':' )
+            config->vm_gid[1] = strtoll(end+1, NULL, 0);
+    }
+
+    s = xenstore_read(HVM_XS_ACPI_PT_ADDRESS, NULL);
+    if ( s )
+    {
+        config->pt.addr = strtoll(s, NULL, 0);
+
+        s = xenstore_read(HVM_XS_ACPI_PT_LENGTH, NULL);
+        if ( s )
+            config->pt.length = strtoll(s, NULL, 0);
+    }
+
+    if ( battery_port_exists() )
+        config->table_flags |= ACPI_HAS_SSDT_PM;
+    if ( !strncmp(xenstore_read("platform/acpi_s3", "1"), "1", 1)  )
+        config->table_flags |= ACPI_HAS_SSDT_S3;
+    if ( !strncmp(xenstore_read("platform/acpi_s4", "1"), "1", 1)  )
+        config->table_flags |= ACPI_HAS_SSDT_S4;
+
+    config->table_flags |= (ACPI_HAS_TCPA | ACPI_HAS_IOAPIC | ACPI_HAS_WAET);
+
+    config->tis_hdr = (uint16_t *)ACPI_TIS_HDR_ADDRESS;
+
+    config->numa.nr_vmemranges = nr_vmemranges;
+    config->numa.nr_vnodes = nr_vnodes;
+    config->numa.vcpu_to_vnode = vcpu_to_vnode;
+    config->numa.vdistance = vdistance;
+    config->numa.vmemrange = vmemrange;
+
+    config->hvminfo = hvm_info;
+
+    config->rsdp = physical;
+    config->infop = ACPI_INFO_PHYSICAL_ADDRESS;
+
+    ctxt.mem_ops.alloc = acpi_mem_alloc;
+    ctxt.mem_ops.free = acpi_mem_free;
+    ctxt.mem_ops.v2p = acpi_v2p;
+
+    acpi_build_tables(&ctxt, config);
+
+    hvm_param_set(HVM_PARAM_VM_GENERATION_ID_ADDR, config->vm_gid_addr);
 }
 
 /*

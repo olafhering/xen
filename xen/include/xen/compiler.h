@@ -34,6 +34,8 @@
 #define __used_section(s) __used __attribute__((__section__(s)))
 #define __text_section(s) __attribute__((__section__(s)))
 
+#define __aligned(a) __attribute__((__aligned__(a)))
+
 #ifdef INIT_SECTIONS_ONLY
 /*
  * For sources indicated to have only init code, make sure even
@@ -61,6 +63,7 @@
 #define __maybe_unused __attribute__((__unused__))
 
 #define __must_check __attribute__((__warn_unused_result__))
+#define __nonnull(...) __attribute__((__nonnull__(__VA_ARGS__)))
 
 #define offsetof(a,b) __builtin_offsetof(a,b)
 

@@ -18,6 +18,7 @@
 #include <ctype.h>
 
 #include "libxl_internal.h"
+#include "_paths.h"
 
 #ifndef LIBXL_HAVE_NONCONST_LIBXL_BASENAME_RETURN_VALUE
 const
@@ -261,20 +262,20 @@ int libxl_create_logfile(libxl_ctx *ctx, const char *name, char **full_name)
     char *logfile, *logfile_new;
     int i, rc;
 
-    logfile = GCSPRINTF("/var/log/xen/%s.log", name);
+    logfile = GCSPRINTF(XEN_LOG_DIR "/%s.log", name);
     if (stat(logfile, &stat_buf) == 0) {
         /* file exists, rotate */
-        logfile = GCSPRINTF("/var/log/xen/%s.log.10", name);
+        logfile = GCSPRINTF(XEN_LOG_DIR "/%s.log.10", name);
         unlink(logfile);
         for (i = 9; i > 0; i--) {
-            logfile = GCSPRINTF("/var/log/xen/%s.log.%d", name, i);
-            logfile_new = GCSPRINTF("/var/log/xen/%s.log.%d", name, i + 1);
+            logfile = GCSPRINTF(XEN_LOG_DIR "/%s.log.%d", name, i);
+            logfile_new = GCSPRINTF(XEN_LOG_DIR "/%s.log.%d", name, i + 1);
             rc = logrename(gc, logfile, logfile_new);
             if (rc)
                 goto out;
         }
-        logfile = GCSPRINTF("/var/log/xen/%s.log", name);
-        logfile_new = GCSPRINTF("/var/log/xen/%s.log.1", name);
+        logfile = GCSPRINTF(XEN_LOG_DIR "/%s.log", name);
+        logfile_new = GCSPRINTF(XEN_LOG_DIR "/%s.log.1", name);
 
         rc = logrename(gc, logfile, logfile_new);
         if (rc)
@@ -595,68 +596,6 @@ int libxl_pipe(libxl_ctx *ctx, int pipes[2])
     }
     GC_FREE;
     return ret;
-}
-
-int libxl_uuid_to_device_vtpm(libxl_ctx *ctx, uint32_t domid,
-                            libxl_uuid* uuid, libxl_device_vtpm *vtpm)
-{
-    libxl_device_vtpm *vtpms;
-    int nb, i;
-    int rc;
-
-    vtpms = libxl_device_vtpm_list(ctx, domid, &nb);
-    if (!vtpms)
-        return ERROR_FAIL;
-
-    memset(vtpm, 0, sizeof (libxl_device_vtpm));
-    rc = 1;
-    for (i = 0; i < nb; ++i) {
-        if(!libxl_uuid_compare(uuid, &vtpms[i].uuid)) {
-            vtpm->backend_domid = vtpms[i].backend_domid;
-            vtpm->devid = vtpms[i].devid;
-            libxl_uuid_copy(ctx, &vtpm->uuid, &vtpms[i].uuid);
-            rc = 0;
-            break;
-        }
-    }
-
-    libxl_device_vtpm_list_free(vtpms, nb);
-    return rc;
-}
-
-int libxl_mac_to_device_nic(libxl_ctx *ctx, uint32_t domid,
-                            const char *mac, libxl_device_nic *nic)
-{
-    libxl_device_nic *nics;
-    int nb, rc, i;
-    libxl_mac mac_n;
-
-    rc = libxl__parse_mac(mac, mac_n);
-    if (rc)
-        return rc;
-
-    nics = libxl_device_nic_list(ctx, domid, &nb);
-    if (!nics)
-        return ERROR_FAIL;
-
-    memset(nic, 0, sizeof (libxl_device_nic));
-
-    rc = ERROR_INVAL;
-    for (i = 0; i < nb; ++i) {
-        if (!libxl__compare_macs(&mac_n, &nics[i].mac)) {
-            *nic = nics[i];
-            rc = 0;
-            i++; /* Do not dispose this NIC on exit path */
-            break;
-        }
-        libxl_device_nic_dispose(&nics[i]);
-    }
-
-    for (; i<nb; i++)
-        libxl_device_nic_dispose(&nics[i]);
-
-    free(nics);
-    return rc;
 }
 
 int libxl_bitmap_alloc(libxl_ctx *ctx, libxl_bitmap *bitmap, int n_bits)
@@ -1247,22 +1186,6 @@ void libxl_cpupoolinfo_list_free(libxl_cpupoolinfo *list, int nr)
     free(list);
 }
 
-void libxl_vtpminfo_list_free(libxl_vtpminfo* list, int nr)
-{
-   int i;
-   for (i = 0; i < nr; i++)
-      libxl_vtpminfo_dispose(&list[i]);
-   free(list);
-}
-
-void libxl_device_vtpm_list_free(libxl_device_vtpm* list, int nr)
-{
-   int i;
-   for (i = 0; i < nr; i++)
-      libxl_device_vtpm_dispose(&list[i]);
-   free(list);
-}
-
 int libxl_domid_valid_guest(uint32_t domid)
 {
     /* returns 1 if the value _could_ be a valid guest domid, 0 otherwise
@@ -1270,7 +1193,7 @@ int libxl_domid_valid_guest(uint32_t domid)
     return domid > 0 && domid < DOMID_FIRST_RESERVED;
 }
 
-void libxl_string_copy(libxl_ctx *ctx, char **dst, char **src)
+void libxl_string_copy(libxl_ctx *ctx, char **dst, char * const*src)
 {
     GC_INIT(ctx);
 
@@ -1307,24 +1230,6 @@ int libxl__random_bytes(libxl__gc *gc, uint8_t *buf, size_t len)
     close(fd);
 
     return ret;
-}
-
-void libxl_device_usbctrl_list_free(libxl_device_usbctrl *list, int nr)
-{
-   int i;
-
-   for (i = 0; i < nr; i++)
-       libxl_device_usbctrl_dispose(&list[i]);
-   free(list);
-}
-
-void libxl_device_usbdev_list_free(libxl_device_usbdev *list, int nr)
-{
-   int i;
-
-   for (i = 0; i < nr; i++)
-       libxl_device_usbdev_dispose(&list[i]);
-   free(list);
 }
 
 /*

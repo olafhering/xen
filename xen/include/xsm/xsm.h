@@ -43,17 +43,6 @@ enum xsm_default {
 };
 typedef enum xsm_default xsm_default_t;
 
-extern char *policy_buffer;
-extern u32 policy_size;
-
-typedef void (*xsm_initcall_t)(void);
-
-extern xsm_initcall_t __xsm_initcall_start[], __xsm_initcall_end[];
-
-#define xsm_initcall(fn) \
-    static xsm_initcall_t __initcall_##fn \
-    __used_section(".xsm_initcall.init") = fn
-
 struct xsm_operations {
     void (*security_domaininfo) (struct domain *d,
                                         struct xen_domctl_getdomaininfo *info);
@@ -748,20 +737,34 @@ extern int xsm_multiboot_init(unsigned long *module_map,
                               void *(*bootstrap_map)(const module_t *));
 extern int xsm_multiboot_policy_init(unsigned long *module_map,
                                      const multiboot_info_t *mbi,
-                                     void *(*bootstrap_map)(const module_t *));
+                                     void *(*bootstrap_map)(const module_t *),
+                                     void **policy_buffer,
+                                     size_t *policy_size);
 #endif
 
 #ifdef CONFIG_HAS_DEVICE_TREE
 extern int xsm_dt_init(void);
-extern int xsm_dt_policy_init(void);
+extern int xsm_dt_policy_init(void **policy_buffer, size_t *policy_size);
 extern bool has_xsm_magic(paddr_t);
 #endif
 
 extern int register_xsm(struct xsm_operations *ops);
-extern int unregister_xsm(struct xsm_operations *ops);
 
 extern struct xsm_operations dummy_xsm_ops;
 extern void xsm_fixup_ops(struct xsm_operations *ops);
+
+#ifdef CONFIG_FLASK
+extern void flask_init(const void *policy_buffer, size_t policy_size);
+#else
+static inline void flask_init(const void *policy_buffer, size_t policy_size)
+{
+}
+#endif
+
+#ifdef CONFIG_XSM_POLICY
+extern const unsigned char xsm_init_policy[];
+extern const unsigned int xsm_init_policy_size;
+#endif
 
 #else /* CONFIG_XSM */
 

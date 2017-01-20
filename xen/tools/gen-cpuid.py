@@ -196,8 +196,9 @@ def crunch_numbers(state):
 
         # SSE is taken to mean support for the %XMM registers as well as the
         # instructions.  Several futher instruction sets are built on core
-        # %XMM support, without specific inter-dependencies.
-        SSE: [SSE2, SSE3, SSSE3, SSE4A,
+        # %XMM support, without specific inter-dependencies.  Additionally
+        # AMD has a special mis-alignment sub-mode.
+        SSE: [SSE2, SSE3, SSSE3, SSE4A, MISALIGNSSE,
               AESNI, SHA],
 
         # SSE2 was re-specified as core instructions for 64bit.
@@ -243,6 +244,16 @@ def crunch_numbers(state):
         # AMD K6-2+ and K6-III processors shipped with 3DNow+, beyond the
         # standard 3DNow in the earlier K6 processors.
         _3DNOW: [_3DNOWEXT],
+
+        # This is just the dependency between AVX512 and AVX2 of XSTATE feature flags.
+        # If want to use AVX512, AVX2 must be supported and enabled.
+        AVX2: [AVX512F],
+
+        # AVX512F is taken to mean hardware support for EVEX encoded instructions,
+        # 512bit registers, and the instructions themselves. All further AVX512 features
+        # are built on top of AVX512F
+        AVX512F: [AVX512DQ, AVX512IFMA, AVX512PF, AVX512ER, AVX512CD,
+                  AVX512BW, AVX512VL, AVX512VBMI],
     }
 
     deep_features = tuple(sorted(deps.keys()))
@@ -291,7 +302,7 @@ def write_results(state):
 
     state.output.write(
 """
-#define FEATURESET_NR_ENTRIES %sU
+#define FEATURESET_NR_ENTRIES %s
 
 #define CPUID_COMMON_1D_FEATURES %s
 

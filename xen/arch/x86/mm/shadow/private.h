@@ -740,8 +740,6 @@ const struct x86_emulate_ops *shadow_init_emulation(
     struct sh_emulate_ctxt *sh_ctxt, struct cpu_user_regs *regs);
 void shadow_continue_emulation(
     struct sh_emulate_ctxt *sh_ctxt, struct cpu_user_regs *regs);
-struct segment_register *hvm_get_seg_reg(
-    enum x86_segment seg, struct sh_emulate_ctxt *sh_ctxt);
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_VIRTUAL_TLB)
 /**************************************************************************/
@@ -796,7 +794,7 @@ static inline unsigned long vtlb_lookup(struct vcpu *v,
                                         unsigned long va, uint32_t pfec)
 {
     unsigned long page_number = va >> PAGE_SHIFT;
-    unsigned long frame_number = INVALID_GFN;
+    unsigned long frame_number = gfn_x(INVALID_GFN);
     int i = vtlb_hash(page_number);
 
     spin_lock(&v->arch.paging.vtlb_lock);

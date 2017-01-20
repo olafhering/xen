@@ -688,8 +688,8 @@ static int vgic_v2_domain_init(struct domain *d)
      * Map the gic virtual cpu interface in the gic cpu interface
      * region of the guest.
      */
-    ret = map_mmio_regions(d, paddr_to_pfn(cbase), csize / PAGE_SIZE,
-                           paddr_to_pfn(vbase));
+    ret = map_mmio_regions(d, _gfn(paddr_to_pfn(cbase)), csize / PAGE_SIZE,
+                           _mfn(paddr_to_pfn(vbase)));
     if ( ret )
         return ret;
 
@@ -699,13 +699,19 @@ static int vgic_v2_domain_init(struct domain *d)
     return 0;
 }
 
+static void vgic_v2_domain_free(struct domain *d)
+{
+    /* Nothing to be cleanup for this driver */
+}
+
 static const struct vgic_ops vgic_v2_ops = {
     .vcpu_init   = vgic_v2_vcpu_init,
     .domain_init = vgic_v2_domain_init,
+    .domain_free = vgic_v2_domain_free,
     .max_vcpus = 8,
 };
 
-int vgic_v2_init(struct domain *d)
+int vgic_v2_init(struct domain *d, int *mmio_count)
 {
     if ( !vgic_v2_hw.enabled )
     {
@@ -715,6 +721,7 @@ int vgic_v2_init(struct domain *d)
         return -ENODEV;
     }
 
+    *mmio_count = 1; /* Only GICD region */
     register_vgic_ops(d, &vgic_v2_ops);
 
     return 0;

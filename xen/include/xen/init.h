@@ -61,9 +61,9 @@ typedef int (*initcall_t)(void);
 typedef void (*exitcall_t)(void);
 
 #define presmp_initcall(fn) \
-    static initcall_t __initcall_##fn __init_call("presmp") = fn
+    const static initcall_t __initcall_##fn __init_call("presmp") = fn
 #define __initcall(fn) \
-    static initcall_t __initcall_##fn __init_call("1") = fn
+    const static initcall_t __initcall_##fn __init_call("1") = fn
 #define __exitcall(fn) \
     static exitcall_t __exitcall_##fn __exit_call = fn
 
@@ -86,10 +86,11 @@ struct kernel_param {
     void *var;
 };
 
-extern struct kernel_param __setup_start, __setup_end;
+extern const struct kernel_param __setup_start[], __setup_end[];
 
-#define __setup_str static __initdata __attribute__((__aligned__(1))) char
-#define __kparam static __initsetup \
+#define __setup_str static const __initconst \
+    __attribute__((__aligned__(1))) char
+#define __kparam static const __initsetup \
     __attribute__((__aligned__(sizeof(void *)))) struct kernel_param
 
 #define custom_param(_name, _var) \

@@ -115,13 +115,13 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     }
     break;
 
-#ifdef PERF_COUNTERS
+#ifdef CONFIG_PERF_COUNTERS
     case XEN_SYSCTL_perfc_op:
         ret = perfc_control(&op->u.perfc_op);
         break;
 #endif
 
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
     case XEN_SYSCTL_lockprof_op:
         ret = spinlock_profile_control(&op->u.lockprof_op);
         break;
@@ -396,7 +396,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     }
     break;
 
-#ifdef TEST_COVERAGE
+#ifdef CONFIG_GCOV
     case XEN_SYSCTL_coverage_op:
         ret = sysctl_coverage_op(&op->u.coverage_op);
         break;

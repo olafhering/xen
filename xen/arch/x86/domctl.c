@@ -110,10 +110,18 @@ static void update_domain_cpuid_info(struct domain *d,
             case X86_VENDOR_INTEL:
                 /*
                  * Intel masking MSRs are documented as AND masks.
-                 * Experimentally, they are applied before OSXSAVE and APIC
+                 * Experimentally, they are applied after OSXSAVE and APIC
                  * are fast-forwarded from real hardware state.
                  */
                 mask &= ((uint64_t)edx << 32) | ecx;
+
+                if ( ecx & cpufeat_mask(X86_FEATURE_XSAVE) )
+                    ecx = cpufeat_mask(X86_FEATURE_OSXSAVE);
+                else
+                    ecx = 0;
+                edx = cpufeat_mask(X86_FEATURE_APIC);
+
+                mask |= ((uint64_t)edx << 32) | ecx;
                 break;
 
             case X86_VENDOR_AMD:
@@ -227,6 +235,13 @@ static void update_domain_cpuid_info(struct domain *d,
         }
         break;
     }
+}
+
+void arch_get_domain_info(const struct domain *d,
+                          struct xen_domctl_getdomaininfo *info)
+{
+    if ( paging_mode_hap(d) )
+        info->flags |= XEN_DOMINF_hap;
 }
 
 #define MAX_IOPORTS 0x10000
@@ -1022,7 +1037,8 @@ long arch_do_domctl(
         struct vcpu *v;
         uint32_t offset = 0;
 
-#define PV_XSAVE_SIZE(xcr0) (2 * sizeof(uint64_t) + xstate_ctxt_size(xcr0))
+#define PV_XSAVE_HDR_SIZE (2 * sizeof(uint64_t))
+#define PV_XSAVE_SIZE(xcr0) (PV_XSAVE_HDR_SIZE + xstate_ctxt_size(xcr0))
 
         ret = -ESRCH;
         if ( (evc->vcpu >= d->max_vcpus) ||
@@ -1038,19 +1054,25 @@ long arch_do_domctl(
             unsigned int size;
 
             ret = 0;
-            vcpu_pause(v);
 
-            size = PV_XSAVE_SIZE(v->arch.xcr0_accum);
             if ( (!evc->size && !evc->xfeature_mask) ||
                  guest_handle_is_null(evc->buffer) )
             {
+                /*
+                 * A query for the size of buffer to use.  Must return the
+                 * maximum size we ever might hand back to userspace, bearing
+                 * in mind that the vcpu might increase its xcr0_accum between
+                 * this query for size, and the following query for data.
+                 */
                 evc->xfeature_mask = xfeature_mask;
-                evc->size = size;
-                vcpu_unpause(v);
+                evc->size = PV_XSAVE_SIZE(xfeature_mask);
                 goto vcpuextstate_out;
             }
 
-            if ( evc->size != size || evc->xfeature_mask != xfeature_mask )
+            vcpu_pause(v);
+            size = PV_XSAVE_SIZE(v->arch.xcr0_accum);
+
+            if ( evc->size < size || evc->xfeature_mask != xfeature_mask )
                 ret = -EINVAL;
 
             if ( !ret && copy_to_guest_offset(evc->buffer, offset,
@@ -1065,11 +1087,13 @@ long arch_do_domctl(
                 ret = -EFAULT;
 
             offset += sizeof(v->arch.xcr0_accum);
-            if ( !ret )
-            {
-                void *xsave_area;
 
-                xsave_area = xmalloc_bytes(size);
+            /* Serialise xsave state, if there is any. */
+            if ( !ret && size > PV_XSAVE_HDR_SIZE )
+            {
+                unsigned int xsave_size = size - PV_XSAVE_HDR_SIZE;
+                void *xsave_area = xmalloc_bytes(xsave_size);
+
                 if ( !xsave_area )
                 {
                     ret = -ENOMEM;
@@ -1077,16 +1101,19 @@ long arch_do_domctl(
                     goto vcpuextstate_out;
                 }
 
-                expand_xsave_states(v, xsave_area,
-                                    size - 2 * sizeof(uint64_t));
+                expand_xsave_states(v, xsave_area, xsave_size);
 
                 if ( copy_to_guest_offset(evc->buffer, offset, xsave_area,
-                                          size - 2 * sizeof(uint64_t)) )
+                                          xsave_size) )
                      ret = -EFAULT;
                 xfree(xsave_area);
            }
 
             vcpu_unpause(v);
+
+            /* Specify how much data we actually wrote into the buffer. */
+            if ( !ret )
+                evc->size = size;
         }
         else
         {
@@ -1095,9 +1122,8 @@ long arch_do_domctl(
             const struct xsave_struct *_xsave_area;
 
             ret = -EINVAL;
-            if ( evc->size < 2 * sizeof(uint64_t) ||
-                 evc->size > 2 * sizeof(uint64_t) +
-                             xstate_ctxt_size(xfeature_mask) )
+            if ( evc->size < PV_XSAVE_HDR_SIZE ||
+                 evc->size > PV_XSAVE_SIZE(xfeature_mask) )
                 goto vcpuextstate_out;
 
             receive_buf = xmalloc_bytes(evc->size);
@@ -1116,11 +1142,11 @@ long arch_do_domctl(
 
             _xcr0 = *(uint64_t *)receive_buf;
             _xcr0_accum = *(uint64_t *)(receive_buf + sizeof(uint64_t));
-            _xsave_area = receive_buf + 2 * sizeof(uint64_t);
+            _xsave_area = receive_buf + PV_XSAVE_HDR_SIZE;
 
             if ( _xcr0_accum )
             {
-                if ( evc->size >= 2 * sizeof(uint64_t) + XSTATE_AREA_MIN_SIZE )
+                if ( evc->size >= PV_XSAVE_HDR_SIZE + XSTATE_AREA_MIN_SIZE )
                     ret = validate_xstate(_xcr0, _xcr0_accum,
                                           &_xsave_area->xsave_hdr);
             }
@@ -1132,7 +1158,15 @@ long arch_do_domctl(
                 goto vcpuextstate_out;
             }
 
-            if ( evc->size <= PV_XSAVE_SIZE(_xcr0_accum) )
+            if ( evc->size == PV_XSAVE_HDR_SIZE )
+                ; /* Nothing to restore. */
+            else if ( evc->size < PV_XSAVE_HDR_SIZE + XSTATE_AREA_MIN_SIZE )
+                ret = -EINVAL; /* Can't be legitimate data. */
+            else if ( xsave_area_compressed(_xsave_area) )
+                ret = -EOPNOTSUPP; /* Don't support compressed data. */
+            else if ( evc->size != PV_XSAVE_SIZE(_xcr0_accum) )
+                ret = -EINVAL; /* Not legitimate data. */
+            else
             {
                 vcpu_pause(v);
                 v->arch.xcr0 = _xcr0;
@@ -1140,14 +1174,15 @@ long arch_do_domctl(
                 if ( _xcr0_accum & XSTATE_NONLAZY )
                     v->arch.nonlazy_xstate_used = 1;
                 compress_xsave_states(v, _xsave_area,
-                                      evc->size - 2 * sizeof(uint64_t));
+                                      evc->size - PV_XSAVE_HDR_SIZE);
                 vcpu_unpause(v);
             }
-            else
-                ret = -EINVAL;
 
             xfree(receive_buf);
         }
+
+#undef PV_XSAVE_HDR_SIZE
+#undef PV_XSAVE_SIZE
 
     vcpuextstate_out:
         if ( domctl->cmd == XEN_DOMCTL_getvcpuextstate )

@@ -76,6 +76,17 @@ int mem_access_memop(unsigned long cmd,
         }
         break;
 
+    case XENMEM_access_op_set_access_multi:
+        rc = p2m_set_mem_access_multi(d, mao.pfn_list, mao.access_list, mao.nr,
+                                      start_iter, MEMOP_CMD_MASK, 0);
+        if ( rc > 0 )
+        {
+            ASSERT(!(rc & MEMOP_CMD_MASK));
+            rc = hypercall_create_continuation(__HYPERVISOR_memory_op, "lh",
+                                               XENMEM_access_op | rc, arg);
+        }
+        break;
+
     case XENMEM_access_op_get_access:
     {
         xenmem_access_t access;
@@ -106,17 +117,6 @@ int mem_access_memop(unsigned long cmd,
  out:
     rcu_unlock_domain(d);
     return rc;
-}
-
-int mem_access_send_req(struct domain *d, vm_event_request_t *req)
-{
-    int rc = vm_event_claim_slot(d, &d->vm_event->monitor);
-    if ( rc < 0 )
-        return rc;
-
-    vm_event_put_request(d, &d->vm_event->monitor, req);
-
-    return 0;
 }
 
 /*

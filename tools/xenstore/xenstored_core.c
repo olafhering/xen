@@ -81,6 +81,7 @@ static int reopen_log_pipe[2];
 static int reopen_log_pipe0_pollfd_idx = -1;
 static char *tracefile = NULL;
 static TDB_CONTEXT *tdb_ctx = NULL;
+static bool trigger_talloc_report = false;
 
 static void corrupt(struct connection *conn, const char *fmt, ...);
 static void check_store(void);
@@ -407,8 +408,12 @@ bool is_child(const char *child, const char *parent)
 	return child[len] == '/' || child[len] == '\0';
 }
 
-/* If it fails, returns NULL and sets errno. */
-static struct node *read_node(struct connection *conn, const char *name)
+/*
+ * If it fails, returns NULL and sets errno.
+ * Temporary memory allocations will be done with ctx.
+ */
+static struct node *read_node(struct connection *conn, const void *ctx,
+			      const char *name)
 {
 	TDB_DATA key, data;
 	uint32_t *p;
@@ -429,7 +434,7 @@ static struct node *read_node(struct connection *conn, const char *name)
 		return NULL;
 	}
 
-	node = talloc(name, struct node);
+	node = talloc(ctx, struct node);
 	node->name = talloc_strdup(node, name);
 	node->parent = NULL;
 	node->tdb = tdb_context(conn);
@@ -517,22 +522,30 @@ static enum xs_perm_type perm_for_conn(struct connection *conn,
 	return perms[0].perms & mask;
 }
 
-static char *get_parent(const char *node)
+/*
+ * Get name of node parent.
+ * Temporary memory allocations are done with ctx.
+ */
+static char *get_parent(const void *ctx, const char *node)
 {
 	char *slash = strrchr(node + 1, '/');
 	if (!slash)
-		return talloc_strdup(node, "/");
-	return talloc_asprintf(node, "%.*s", (int)(slash - node), node);
+		return talloc_strdup(ctx, "/");
+	return talloc_asprintf(ctx, "%.*s", (int)(slash - node), node);
 }
 
-/* What do parents say? */
-static enum xs_perm_type ask_parents(struct connection *conn, const char *name)
+/*
+ * What do parents say?
+ * Temporary memory allocations are done with ctx.
+ */
+static enum xs_perm_type ask_parents(struct connection *conn, const void *ctx,
+				     const char *name)
 {
 	struct node *node;
 
 	do {
-		name = get_parent(name);
-		node = read_node(conn, name);
+		name = get_parent(ctx, name);
+		node = read_node(conn, ctx, name);
 		if (node)
 			break;
 	} while (!streq(name, "/"));
@@ -546,24 +559,32 @@ static enum xs_perm_type ask_parents(struct connection *conn, const char *name)
 	return perm_for_conn(conn, node->perms, node->num_perms);
 }
 
-/* We have a weird permissions system.  You can allow someone into a
+/*
+ * We have a weird permissions system.  You can allow someone into a
  * specific node without allowing it in the parents.  If it's going to
  * fail, however, we don't want the errno to indicate any information
- * about the node. */
-static int errno_from_parents(struct connection *conn, const char *node,
-			      int errnum, enum xs_perm_type perm)
+ * about the node.
+ * Temporary memory allocations are done with ctx.
+ */
+static int errno_from_parents(struct connection *conn, const void *ctx,
+			      const char *node, int errnum,
+			      enum xs_perm_type perm)
 {
 	/* We always tell them about memory failures. */
 	if (errnum == ENOMEM)
 		return errnum;
 
-	if (ask_parents(conn, node) & perm)
+	if (ask_parents(conn, ctx, node) & perm)
 		return errnum;
 	return EACCES;
 }
 
-/* If it fails, returns NULL and sets errno. */
+/*
+ * If it fails, returns NULL and sets errno.
+ * Temporary memory allocations are done with ctx.
+ */
 struct node *get_node(struct connection *conn,
+		      const void *ctx,
 		      const char *name,
 		      enum xs_perm_type perm)
 {
@@ -573,7 +594,7 @@ struct node *get_node(struct connection *conn,
 		errno = EINVAL;
 		return NULL;
 	}
-	node = read_node(conn, name);
+	node = read_node(conn, ctx, name);
 	/* If we don't have permission, we don't have node. */
 	if (node) {
 		if ((perm_for_conn(conn, node->perms, node->num_perms) & perm)
@@ -584,7 +605,7 @@ struct node *get_node(struct connection *conn,
 	}
 	/* Clean up errno if they weren't supposed to know. */
 	if (!node) 
-		errno = errno_from_parents(conn, name, errno, perm);
+		errno = errno_from_parents(conn, ctx, name, errno, perm);
 	return node;
 }
 
@@ -723,7 +744,7 @@ bool is_valid_nodename(const char *node)
 /* We expect one arg in the input: return NULL otherwise.
  * The payload must contain exactly one nul, at the end.
  */
-static const char *onearg(struct buffered_data *in)
+const char *onearg(struct buffered_data *in)
 {
 	if (!in->used || get_string(in, 0) != in->used)
 		return NULL;
@@ -771,12 +792,13 @@ bool check_event_node(const char *node)
 	return true;
 }
 
-static void send_directory(struct connection *conn, const char *name)
+static void send_directory(struct connection *conn, struct buffered_data *in)
 {
 	struct node *node;
+	const char *name = onearg(in);
 
 	name = canonicalize(conn, name);
-	node = get_node(conn, name, XS_PERM_READ);
+	node = get_node(conn, in, name, XS_PERM_READ);
 	if (!node) {
 		send_error(conn, errno);
 		return;
@@ -785,12 +807,13 @@ static void send_directory(struct connection *conn, const char *name)
 	send_reply(conn, XS_DIRECTORY, node->children, node->childlen);
 }
 
-static void do_read(struct connection *conn, const char *name)
+static void do_read(struct connection *conn, struct buffered_data *in)
 {
 	struct node *node;
+	const char *name = onearg(in);
 
 	name = canonicalize(conn, name);
-	node = get_node(conn, name, XS_PERM_READ);
+	node = get_node(conn, in, name, XS_PERM_READ);
 	if (!node) {
 		send_error(conn, errno);
 		return;
@@ -824,10 +847,10 @@ static struct node *construct_node(struct connection *conn, const char *name)
 	const char *base;
 	unsigned int baselen;
 	struct node *parent, *node;
-	char *children, *parentname = get_parent(name);
+	char *children, *parentname = get_parent(name, name);
 
 	/* If parent doesn't exist, create it. */
-	parent = read_node(conn, parentname);
+	parent = read_node(conn, parentname, parentname);
 	if (!parent)
 		parent = construct_node(conn, parentname);
 	if (!parent)
@@ -927,7 +950,7 @@ static void do_write(struct connection *conn, struct buffered_data *in)
 	datalen = in->used - offset;
 
 	name = canonicalize(conn, vec[0]);
-	node = get_node(conn, name, XS_PERM_WRITE);
+	node = get_node(conn, in, name, XS_PERM_WRITE);
 	if (!node) {
 		/* No permissions, invalid input? */
 		if (errno != ENOENT) {
@@ -949,16 +972,23 @@ static void do_write(struct connection *conn, struct buffered_data *in)
 	}
 
 	add_change_node(conn->transaction, name, false);
-	fire_watches(conn, name, false);
+	fire_watches(conn, in, name, false);
 	send_ack(conn, XS_WRITE);
 }
 
-static void do_mkdir(struct connection *conn, const char *name)
+static void do_mkdir(struct connection *conn, struct buffered_data *in)
 {
 	struct node *node;
+	const char *name = onearg(in);
+
+	if (!name) {
+		errno = EINVAL;
+		send_error(conn, errno);
+		return;
+	}
 
 	name = canonicalize(conn, name);
-	node = get_node(conn, name, XS_PERM_WRITE);
+	node = get_node(conn, in, name, XS_PERM_WRITE);
 
 	/* If it already exists, fine. */
 	if (!node) {
@@ -973,7 +1003,7 @@ static void do_mkdir(struct connection *conn, const char *name)
 			return;
 		}
 		add_change_node(conn->transaction, name, false);
-		fire_watches(conn, name, false);
+		fire_watches(conn, in, name, false);
 	}
 	send_ack(conn, XS_MKDIR);
 }
@@ -991,7 +1021,7 @@ static void delete_node(struct connection *conn, struct node *node)
 	for (i = 0; i < node->childlen; i += strlen(node->children+i) + 1) {
 		struct node *child;
 
-		child = read_node(conn, 
+		child = read_node(conn, node,
 				  talloc_asprintf(node, "%s/%s", node->name,
 						  node->children + i));
 		if (child) {
@@ -1043,7 +1073,7 @@ static int _rm(struct connection *conn, struct node *node, const char *name)
 	/* Delete from parent first, then if we crash, the worst that can
 	   happen is the child will continue to take up space, but will
 	   otherwise be unreachable. */
-	struct node *parent = read_node(conn, get_parent(name));
+	struct node *parent = read_node(conn, name, get_parent(name, name));
 	if (!parent) {
 		send_error(conn, EINVAL);
 		return 0;
@@ -1062,7 +1092,7 @@ static int _rm(struct connection *conn, struct node *node, const char *name)
 static void internal_rm(const char *name)
 {
 	char *tname = talloc_strdup(NULL, name);
-	struct node *node = read_node(NULL, tname);
+	struct node *node = read_node(NULL, tname, tname);
 	if (node)
 		_rm(NULL, node, tname);
 	talloc_free(node);
@@ -1070,16 +1100,17 @@ static void internal_rm(const char *name)
 }
 
 
-static void do_rm(struct connection *conn, const char *name)
+static void do_rm(struct connection *conn, struct buffered_data *in)
 {
 	struct node *node;
+	const char *name = onearg(in);
 
 	name = canonicalize(conn, name);
-	node = get_node(conn, name, XS_PERM_WRITE);
+	node = get_node(conn, in, name, XS_PERM_WRITE);
 	if (!node) {
 		/* Didn't exist already?  Fine, if parent exists. */
 		if (errno == ENOENT) {
-			node = read_node(conn, get_parent(name));
+			node = read_node(conn, in, get_parent(in, name));
 			if (node) {
 				send_ack(conn, XS_RM);
 				return;
@@ -1098,20 +1129,21 @@ static void do_rm(struct connection *conn, const char *name)
 
 	if (_rm(conn, node, name)) {
 		add_change_node(conn->transaction, name, true);
-		fire_watches(conn, name, true);
+		fire_watches(conn, in, name, true);
 		send_ack(conn, XS_RM);
 	}
 }
 
 
-static void do_get_perms(struct connection *conn, const char *name)
+static void do_get_perms(struct connection *conn, struct buffered_data *in)
 {
 	struct node *node;
+	const char *name = onearg(in);
 	char *strings;
 	unsigned int len;
 
 	name = canonicalize(conn, name);
-	node = get_node(conn, name, XS_PERM_READ);
+	node = get_node(conn, in, name, XS_PERM_READ);
 	if (!node) {
 		send_error(conn, errno);
 		return;
@@ -1143,7 +1175,7 @@ static void do_set_perms(struct connection *conn, struct buffered_data *in)
 	num--;
 
 	/* We must own node to do this (tools can do this too). */
-	node = get_node(conn, name, XS_PERM_WRITE|XS_PERM_OWNER);
+	node = get_node(conn, in, name, XS_PERM_WRITE|XS_PERM_OWNER);
 	if (!node) {
 		send_error(conn, errno);
 		return;
@@ -1173,7 +1205,7 @@ static void do_set_perms(struct connection *conn, struct buffered_data *in)
 	}
 
 	add_change_node(conn->transaction, name, false);
-	fire_watches(conn, name, false);
+	fire_watches(conn, in, name, false);
 	send_ack(conn, XS_SET_PERMS);
 }
 
@@ -1220,11 +1252,11 @@ static void process_message(struct connection *conn, struct buffered_data *in)
 
 	switch (in->hdr.msg.type) {
 	case XS_DIRECTORY:
-		send_directory(conn, onearg(in));
+		send_directory(conn, in);
 		break;
 
 	case XS_READ:
-		do_read(conn, onearg(in));
+		do_read(conn, in);
 		break;
 
 	case XS_WRITE:
@@ -1232,15 +1264,15 @@ static void process_message(struct connection *conn, struct buffered_data *in)
 		break;
 
 	case XS_MKDIR:
-		do_mkdir(conn, onearg(in));
+		do_mkdir(conn, in);
 		break;
 
 	case XS_RM:
-		do_rm(conn, onearg(in));
+		do_rm(conn, in);
 		break;
 
 	case XS_GET_PERMS:
-		do_get_perms(conn, onearg(in));
+		do_get_perms(conn, in);
 		break;
 
 	case XS_SET_PERMS:
@@ -1264,7 +1296,7 @@ static void process_message(struct connection *conn, struct buffered_data *in)
 		break;
 
 	case XS_TRANSACTION_END:
-		do_transaction_end(conn, onearg(in));
+		do_transaction_end(conn, in);
 		break;
 
 	case XS_INTRODUCE:
@@ -1272,19 +1304,19 @@ static void process_message(struct connection *conn, struct buffered_data *in)
 		break;
 
 	case XS_IS_DOMAIN_INTRODUCED:
-		do_is_domain_introduced(conn, onearg(in));
+		do_is_domain_introduced(conn, in);
 		break;
 
 	case XS_RELEASE:
-		do_release(conn, onearg(in));
+		do_release(conn, in);
 		break;
 
 	case XS_GET_DOMAIN_PATH:
-		do_get_domain_path(conn, onearg(in));
+		do_get_domain_path(conn, in);
 		break;
 
 	case XS_RESUME:
-		do_resume(conn, onearg(in));
+		do_resume(conn, in);
 		break;
 
 	case XS_SET_TARGET:
@@ -1292,7 +1324,7 @@ static void process_message(struct connection *conn, struct buffered_data *in)
 		break;
 
 	case XS_RESET_WATCHES:
-		do_reset_watches(conn);
+		do_reset_watches(conn, in);
 		break;
 
 	default:
@@ -1609,7 +1641,7 @@ static void remember_string(struct hashtable *hash, const char *str)
  */
 static void check_store_(const char *name, struct hashtable *reachable)
 {
-	struct node *node = read_node(NULL, name);
+	struct node *node = read_node(NULL, name, name);
 
 	if (node) {
 		size_t i = 0;
@@ -1623,7 +1655,8 @@ static void check_store_(const char *name, struct hashtable *reachable)
 			size_t childlen = strlen(node->children + i);
 			char * childname = child_name(node->name,
 						      node->children + i);
-			struct node *childnode = read_node(NULL, childname);
+			struct node *childnode = read_node(NULL, childname,
+							   childname);
 			
 			if (childnode) {
 				if (hashtable_search(children, childname)) {
@@ -1743,6 +1776,10 @@ static void init_sockets(int **psock, int **pro_sock)
 	static int minus_one = -1;
 	*psock = *pro_sock = &minus_one;
 }
+
+static void do_talloc_report(int sig)
+{
+}
 #else
 static int destroy_fd(void *_fd)
 {
@@ -1750,84 +1787,6 @@ static int destroy_fd(void *_fd)
 	close(*fd);
 	return 0;
 }
-
-#if defined(XEN_SYSTEMD_ENABLED)
-/* Will work regardless of the order systemd gives them to us */
-static int xs_get_sd_fd(const char *connect_to)
-{
-	int fd = SD_LISTEN_FDS_START;
-	int r;
-
-	while (fd <= SD_LISTEN_FDS_START + 1) {
-		r = sd_is_socket_unix(fd, SOCK_STREAM, 1, connect_to, 0);
-		if (r > 0)
-			return fd;
-		fd++;
-	}
-
-	return -EBADR;
-}
-
-static int xs_validate_active_socket(const char *connect_to)
-{
-	if ((strcmp(xs_daemon_socket_ro(), connect_to) != 0) &&
-	    (strcmp(xs_daemon_socket(), connect_to) != 0)) {
-		sd_notifyf(0, "STATUS=unexpected socket: %s\n"
-			   "ERRNO=%i",
-			   connect_to,
-			   EBADR);
-		return -EBADR;
-	}
-
-	return xs_get_sd_fd(connect_to);
-}
-
-/* Return true if started by systemd and false if not. Exit with
- * error if things go wrong.
- */
-static bool systemd_checkin(int **psock, int **pro_sock)
-{
-	int *sock, *ro_sock;
-	const char *soc_str = xs_daemon_socket();
-	const char *soc_str_ro = xs_daemon_socket_ro();
-	int n;
-
-	n = sd_listen_fds(0);
-
-	if (n == 0)
-		return false;
-
-	if (n < 0) {
-		sd_notifyf(0, "STATUS=Failed to get any active sockets: %s\n"
-			   "ERRNO=%i",
-			   strerror(errno),
-			   errno);
-		barf_perror("sd_listen_fds() failed\n");
-	} else if (n != 2) {
-		fprintf(stderr, SD_ERR "Expected 2 fds but given %d\n", n);
-		sd_notifyf(0, "STATUS=Mismatch on number (2): %s\n"
-			   "ERRNO=%d",
-			   strerror(EBADR),
-			   EBADR);
-		barf_perror("sd_listen_fds() gave too many fds\n");
-	}
-
-	*psock = sock = talloc(talloc_autofree_context(), int);
-	*sock = xs_validate_active_socket(soc_str);
-	if (*sock <= 0)
-		barf_perror("%s", soc_str);
-
-	*pro_sock = ro_sock = talloc(talloc_autofree_context(), int);
-	*ro_sock = xs_validate_active_socket(soc_str_ro);
-	if (*ro_sock <= 0)
-		barf_perror("%s", soc_str_ro);
-
-	talloc_set_destructor(sock, destroy_fd);
-	talloc_set_destructor(ro_sock, destroy_fd);
-
-	return true;
-}
-#endif
 
 static void init_sockets(int **psock, int **pro_sock)
 {
@@ -1876,6 +1835,11 @@ static void init_sockets(int **psock, int **pro_sock)
 
 
 }
+
+static void do_talloc_report(int sig)
+{
+	trigger_talloc_report = true;
+}
 #endif
 
 static void usage(void)
@@ -1901,6 +1865,7 @@ static void usage(void)
 "                          the store is corrupted (debug only),\n"
 "  -I, --internal-db       store database in memory, not on disk\n"
 "  -L, --preserve-local    to request that /local is preserved on start-up,\n"
+"  -M, --memory-debug <file>  support memory debugging to file,\n"
 "  -V, --verbose           to request verbose execution.\n");
 }
 
@@ -1923,6 +1888,7 @@ static struct option options[] = {
 	{ "internal-db", 0, NULL, 'I' },
 	{ "verbose", 0, NULL, 'V' },
 	{ "watch-nb", 1, NULL, 'W' },
+	{ "memory-debug", 1, NULL, 'M' },
 	{ NULL, 0, NULL, 0 } };
 
 extern void dump_conn(struct connection *conn); 
@@ -1938,12 +1904,11 @@ int main(int argc, char *argv[])
 	bool outputpid = false;
 	bool no_domain_init = false;
 	const char *pidfile = NULL;
+	const char *memfile = NULL;
 	int timeout;
-#if defined(XEN_SYSTEMD_ENABLED)
-	bool systemd;
-#endif
 
-	while ((opt = getopt_long(argc, argv, "DE:F:HNPS:t:T:RLVW:", options,
+
+	while ((opt = getopt_long(argc, argv, "DE:F:HNPS:t:T:RLVW:M:", options,
 				  NULL)) != -1) {
 		switch (opt) {
 		case 'D':
@@ -1997,20 +1962,13 @@ int main(int argc, char *argv[])
 		case 'p':
 			priv_domid = strtol(optarg, NULL, 10);
 			break;
+		case 'M':
+			memfile = optarg;
+			break;
 		}
 	}
 	if (optind != argc)
 		barf("%s: No arguments desired", argv[0]);
-
-#if defined(XEN_SYSTEMD_ENABLED)
-	systemd = systemd_checkin(&sock, &ro_sock);
-	if (systemd) {
-		dofork = false;
-		if (pidfile)
-			xprintf("%s: PID file not needed on systemd", argv[0]);
-		pidfile = NULL;
-	}
-#endif
 
 	reopen_log();
 
@@ -2033,10 +1991,12 @@ int main(int argc, char *argv[])
 	/* Don't kill us with SIGPIPE. */
 	signal(SIGPIPE, SIG_IGN);
 
-#if defined(XEN_SYSTEMD_ENABLED)
-	if (!systemd)
-#endif
-		init_sockets(&sock, &ro_sock);
+	if (memfile) {
+		talloc_enable_null_tracking();
+		signal(SIGUSR1, do_talloc_report);
+	}
+
+	init_sockets(&sock, &ro_sock);
 
 	init_pipe(reopen_log_pipe);
 
@@ -2069,15 +2029,25 @@ int main(int argc, char *argv[])
 	xenbus_notify_running();
 
 #if defined(XEN_SYSTEMD_ENABLED)
-	if (systemd) {
-		sd_notify(1, "READY=1");
-		fprintf(stderr, SD_NOTICE "xenstored is ready\n");
-	}
+	sd_notify(1, "READY=1");
+	fprintf(stderr, SD_NOTICE "xenstored is ready\n");
 #endif
 
 	/* Main loop. */
 	for (;;) {
 		struct connection *conn, *next;
+
+		if (trigger_talloc_report) {
+			FILE *out;
+
+			assert(memfile);
+			trigger_talloc_report = false;
+			out = fopen(memfile, "a");
+			if (out) {
+				talloc_report_full(NULL, out);
+				fclose(out);
+			}
+		}
 
 		if (poll(fds, nr_fds, timeout) < 0) {
 			if (errno == EINTR)

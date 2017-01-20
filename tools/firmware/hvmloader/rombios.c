@@ -24,12 +24,12 @@
 #include "../rombios/config.h"
 
 #include "smbios_types.h"
-#include "acpi/acpi2_0.h"
 #include "pci_regs.h"
 #include "util.h"
 #include "hypercall.h"
 #include "option_rom.h"
 
+#include <libacpi.h>
 #include <xen/hvm/params.h>
 
 #define ROM_INCLUDE_ROMBIOS
@@ -121,7 +121,8 @@ static void rombios_load_roms(void)
                option_rom_phys_addr + option_rom_sz - 1);
 }
 
-static void rombios_load(const struct bios_config *config)
+static void rombios_load(const struct bios_config *config,
+                         void *unused_addr, uint32_t unused_size)
 {
     uint32_t bioshigh;
     struct rombios_info *info;
@@ -180,7 +181,7 @@ static void rombios_acpi_build_tables(void)
         .dsdt_15cpu_len = dsdt_15cpu_len,
     };
 
-    acpi_build_tables(&config, ACPI_PHYSICAL_ADDRESS);
+    hvmloader_acpi_build_tables(&config, ACPI_PHYSICAL_ADDRESS);
 }
 
 static void rombios_create_mp_tables(void)

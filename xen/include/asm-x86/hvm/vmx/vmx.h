@@ -213,7 +213,6 @@ static inline void pi_clear_sn(struct pi_desc *pi_desc)
 #define EXIT_REASON_PML_FULL            62
 #define EXIT_REASON_XSAVES              63
 #define EXIT_REASON_XRSTORS             64
-#define EXIT_REASON_PCOMMIT             65
 
 /*
  * Interruption-information format
@@ -407,12 +406,17 @@ static inline bool_t __vmread_safe(unsigned long field, unsigned long *value)
                    VMREAD_OPCODE MODRM_EAX_ECX
 #endif
                    /* CF==1 or ZF==1 --> rc = 0 */
+#ifdef __GCC_ASM_FLAG_OUTPUTS__
+                   : "=@ccnbe" (okay),
+#else
                    "setnbe %0"
+                   : "=qm" (okay),
+#endif
 #ifdef HAVE_GAS_VMX
-                   : "=qm" (okay), "=rm" (*value)
+                     "=rm" (*value)
                    : "r" (field));
 #else
-                   : "=qm" (okay), "=c" (*value)
+                     "=c" (*value)
                    : "a" (field));
 #endif
 

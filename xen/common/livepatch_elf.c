@@ -86,6 +86,10 @@ static int elf_resolve_sections(struct livepatch_elf *elf, const void *data)
                     delta < sizeof(Elf_Ehdr) ? "at ELF header" : "is past end");
             return -EINVAL;
         }
+        else if ( (sec[i].sec->sh_flags & (SHF_WRITE | SHF_ALLOC)) &&
+                  sec[i].sec->sh_type == SHT_NOBITS &&
+                  sec[i].sec->sh_size > LIVEPATCH_MAX_SIZE )
+            return -EINVAL;
 
         sec[i].data = data + delta;
         /* Name is populated in elf_resolve_section_names. */
@@ -247,6 +251,12 @@ static int elf_get_sym(struct livepatch_elf *elf, const void *data)
 
         sym[i].sym = s;
         sym[i].name = strtab_sec->data + delta;
+        if ( arch_livepatch_symbol_deny(elf, &sym[i]) )
+        {
+            dprintk(XENLOG_ERR, LIVEPATCH "%s: Symbol '%s' should not be in payload!\n",
+                    elf->name, sym[i].name);
+            return -EINVAL;
+        }
     }
     elf->nsym = nsym;
 
@@ -310,8 +320,7 @@ int livepatch_elf_resolve_symbols(struct livepatch_elf *elf)
                 break;
             }
 
-            /* Matches 'move_payload' which ignores such sections. */
-            if ( !(elf->sec[idx].sec->sh_flags & SHF_ALLOC) )
+            if ( livepatch_elf_ignore_section(elf->sec[idx].sec) )
                 break;
 
             st_value += (unsigned long)elf->sec[idx].load_addr;
@@ -335,6 +344,7 @@ int livepatch_elf_perform_relocs(struct livepatch_elf *elf)
     struct livepatch_elf_sec *r, *base;
     unsigned int i;
     int rc = 0;
+    size_t sz;
 
     ASSERT(elf->sym);
 
@@ -360,6 +370,22 @@ int livepatch_elf_perform_relocs(struct livepatch_elf *elf)
         {
             dprintk(XENLOG_ERR, LIVEPATCH "%s: Relative link of %s is incorrect (%d, expected=%d)\n",
                     elf->name, r->name, r->sec->sh_link, elf->symtab_idx);
+            rc = -EINVAL;
+            break;
+        }
+
+        if ( r->sec->sh_type == SHT_RELA )
+            sz = sizeof(Elf_RelA);
+        else
+            sz = sizeof(Elf_Rel);
+
+        if ( !r->sec->sh_size )
+            continue;
+
+        if ( r->sec->sh_entsize < sz || r->sec->sh_size % r->sec->sh_entsize )
+        {
+            dprintk(XENLOG_ERR, LIVEPATCH "%s: Section relative header is corrupted!\n",
+                    elf->name);
             rc = -EINVAL;
             break;
         }

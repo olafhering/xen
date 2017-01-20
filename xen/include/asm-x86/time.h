@@ -40,6 +40,7 @@ int time_suspend(void);
 int time_resume(void);
 
 void init_percpu_time(void);
+void time_latch_stamps(void);
 
 struct ioreq;
 int hwdom_pit_access(struct ioreq *ioreq);
@@ -68,6 +69,7 @@ void tsc_get_info(struct domain *d, uint32_t *tsc_mode, uint64_t *elapsed_nsec,
 
 void force_update_vcpu_system_time(struct vcpu *v);
 
+bool clocksource_is_tsc(void);
 int host_tsc_is_safe(void);
 void cpuid_time_leaf(uint32_t sub_idx, uint32_t *eax, uint32_t *ebx,
                      uint32_t *ecx, uint32_t *edx);
@@ -76,6 +78,6 @@ u64 stime2tsc(s_time_t stime);
 
 struct time_scale;
 void set_time_scale(struct time_scale *ts, u64 ticks_per_sec);
-u64 scale_delta(u64 delta, struct time_scale *scale);
+u64 scale_delta(u64 delta, const struct time_scale *scale);
 
 #endif /* __X86_TIME_H__ */

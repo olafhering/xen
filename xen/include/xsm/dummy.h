@@ -61,7 +61,12 @@ static always_inline int xsm_default_action(
         return 0;
     case XSM_TARGET:
         if ( src == target )
+        {
             return 0;
+    case XSM_XS_PRIV:
+            if ( src->is_xenstore )
+                return 0;
+        }
         /* fall through */
     case XSM_DM_PRIV:
         if ( target && src->target == target )
@@ -69,10 +74,6 @@ static always_inline int xsm_default_action(
         /* fall through */
     case XSM_PRIV:
         if ( src->is_privileged )
-            return 0;
-        return -EPERM;
-    case XSM_XS_PRIV:
-        if ( src->is_xenstore || src->is_privileged )
             return 0;
         return -EPERM;
     default:
@@ -215,7 +216,7 @@ static XSM_INLINE int xsm_memory_stat_reservation(XSM_DEFAULT_ARG struct domain 
 static XSM_INLINE int xsm_console_io(XSM_DEFAULT_ARG struct domain *d, int cmd)
 {
     XSM_ASSERT_ACTION(XSM_OTHER);
-#ifdef VERBOSE
+#ifdef CONFIG_VERBOSE_DEBUG
     if ( cmd == CONSOLEIO_write )
         return xsm_default_action(XSM_HOOK, d, NULL);
 #endif

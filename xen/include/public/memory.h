@@ -410,6 +410,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_paging_op_t);
  * #define XENMEM_access_op_enable_emulate     2
  * #define XENMEM_access_op_disable_emulate    3
  */
+#define XENMEM_access_op_set_access_multi   4
 
 typedef enum {
     XENMEM_access_n,
@@ -442,7 +443,8 @@ struct xen_mem_access_op {
     uint8_t access;
     domid_t domid;
     /*
-     * Number of pages for set op
+     * Number of pages for set op (or size of pfn_list for
+     * XENMEM_access_op_set_access_multi)
      * Ignored on setting default access and other ops
      */
     uint32_t nr;
@@ -452,6 +454,16 @@ struct xen_mem_access_op {
      * ~0ull is used to set and get the default access for pages
      */
     uint64_aligned_t pfn;
+    /*
+     * List of pfns to set access for
+     * Used only with XENMEM_access_op_set_access_multi
+     */
+    XEN_GUEST_HANDLE(const_uint64) pfn_list;
+    /*
+     * Corresponding list of access settings for pfn_list
+     * Used only with XENMEM_access_op_set_access_multi
+     */
+    XEN_GUEST_HANDLE(const_uint8) access_list;
 };
 typedef struct xen_mem_access_op xen_mem_access_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_mem_access_op_t);
@@ -465,6 +477,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_access_op_t);
 #define XENMEM_sharing_op_debug_gref        5
 #define XENMEM_sharing_op_add_physmap       6
 #define XENMEM_sharing_op_audit             7
+#define XENMEM_sharing_op_range_share       8
 
 #define XENMEM_SHARING_OP_S_HANDLE_INVALID  (-10)
 #define XENMEM_SHARING_OP_C_HANDLE_INVALID  (-9)
@@ -473,7 +486,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_access_op_t);
  * for sharing utilities sitting as "filters" in IO backends
  * (e.g. memshr + blktap(2)). The IO backend is only exposed 
  * to grant references, and this allows sharing of the grefs */
-#define XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG   (1ULL << 62)
+#define XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG   (xen_mk_ullong(1) << 62)
 
 #define XENMEM_SHARING_OP_FIELD_MAKE_GREF(field, val)  \
     (field) = (XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG | val)
@@ -500,7 +513,14 @@ struct xen_mem_sharing_op {
             uint64_aligned_t client_gfn;    /* IN: the client gfn */
             uint64_aligned_t client_handle; /* IN: handle to the client page */
             domid_t  client_domain; /* IN: the client domain id */
-        } share; 
+        } share;
+        struct mem_sharing_op_range {         /* OP_RANGE_SHARE */
+            uint64_aligned_t first_gfn;      /* IN: the first gfn */
+            uint64_aligned_t last_gfn;       /* IN: the last gfn */
+            uint64_aligned_t opaque;         /* Must be set to 0 */
+            domid_t client_domain;           /* IN: the client domain id */
+            uint16_t _pad[3];                /* Must be set to 0 */
+        } range;
         struct mem_sharing_op_debug {     /* OP_DEBUG_xxx */
             union {
                 uint64_aligned_t gfn;      /* IN: gfn to debug          */

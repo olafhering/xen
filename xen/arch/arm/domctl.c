@@ -14,6 +14,13 @@
 #include <xsm/xsm.h>
 #include <public/domctl.h>
 
+void arch_get_domain_info(const struct domain *d,
+                          struct xen_domctl_getdomaininfo *info)
+{
+    /* All ARM domains use hardware assisted paging. */
+    info->flags |= XEN_DOMINF_hap;
+}
+
 long arch_do_domctl(struct xen_domctl *domctl, struct domain *d,
                     XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
@@ -30,7 +37,7 @@ long arch_do_domctl(struct xen_domctl *domctl, struct domain *d,
         if ( e < s )
             return -EINVAL;
 
-        return p2m_cache_flush(d, s, e);
+        return p2m_cache_flush(d, _gfn(s), domctl->u.cacheflush.nr_pfns);
     }
     case XEN_DOMCTL_bind_pt_irq:
     {

@@ -1353,7 +1353,7 @@ static int security_preserve_bools(struct policydb *p);
  * This function will flush the access vector cache after
  * loading the new policy.
  */
-int security_load_policy(void *data, size_t len)
+int security_load_policy(const void *data, size_t len)
 {
     struct policydb oldpolicydb, newpolicydb;
     struct sidtab oldsidtab, newsidtab;
@@ -1465,6 +1465,11 @@ err:
 
 }
 
+int security_get_allow_unknown(void)
+{
+    return policydb.allow_unknown;
+}
+
 /**
  * security_irq_sid - Obtain the SID for a physical irq.
  * @pirq: physical irq
@@ -1488,13 +1493,13 @@ int security_irq_sid(int pirq, u32 *out_sid)
 
     if ( c )
     {
-        if ( !c->sid[0] )
+        if ( !c->sid )
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
-        *out_sid = c->sid[0];
+        *out_sid = c->sid;
     }
     else
     {
@@ -1528,13 +1533,13 @@ int security_iomem_sid(unsigned long mfn, u32 *out_sid)
 
     if ( c )
     {
-        if ( !c->sid[0] )
+        if ( !c->sid )
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
-        *out_sid = c->sid[0];
+        *out_sid = c->sid;
     }
     else
     {
@@ -1559,9 +1564,9 @@ int security_iterate_iomem_sids(unsigned long start, unsigned long end,
         c = c->next;
 
     while (c && c->u.iomem.low_iomem <= end) {
-        if (!c->sid[0])
+        if (!c->sid)
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
@@ -1574,11 +1579,11 @@ int security_iterate_iomem_sids(unsigned long start, unsigned long end,
         }
         if (end <= c->u.iomem.high_iomem) {
             /* iteration ends in the middle of this range */
-            rc = fn(data, c->sid[0], start, end);
+            rc = fn(data, c->sid, start, end);
             goto out;
         }
 
-        rc = fn(data, c->sid[0], start, c->u.iomem.high_iomem);
+        rc = fn(data, c->sid, start, c->u.iomem.high_iomem);
         if (rc)
             goto out;
         start = c->u.iomem.high_iomem + 1;
@@ -1616,13 +1621,13 @@ int security_ioport_sid(u32 ioport, u32 *out_sid)
 
     if ( c )
     {
-        if ( !c->sid[0] )
+        if ( !c->sid )
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
-        *out_sid = c->sid[0];
+        *out_sid = c->sid;
     }
     else
     {
@@ -1647,9 +1652,9 @@ int security_iterate_ioport_sids(u32 start, u32 end,
         c = c->next;
 
     while (c && c->u.ioport.low_ioport <= end) {
-        if (!c->sid[0])
+        if (!c->sid)
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
@@ -1662,11 +1667,11 @@ int security_iterate_ioport_sids(u32 start, u32 end,
         }
         if (end <= c->u.ioport.high_ioport) {
             /* iteration ends in the middle of this range */
-            rc = fn(data, c->sid[0], start, end);
+            rc = fn(data, c->sid, start, end);
             goto out;
         }
 
-        rc = fn(data, c->sid[0], start, c->u.ioport.high_ioport);
+        rc = fn(data, c->sid, start, c->u.ioport.high_ioport);
         if (rc)
             goto out;
         start = c->u.ioport.high_ioport + 1;
@@ -1703,13 +1708,13 @@ int security_device_sid(u32 device, u32 *out_sid)
 
     if ( c )
     {
-        if ( !c->sid[0] )
+        if ( !c->sid )
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
-        *out_sid = c->sid[0];
+        *out_sid = c->sid;
     }
     else
     {
@@ -1718,117 +1723,6 @@ int security_device_sid(u32 device, u32 *out_sid)
 
 out:
     POLICY_RDUNLOCK;
-    return rc;
-}
-
-#define SIDS_NEL 25
-
-/**
- * security_get_user_sids - Obtain reachable SIDs for a user.
- * @fromsid: starting SID
- * @username: username
- * @sids: array of reachable SIDs for user
- * @nel: number of elements in @sids
- *
- * Generate the set of SIDs for legal security contexts
- * for a given user that can be reached by @fromsid.
- * Set *@sids to point to a dynamically allocated
- * array containing the set of SIDs.  Set *@nel to the
- * number of elements in the array.
- */
-
-int security_get_user_sids(u32 fromsid, char *username, u32 **sids, u32 *nel)
-{
-    struct context *fromcon, usercon;
-    u32 *mysids, *mysids2, sid;
-    u32 mynel = 0, maxnel = SIDS_NEL;
-    struct user_datum *user;
-    struct role_datum *role;
-    struct av_decision avd;
-    struct ebitmap_node *rnode, *tnode;
-    int rc = 0, i, j;
-
-    if ( !ss_initialized )
-    {
-        *sids = NULL;
-        *nel = 0;
-        goto out;
-    }
-
-    POLICY_RDLOCK;
-
-    fromcon = sidtab_search(&sidtab, fromsid);
-    if ( !fromcon )
-    {
-        rc = -EINVAL;
-        goto out_unlock;
-    }
-
-    user = hashtab_search(policydb.p_users.table, username);
-    if ( !user )
-    {
-        rc = -EINVAL;
-        goto out_unlock;
-    }
-    usercon.user = user->value;
-
-    mysids = xzalloc_array(u32, maxnel);
-    if ( !mysids )
-    {
-        rc = -ENOMEM;
-        goto out_unlock;
-    }
-
-    ebitmap_for_each_positive_bit(&user->roles, rnode, i)
-    {
-        role = policydb.role_val_to_struct[i];
-        usercon.role = i+1;
-        ebitmap_for_each_positive_bit(&role->types, tnode, j) {
-            usercon.type = j+1;
-
-            if ( mls_setup_user_range(fromcon, user, &usercon) )
-                continue;
-
-            rc = context_struct_compute_av(fromcon, &usercon,
-                               SECCLASS_DOMAIN,
-                               DOMAIN__TRANSITION,
-                               &avd);
-            if ( rc ||  !(avd.allowed & DOMAIN__TRANSITION) )
-                continue;
-            rc = sidtab_context_to_sid(&sidtab, &usercon, &sid);
-            if ( rc )
-            {
-                xfree(mysids);
-                goto out_unlock;
-            }
-            if ( mynel < maxnel )
-            {
-                mysids[mynel++] = sid;
-            }
-            else
-            {
-                maxnel += SIDS_NEL;
-                mysids2 = xzalloc_array(u32, maxnel);
-                if ( !mysids2 )
-                {
-                    rc = -ENOMEM;
-                    xfree(mysids);
-                    goto out_unlock;
-                }
-                memcpy(mysids2, mysids, mynel * sizeof(*mysids2));
-                xfree(mysids);
-                mysids = mysids2;
-                mysids[mynel++] = sid;
-            }
-        }
-    }
-
-    *sids = mysids;
-    *nel = mynel;
-
-out_unlock:
-    POLICY_RDUNLOCK;
-out:
     return rc;
 }
 
@@ -1849,13 +1743,13 @@ int security_devicetree_sid(const char *path, u32 *out_sid)
 
     if ( c )
     {
-        if ( !c->sid[0] )
+        if ( !c->sid )
         {
-            rc = sidtab_context_to_sid(&sidtab, &c->context[0], &c->sid[0]);
+            rc = sidtab_context_to_sid(&sidtab, &c->context, &c->sid);
             if ( rc )
                 goto out;
         }
-        *out_sid = c->sid[0];
+        *out_sid = c->sid;
     }
     else
     {
@@ -2081,7 +1975,7 @@ int security_ocontext_add( u32 ocon, unsigned long low, unsigned long high
 
     if ( (add = xzalloc(struct ocontext)) == NULL )
         return -ENOMEM;
-    add->sid[0] = sid;
+    add->sid = sid;
 
     POLICY_WRLOCK;
     switch( ocon )
@@ -2099,9 +1993,9 @@ int security_ocontext_add( u32 ocon, unsigned long low, unsigned long high
         {
             if ( c->u.pirq == add->u.pirq )
             {
-                if ( c->sid[0] == sid )
+                if ( c->sid == sid )
                     break;
-                printk("%s: Duplicate pirq %d\n", __FUNCTION__, add->u.pirq);
+                printk("flask: Duplicate pirq %d\n", add->u.pirq);
                 ret = -EEXIST;
                 break;
             }
@@ -2130,12 +2024,11 @@ int security_ocontext_add( u32 ocon, unsigned long low, unsigned long high
         if (c && c->u.ioport.low_ioport <= high)
         {
             if (c->u.ioport.low_ioport == low &&
-                c->u.ioport.high_ioport == high && c->sid[0] == sid)
+                c->u.ioport.high_ioport == high && c->sid == sid)
                 break;
 
-            printk("%s: IO Port overlap with entry %#x - %#x\n",
-                   __FUNCTION__, c->u.ioport.low_ioport,
-                   c->u.ioport.high_ioport);
+            printk("flask: IO Port overlap with entry %#x - %#x\n",
+                   c->u.ioport.low_ioport, c->u.ioport.high_ioport);
             ret = -EEXIST;
             break;
         }
@@ -2164,11 +2057,11 @@ int security_ocontext_add( u32 ocon, unsigned long low, unsigned long high
         if (c && c->u.iomem.low_iomem <= high)
         {
             if (c->u.iomem.low_iomem == low &&
-                c->u.iomem.high_iomem == high && c->sid[0] == sid)
+                c->u.iomem.high_iomem == high && c->sid == sid)
                 break;
 
-            printk("%s: IO Memory overlap with entry %#"PRIx64" - %#"PRIx64"\n",
-                   __FUNCTION__, c->u.iomem.low_iomem, c->u.iomem.high_iomem);
+            printk("flask: IO Memory overlap with entry %#"PRIx64" - %#"PRIx64"\n",
+                   c->u.iomem.low_iomem, c->u.iomem.high_iomem);
             ret = -EEXIST;
             break;
         }
@@ -2195,11 +2088,10 @@ int security_ocontext_add( u32 ocon, unsigned long low, unsigned long high
         {
             if ( c->u.device == add->u.device )
             {
-                if ( c->sid[0] == sid )
+                if ( c->sid == sid )
                     break;
 
-                printk("%s: Duplicate PCI Device %#x\n", __FUNCTION__,
-                        add->u.device);
+                printk("flask: Duplicate PCI Device %#x\n", add->u.device);
                 ret = -EEXIST;
                 break;
             }
@@ -2252,7 +2144,7 @@ int security_ocontext_del( u32 ocon, unsigned long low, unsigned long high )
             }
         }
 
-        printk("%s: ocontext not found: pirq %ld\n", __FUNCTION__, low);
+        printk("flask: ocontext not found: pirq %ld\n", low);
         ret = -ENOENT;
         break;
 
@@ -2278,8 +2170,7 @@ int security_ocontext_del( u32 ocon, unsigned long low, unsigned long high )
             }
         }
 
-        printk("%s: ocontext not found: ioport %#lx - %#lx\n",
-                __FUNCTION__, low, high);
+        printk("flask: ocontext not found: ioport %#lx - %#lx\n", low, high);
         ret = -ENOENT;
         break;
 
@@ -2305,8 +2196,7 @@ int security_ocontext_del( u32 ocon, unsigned long low, unsigned long high )
             }
         }
 
-        printk("%s: ocontext not found: iomem %#lx - %#lx\n",
-                __FUNCTION__, low, high);
+        printk("flask: ocontext not found: iomem %#lx - %#lx\n", low, high);
         ret = -ENOENT;
         break;
 
@@ -2331,7 +2221,7 @@ int security_ocontext_del( u32 ocon, unsigned long low, unsigned long high )
             }
         }
 
-        printk("%s: ocontext not found: pcidevice %#lx\n", __FUNCTION__, low);
+        printk("flask: ocontext not found: pcidevice %#lx\n", low);
         ret = -ENOENT;
         break;
 
@@ -2359,7 +2249,7 @@ int security_devicetree_setlabel(char *path, u32 sid)
             xfree(path);
             return -ENOMEM;
         }
-        add->sid[0] = sid;
+        add->sid = sid;
         add->u.name = path;
     }
     else

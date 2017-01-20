@@ -35,8 +35,6 @@
 #include <objsec.h>
 #include <conditional.h>
 
-struct xsm_operations *original_ops = NULL;
-
 static u32 domain_sid(struct domain *dom)
 {
     struct domain_security_struct *dsec = dom->ssid;
@@ -136,6 +134,24 @@ static int get_irq_sid(int irq, u32 *sid, struct avc_audit_data *ad)
     return 0;
 }
 
+static int avc_unknown_permission(const char *name, int id)
+{
+    int rc;
+
+    if ( !flask_enforcing || security_get_allow_unknown() )
+    {
+        printk(XENLOG_G_WARNING "FLASK: Allowing unknown %s: %d.\n", name, id);
+        rc = 0;
+    }
+    else
+    {
+        printk(XENLOG_G_ERR "FLASK: Denying unknown %s: %d.\n", name, id);
+        rc = -EPERM;
+    }
+
+    return rc;
+}
+
 static int flask_domain_alloc_security(struct domain *d)
 {
     struct domain_security_struct *dsec;
@@ -225,8 +241,8 @@ static int flask_evtchn_interdomain(struct domain *d1, struct evtchn *chn1,
     rc = security_transition_sid(sid1, sid2, SECCLASS_EVENT, &newsid);
     if ( rc )
     {
-        printk("%s: security_transition_sid failed, rc=%d (domain=%d)\n",
-               __FUNCTION__, -rc, d2->domain_id);
+        printk("security_transition_sid failed, rc=%d, Dom%d\n",
+               -rc, d2->domain_id);
         return rc;
     }
 
@@ -271,7 +287,7 @@ static int flask_evtchn_send(struct domain *d, struct evtchn *chn)
         rc = 0;
         break;
     default:
-        rc = -EPERM;
+        rc = avc_unknown_permission("event channel state", chn->state);
     }
 
     return rc;
@@ -423,7 +439,7 @@ static int flask_console_io(struct domain *d, int cmd)
         perm = XEN__WRITECONSOLE;
         break;
     default:
-        return -EPERM;
+        return avc_unknown_permission("console_io", cmd);
     }
 
     return domain_has_xen(d, perm);
@@ -455,7 +471,7 @@ static int flask_profile(struct domain *d, int op)
         perm = XEN__PRIVPROFILE;
         break;
     default:
-        return -EPERM;
+        return avc_unknown_permission("xenoprof op", op);
     }
 
     return domain_has_xen(d, perm);
@@ -521,8 +537,7 @@ static int flask_domctl_scheduler_op(struct domain *d, int op)
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETSCHEDULER);
 
     default:
-        printk("flask_domctl_scheduler_op: Unknown op %d\n", op);
-        return -EPERM;
+        return avc_unknown_permission("domctl_scheduler_op", op);
     }
 }
 
@@ -537,8 +552,7 @@ static int flask_sysctl_scheduler_op(int op)
         return domain_has_xen(current->domain, XEN__GETSCHEDULER);
 
     default:
-        printk("flask_sysctl_scheduler_op: Unknown op %d\n", op);
-        return -EPERM;
+        return avc_unknown_permission("sysctl_scheduler_op", op);
     }
 }
 
@@ -630,10 +644,16 @@ static int flask_domctl(struct domain *d, int cmd)
     case XEN_DOMCTL_setdomainhandle:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETDOMAINHANDLE);
 
+    case XEN_DOMCTL_set_ext_vcpucontext:
+    case XEN_DOMCTL_set_vcpu_msrs:
     case XEN_DOMCTL_setvcpucontext:
+    case XEN_DOMCTL_setvcpuextstate:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETVCPUCONTEXT);
 
+    case XEN_DOMCTL_get_ext_vcpucontext:
+    case XEN_DOMCTL_get_vcpu_msrs:
     case XEN_DOMCTL_getvcpucontext:
+    case XEN_DOMCTL_getvcpuextstate:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETVCPUCONTEXT);
 
     case XEN_DOMCTL_getvcpuinfo:
@@ -674,20 +694,6 @@ static int flask_domctl(struct domain *d, int cmd)
 
     case XEN_DOMCTL_pin_mem_cacheattr:
         return current_has_perm(d, SECCLASS_HVM, HVM__CACHEATTR);
-
-    case XEN_DOMCTL_set_ext_vcpucontext:
-    case XEN_DOMCTL_set_vcpu_msrs:
-        return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETEXTVCPUCONTEXT);
-
-    case XEN_DOMCTL_get_ext_vcpucontext:
-    case XEN_DOMCTL_get_vcpu_msrs:
-        return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETEXTVCPUCONTEXT);
-
-    case XEN_DOMCTL_setvcpuextstate:
-        return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETVCPUEXTSTATE);
-
-    case XEN_DOMCTL_getvcpuextstate:
-        return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETVCPUEXTSTATE);
 
     case XEN_DOMCTL_sendtrigger:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__TRIGGER);
@@ -743,8 +749,7 @@ static int flask_domctl(struct domain *d, int cmd)
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SOFT_RESET);
 
     default:
-        printk("flask_domctl: Unknown op %d\n", cmd);
-        return -EPERM;
+        return avc_unknown_permission("domctl", cmd);
     }
 }
 
@@ -819,8 +824,7 @@ static int flask_sysctl(int cmd)
                                     XEN2__LIVEPATCH_OP, NULL);
 
     default:
-        printk("flask_sysctl: Unknown op %d\n", cmd);
-        return -EPERM;
+        return avc_unknown_permission("sysctl", cmd);
     }
 }
 
@@ -1137,7 +1141,7 @@ static inline int flask_page_offline(uint32_t cmd)
     case sysctl_query_page_offline:
         return flask_resource_use_core();
     default:
-        return -EPERM;
+        return avc_unknown_permission("page_offline", cmd);
     }
 }
 
@@ -1410,8 +1414,7 @@ static int flask_platform_op(uint32_t op)
                             SECCLASS_XEN2, XEN2__GET_SYMBOL, NULL);
 
     default:
-        printk("flask_platform_op: Unknown op %d\n", op);
-        return -EPERM;
+        return avc_unknown_permission("platform_op", op);
     }
 }
 
@@ -1442,7 +1445,7 @@ static int flask_shadow_control(struct domain *d, uint32_t op)
         perm = SHADOW__LOGDIRTY;
         break;
     default:
-        return -EPERM;
+        return avc_unknown_permission("shadow_control", op);
     }
 
     return current_has_perm(d, SECCLASS_SHADOW, perm);
@@ -1546,7 +1549,7 @@ static int flask_apic(struct domain *d, int cmd)
         perm = XEN__WRITEAPIC;
         break;
     default:
-        return -EPERM;
+        return avc_unknown_permission("apic", cmd);
     }
 
     return domain_has_xen(d, perm);
@@ -1812,7 +1815,7 @@ static struct xsm_operations flask_ops = {
     .xen_version = flask_xen_version,
 };
 
-static __init void flask_init(void)
+void __init flask_init(const void *policy_buffer, size_t policy_size)
 {
     int ret = -ENOENT;
 
@@ -1837,7 +1840,6 @@ static __init void flask_init(void)
 
     avc_init();
 
-    original_ops = xsm_ops;
     if ( register_xsm(&flask_ops) )
         panic("Flask: Unable to register with XSM");
 
@@ -1854,8 +1856,6 @@ static __init void flask_init(void)
     else
         printk(XENLOG_INFO "Flask:  Starting in permissive mode.\n");
 }
-
-xsm_initcall(flask_init);
 
 /*
  * Local variables:

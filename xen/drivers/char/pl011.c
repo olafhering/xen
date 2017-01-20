@@ -31,7 +31,7 @@
 #include <asm/io.h>
 
 static struct pl011 {
-    unsigned int baud, clock_hz, data_bits, parity, stop_bits;
+    unsigned int data_bits, parity, stop_bits;
     unsigned int irq;
     void __iomem *regs;
     /* UART with IRQ line: interrupt-driven I/O. */
@@ -41,6 +41,7 @@ static struct pl011 {
     /* struct timer timer; */
     /* unsigned int timeout_ms; */
     /* bool_t probing, intr_works; */
+    bool sbsa;  /* ARM SBSA generic interface */
 } pl011_com = {0};
 
 /* These parity settings can be ORed directly into the LCR. */
@@ -50,14 +51,21 @@ static struct pl011 {
 #define PARITY_MARK  (PEN|SPS)
 #define PARITY_SPACE (PEN|EPS|SPS)
 
+/* SBSA v2.x document requires, all reads/writes must be 32-bit accesses */
 #define pl011_read(uart, off)           readl((uart)->regs + (off))
 #define pl011_write(uart, off,val)      writel((val), (uart)->regs + (off))
+
+static unsigned int pl011_intr_status(struct pl011 *uart)
+{
+    /* UARTMIS is not documented in SBSA v2.x, so use UARTRIS/UARTIMSC. */
+    return (pl011_read(uart, RIS) & pl011_read(uart, IMSC));
+}
 
 static void pl011_interrupt(int irq, void *data, struct cpu_user_regs *regs)
 {
     struct serial_port *port = data;
     struct pl011 *uart = port->uart;
-    unsigned int status = pl011_read(uart, MIS);
+    unsigned int status = pl011_intr_status(uart);
 
     if ( status )
     {
@@ -76,7 +84,7 @@ static void pl011_interrupt(int irq, void *data, struct cpu_user_regs *regs)
             if ( status & (TXI) )
                 serial_tx_interrupt(port, regs);
 
-            status = pl011_read(uart, MIS);
+            status = pl011_intr_status(uart);
         } while (status != 0);
     }
 }
@@ -84,36 +92,22 @@ static void pl011_interrupt(int irq, void *data, struct cpu_user_regs *regs)
 static void __init pl011_init_preirq(struct serial_port *port)
 {
     struct pl011 *uart = port->uart;
-    unsigned int divisor;
     unsigned int cr;
 
     /* No interrupts, please. */
     pl011_write(uart, IMSC, 0);
 
-    /* Definitely no DMA */
-    pl011_write(uart, DMACR, 0x0);
+    if ( !uart->sbsa )
+    {
+        /* Definitely no DMA */
+        pl011_write(uart, DMACR, 0x0);
 
-    /* Line control and baud-rate generator. */
-    if ( uart->baud != BAUD_AUTO )
-    {
-        /* Baud rate specified: program it into the divisor latch. */
-        divisor = (uart->clock_hz << 2) / uart->baud; /* clk << 6 / bd << 4 */
-        pl011_write(uart, FBRD, divisor & 0x3f);
-        pl011_write(uart, IBRD, divisor >> 6);
+        /* This write must follow FBRD and IBRD writes. */
+        pl011_write(uart, LCR_H, (uart->data_bits - 5) << 5
+                                | FEN
+                                | ((uart->stop_bits - 1) << 3)
+                                | uart->parity);
     }
-    else
-    {
-        /* Baud rate already set: read it out from the divisor latch. */
-        divisor = (pl011_read(uart, IBRD) << 6) | (pl011_read(uart, FBRD));
-        if (!divisor)
-            panic("pl011: No Baud rate configured\n");
-        uart->baud = (uart->clock_hz << 2) / divisor;
-    }
-    /* This write must follow FBRD and IBRD writes. */
-    pl011_write(uart, LCR_H, (uart->data_bits - 5) << 5
-                            | FEN
-                            | ((uart->stop_bits - 1) << 3)
-                            | uart->parity);
     /* Clear errors */
     pl011_write(uart, RSR, 0);
 
@@ -121,10 +115,13 @@ static void __init pl011_init_preirq(struct serial_port *port)
     pl011_write(uart, IMSC, 0);
     pl011_write(uart, ICR, ALLI);
 
-    /* Enable the UART for RX and TX; keep RTS and DTR */
-    cr = pl011_read(uart, CR);
-    cr &= RTS | DTR;
-    pl011_write(uart, CR, cr | RXE | TXE | UARTEN);
+    if ( !uart->sbsa )
+    {
+        /* Enable the UART for RX and TX; keep RTS and DTR */
+        cr = pl011_read(uart, CR);
+        cr &= RTS | DTR;
+        pl011_write(uart, CR, cr | RXE | TXE | UARTEN);
+    }
 }
 
 static void __init pl011_init_postirq(struct serial_port *port)
@@ -226,17 +223,16 @@ static struct uart_driver __read_mostly pl011_driver = {
     .vuart_info   = pl011_vuart,
 };
 
-static int __init pl011_uart_init(int irq, u64 addr, u64 size)
+static int __init pl011_uart_init(int irq, u64 addr, u64 size, bool sbsa)
 {
     struct pl011 *uart;
 
     uart = &pl011_com;
     uart->irq       = irq;
-    uart->clock_hz  = 0x16e3600;
-    uart->baud      = BAUD_AUTO;
     uart->data_bits = 8;
     uart->parity    = PARITY_NONE;
     uart->stop_bits = 1;
+    uart->sbsa      = sbsa;
 
     uart->regs = ioremap_nocache(addr, size);
     if ( !uart->regs )
@@ -285,7 +281,7 @@ static int __init pl011_dt_uart_init(struct dt_device_node *dev,
         return -EINVAL;
     }
 
-    res = pl011_uart_init(res, addr, size);
+    res = pl011_uart_init(res, addr, size, false);
     if ( res < 0 )
     {
         printk("pl011: Unable to initialize\n");
@@ -316,6 +312,7 @@ static int __init pl011_acpi_uart_init(const void *data)
     acpi_status status;
     struct acpi_table_spcr *spcr = NULL;
     int res;
+    bool sbsa;
 
     status = acpi_get_table(ACPI_SIG_SPCR, 0,
                             (struct acpi_table_header **)&spcr);
@@ -326,11 +323,14 @@ static int __init pl011_acpi_uart_init(const void *data)
         return -EINVAL;
     }
 
+    sbsa = (spcr->interface_type == ACPI_DBG2_SBSA ||
+            spcr->interface_type == ACPI_DBG2_SBSA_32);
+
     /* trigger/polarity information is not available in spcr */
     irq_set_type(spcr->interrupt, IRQ_TYPE_LEVEL_HIGH);
 
     res = pl011_uart_init(spcr->interrupt, spcr->serial_port.address,
-                          PAGE_SIZE);
+                          PAGE_SIZE, sbsa);
     if ( res < 0 )
     {
         printk("pl011: Unable to initialize\n");
@@ -344,6 +344,17 @@ ACPI_DEVICE_START(apl011, "PL011 UART", DEVICE_SERIAL)
         .class_type = ACPI_DBG2_PL011,
         .init = pl011_acpi_uart_init,
 ACPI_DEVICE_END
+
+ACPI_DEVICE_START(asbsa_uart, "SBSA UART", DEVICE_SERIAL)
+    .class_type = ACPI_DBG2_SBSA,
+    .init = pl011_acpi_uart_init,
+ACPI_DEVICE_END
+
+ACPI_DEVICE_START(asbsa32_uart, "SBSA32 UART", DEVICE_SERIAL)
+    .class_type = ACPI_DBG2_SBSA_32,
+    .init = pl011_acpi_uart_init,
+ACPI_DEVICE_END
+
 #endif
 
 /*

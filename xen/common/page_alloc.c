@@ -827,14 +827,9 @@ static struct page_info *alloc_heap_pages(
         BUG_ON(pg[i].count_info != PGC_state_free);
         pg[i].count_info = PGC_state_inuse;
 
-        if ( pg[i].u.free.need_tlbflush &&
-             (pg[i].tlbflush_timestamp <= tlbflush_current_time()) &&
-             (!need_tlbflush ||
-              (pg[i].tlbflush_timestamp > tlbflush_timestamp)) )
-        {
-            need_tlbflush = 1;
-            tlbflush_timestamp = pg[i].tlbflush_timestamp;
-        }
+        if ( !(memflags & MEMF_no_tlbflush) )
+            accumulate_tlbflush(&need_tlbflush, &pg[i],
+                                &tlbflush_timestamp);
 
         /* Initialise fields which have other uses for free pages. */
         pg[i].u.inuse.type_info = 0;
@@ -849,15 +844,7 @@ static struct page_info *alloc_heap_pages(
     spin_unlock(&heap_lock);
 
     if ( need_tlbflush )
-    {
-        cpumask_t mask = cpu_online_map;
-        tlbflush_filter(mask, tlbflush_timestamp);
-        if ( !cpumask_empty(&mask) )
-        {
-            perfc_incr(need_flush_tlb_flush);
-            flush_tlb_mask(&mask);
-        }
-    }
+        filtered_flush_tlb_mask(tlbflush_timestamp);
 
     return pg;
 }
@@ -1368,16 +1355,7 @@ void __init end_boot_allocator(void)
     init_heap_pages(virt_to_page(bootmem_region_list), 1);
 
     if ( !dma_bitsize && (num_online_nodes() > 1) )
-    {
-#ifdef CONFIG_X86
-        dma_bitsize = min_t(unsigned int,
-                            flsl(NODE_DATA(0)->node_spanned_pages) - 1
-                            + PAGE_SHIFT - 2,
-                            32);
-#else
-        dma_bitsize = 32;
-#endif
-    }
+        dma_bitsize = arch_get_dma_bitsize();
 
     printk("Domain heap initialised");
     if ( dma_bitsize )
@@ -1740,6 +1718,7 @@ int assign_pages(
     unsigned int order,
     unsigned int memflags)
 {
+    int rc = 0;
     unsigned long i;
 
     spin_lock(&d->page_alloc_lock);
@@ -1748,7 +1727,8 @@ int assign_pages(
     {
         gdprintk(XENLOG_INFO, "Cannot assign page to domain%d -- dying.\n",
                 d->domain_id);
-        goto fail;
+        rc = -EINVAL;
+        goto out;
     }
 
     if ( !(memflags & MEMF_no_refcount) )
@@ -1759,7 +1739,8 @@ int assign_pages(
                 gprintk(XENLOG_INFO, "Over-allocation for domain %u: "
                         "%u > %u\n", d->domain_id,
                         d->tot_pages + (1 << order), d->max_pages);
-            goto fail;
+            rc = -E2BIG;
+            goto out;
         }
 
         if ( unlikely(d->tot_pages == 0) )
@@ -1778,12 +1759,9 @@ int assign_pages(
         page_list_add_tail(&pg[i], &d->page_list);
     }
 
+ out:
     spin_unlock(&d->page_alloc_lock);
-    return 0;
-
- fail:
-    spin_unlock(&d->page_alloc_lock);
-    return -1;
+    return rc;
 }
 
 

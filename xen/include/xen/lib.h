@@ -26,6 +26,12 @@
 #define BUILD_BUG_ON(cond) ((void)BUILD_BUG_ON_ZERO(cond))
 #endif
 
+#ifdef CONFIG_GCOV
+#define gcov_string "gcov=y"
+#else
+#define gcov_string ""
+#endif
+
 #ifndef NDEBUG
 #define ASSERT(p) \
     do { if ( unlikely(!(p)) ) assert_failed(#p); } while (0)
@@ -68,8 +74,10 @@ extern void debugtrace_dump(void);
 extern void debugtrace_printk(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
 #else
-#define debugtrace_dump()          ((void)0)
-#define debugtrace_printk(_f, ...) ((void)0)
+static inline void debugtrace_dump(void) {}
+static inline void
+ __attribute__ ((format (printf, 1, 2)))
+debugtrace_printk(const char *fmt, ...) {}
 #endif
 
 /* Allows us to use '%p' as general-purpose machine-word format char. */
@@ -137,19 +145,21 @@ unsigned long long parse_size_and_unit(const char *s, const char **ps);
 
 uint64_t muldiv64(uint64_t a, uint32_t b, uint32_t c);
 
-#define TAINT_UNSAFE_SMP                (1<<0)
-#define TAINT_MACHINE_CHECK             (1<<1)
-#define TAINT_BAD_PAGE                  (1<<2)
-#define TAINT_SYNC_CONSOLE              (1<<3)
-#define TAINT_ERROR_INJECT              (1<<4)
-extern int tainted;
+#define TAINT_SYNC_CONSOLE              (1u << 0)
+#define TAINT_MACHINE_CHECK             (1u << 1)
+#define TAINT_ERROR_INJECT              (1u << 2)
+#define TAINT_HVM_FEP                   (1u << 3)
+extern unsigned int tainted;
 #define TAINT_STRING_MAX_LEN            20
 extern char *print_tainted(char *str);
-extern void add_taint(unsigned);
+extern void add_taint(unsigned int taint);
 
 struct cpu_user_regs;
 void dump_execstate(struct cpu_user_regs *);
 
 void init_constructors(void);
+
+void *bsearch(const void *key, const void *base, size_t num, size_t size,
+              int (*cmp)(const void *key, const void *elt));
 
 #endif /* __LIB_H__ */

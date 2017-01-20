@@ -52,12 +52,14 @@ static int libxl__create_qemu_logfile(libxl__gc *gc, char *name)
     if (rc) return rc;
 
     logfile_w = open(logfile, O_WRONLY|O_CREAT|O_APPEND, 0644);
-    free(logfile);
 
     if (logfile_w < 0) {
-        LOGE(ERROR, "unable to open Qemu logfile");
+        LOGE(ERROR, "unable to open Qemu logfile: %s", logfile);
+        free(logfile);
         return ERROR_FAIL;
     }
+
+    free(logfile);
 
     return logfile_w;
 }
@@ -581,7 +583,7 @@ static int libxl__build_device_model_args_old(libxl__gc *gc,
         if (b_info->u.hvm.soundhw) {
             flexarray_vappend(dm_args, "-soundhw", b_info->u.hvm.soundhw, NULL);
         }
-        if (libxl_defbool_val(b_info->u.hvm.acpi)) {
+        if (libxl__acpi_defbool_val(b_info)) {
             flexarray_append(dm_args, "-acpi");
         }
         if (b_info->max_vcpus > 1) {
@@ -1202,7 +1204,7 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
         if (b_info->u.hvm.soundhw) {
             flexarray_vappend(dm_args, "-soundhw", b_info->u.hvm.soundhw, NULL);
         }
-        if (!libxl_defbool_val(b_info->u.hvm.acpi)) {
+        if (!libxl__acpi_defbool_val(b_info)) {
             flexarray_append(dm_args, "-no-acpi");
         }
         if (b_info->max_vcpus > 1) {
@@ -1422,12 +1424,6 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                                                         format,
                                                         &disks[i],
                                                         colo_mode);
-                } else if (strncmp(disks[i].vdev, "xvd", 3) == 0) {
-                    /*
-                     * Do not add any emulated disk when PV disk are
-                     * explicitly asked for.
-                     */
-                    continue;
                 } else if (disk < 6 && b_info->u.hvm.hdtype == LIBXL_HDTYPE_AHCI) {
                     if (!disks[i].readwrite) {
                         LOG(ERROR, "qemu-xen doesn't support read-only AHCI disk drivers");
@@ -2352,8 +2348,9 @@ int libxl__destroy_device_model(libxl__gc *gc, uint32_t domid)
 /* Return 0 if no dm needed, 1 if needed and <0 if error. */
 int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
 {
-    int i, ret;
+    int idx, i, ret, num;
     uint32_t domid;
+    const struct libxl_device_type *dt;
 
     ret = libxl__get_domid(gc, &domid);
     if (ret) {
@@ -2366,11 +2363,21 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
         goto out;
     }
 
-    for (i = 0; i < d_config->num_disks; i++) {
-        if (d_config->disks[i].backend == LIBXL_DISK_BACKEND_QDISK &&
-            d_config->disks[i].backend_domid == domid) {
-            ret = 1;
-            goto out;
+    for (idx = 0;; idx++) {
+        dt = device_type_tbl[idx];
+        if (!dt)
+            break;
+
+        num = *libxl__device_type_get_num(dt, d_config);
+        if (!dt->dm_needed || !num)
+            continue;
+
+        for (i = 0; i < num; i++) {
+            if (dt->dm_needed(libxl__device_type_get_elem(dt, d_config, i),
+                              domid)) {
+                ret = 1;
+                goto out;
+            }
         }
     }
 
@@ -2379,14 +2386,6 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
             /* xenconsoled is limited to the first console only.
                Until this restriction is removed we must use qemu for
                secondary consoles which includes all channels. */
-            ret = 1;
-            goto out;
-        }
-    }
-
-    for (i = 0; i < d_config->num_usbctrls; i++) {
-       if (d_config->usbctrls[i].type == LIBXL_USBCTRL_TYPE_QUSB &&
-           d_config->usbctrls[i].backend_domid == domid) {
             ret = 1;
             goto out;
         }

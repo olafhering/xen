@@ -52,7 +52,7 @@ enum flask_bootparam_t {
 extern enum flask_bootparam_t flask_bootparam;
 extern int flask_mls_enabled;
 
-int security_load_policy(void * data, size_t len);
+int security_load_policy(const void *data, size_t len);
 
 struct av_decision {
     u32 allowed;
@@ -78,7 +78,7 @@ int security_sid_to_context(u32 sid, char **scontext, u32 *scontext_len);
 
 int security_context_to_sid(char *scontext, u32 scontext_len, u32 *out_sid);
 
-int security_get_user_sids(u32 callsid, char *username, u32 **sids, u32 *nel);
+int security_get_allow_unknown(void);
 
 int security_irq_sid(int pirq, u32 *out_sid);
 

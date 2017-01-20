@@ -244,7 +244,7 @@ static int __get_paged_frame(unsigned long gfn, unsigned long *frame, struct pag
                               (readonly) ? P2M_ALLOC : P2M_UNSHARE);
     if ( !(*page) )
     {
-        *frame = INVALID_MFN;
+        *frame = mfn_x(INVALID_MFN);
         if ( p2m_is_shared(p2mt) )
             return GNTST_eagain;
         if ( p2m_is_paging(p2mt) )
@@ -256,11 +256,11 @@ static int __get_paged_frame(unsigned long gfn, unsigned long *frame, struct pag
     }
     *frame = page_to_mfn(*page);
 #else
-    *frame = gmfn_to_mfn(rd, gfn);
+    *frame = mfn_x(gfn_to_mfn(rd, _gfn(gfn)));
     *page = mfn_valid(*frame) ? mfn_to_page(*frame) : NULL;
     if ( (!(*page)) || (!get_page(*page, rd)) )
     {
-        *frame = INVALID_MFN;
+        *frame = mfn_x(INVALID_MFN);
         *page = NULL;
         rc = GNTST_bad_page;
     }
@@ -1785,10 +1785,10 @@ gnttab_transfer(
             p2m_type_t __p2mt;
             mfn = mfn_x(get_gfn_unshare(d, gop.mfn, &__p2mt));
             if ( p2m_is_shared(__p2mt) || !p2m_is_valid(__p2mt) )
-                mfn = INVALID_MFN;
+                mfn = mfn_x(INVALID_MFN);
         }
 #else
-        mfn = gmfn_to_mfn(d, gop.mfn);
+        mfn = mfn_x(gfn_to_mfn(d, _gfn(gop.mfn)));
 #endif
 
         /* Check the passed page frame for basic validity. */
@@ -1818,7 +1818,7 @@ gnttab_transfer(
             goto copyback;
         }
 
-        guest_physmap_remove_page(d, gop.mfn, mfn, 0);
+        guest_physmap_remove_page(d, _gfn(gop.mfn), _mfn(mfn), 0);
         gnttab_flush_tlb(d);
 
         /* Find the target domain. */
@@ -1946,7 +1946,7 @@ gnttab_transfer(
         {
             grant_entry_v1_t *sha = &shared_entry_v1(e->grant_table, gop.ref);
 
-            guest_physmap_add_page(e, sha->frame, mfn, 0);
+            guest_physmap_add_page(e, _gfn(sha->frame), _mfn(mfn), 0);
             if ( !paging_mode_translate(e) )
                 sha->frame = mfn;
         }
@@ -1954,7 +1954,8 @@ gnttab_transfer(
         {
             grant_entry_v2_t *sha = &shared_entry_v2(e->grant_table, gop.ref);
 
-            guest_physmap_add_page(e, sha->full_page.frame, mfn, 0);
+            guest_physmap_add_page(e, _gfn(sha->full_page.frame),
+                                   _mfn(mfn), 0);
             if ( !paging_mode_translate(e) )
                 sha->full_page.frame = mfn;
         }
@@ -3024,7 +3025,7 @@ do_grant_table_op(
         return -EINVAL;
 
     if ( (cmd &= GNTTABOP_CMD_MASK) != GNTTABOP_cache_flush && opaque_in )
-        return -ENOSYS;
+        return -EINVAL;
     
     rc = -EFAULT;
     switch ( cmd )
@@ -3436,6 +3437,53 @@ void grant_table_init_vcpu(struct vcpu *v)
     v->maptrack_head = MAPTRACK_TAIL;
     v->maptrack_tail = MAPTRACK_TAIL;
 }
+
+#ifdef CONFIG_HAS_MEM_SHARING
+int mem_sharing_gref_to_gfn(struct grant_table *gt, grant_ref_t ref,
+                            gfn_t *gfn, uint16_t *status)
+{
+    int rc = 0;
+    uint16_t flags = 0;
+
+    grant_read_lock(gt);
+
+    if ( gt->gt_version < 1 )
+        rc = -EINVAL;
+    else if ( ref >= nr_grant_entries(gt) )
+        rc = -ENOENT;
+    else if ( gt->gt_version == 1 )
+    {
+        const grant_entry_v1_t *sha1 = &shared_entry_v1(gt, ref);
+
+        flags = sha1->flags;
+        *gfn = _gfn(sha1->frame);
+    }
+    else
+    {
+        const grant_entry_v2_t *sha2 = &shared_entry_v2(gt, ref);
+
+        flags = sha2->hdr.flags;
+        if ( flags & GTF_sub_page )
+           *gfn = _gfn(sha2->sub_page.frame);
+        else
+           *gfn = _gfn(sha2->full_page.frame);
+    }
+
+    if ( !rc && (flags & GTF_type_mask) != GTF_permit_access )
+        rc = -ENXIO;
+    else if ( !rc && status )
+    {
+        if ( gt->gt_version == 1 )
+            *status = flags;
+        else
+            *status = status_entry(gt, ref);
+    }
+
+    grant_read_unlock(gt);
+
+    return rc;
+}
+#endif
 
 static void gnttab_usage_print(struct domain *rd)
 {

@@ -167,7 +167,7 @@ bool_t handle_hvm_io_completion(struct vcpu *v)
     {
         struct hvm_emulate_ctxt ctxt;
 
-        hvm_emulate_prepare(&ctxt, guest_cpu_user_regs());
+        hvm_emulate_init_once(&ctxt, guest_cpu_user_regs());
         vmx_realmode_emulate_one(&ctxt);
         hvm_emulate_writeback(&ctxt);
 
@@ -204,7 +204,7 @@ static void hvm_free_ioreq_gmfn(struct domain *d, unsigned long gmfn)
 {
     unsigned int i = gmfn - d->arch.hvm_domain.ioreq_gmfn.base;
 
-    if ( gmfn != INVALID_GFN )
+    if ( gmfn != gfn_x(INVALID_GFN) )
         set_bit(i, &d->arch.hvm_domain.ioreq_gmfn.mask);
 }
 
@@ -267,8 +267,8 @@ bool_t is_ioreq_server_page(struct domain *d, const struct page_info *page)
 static void hvm_remove_ioreq_gmfn(
     struct domain *d, struct hvm_ioreq_page *iorp)
 {
-    guest_physmap_remove_page(d, iorp->gmfn,
-                              page_to_mfn(iorp->page), 0);
+    guest_physmap_remove_page(d, _gfn(iorp->gmfn),
+                              _mfn(page_to_mfn(iorp->page)), 0);
     clear_page(iorp->va);
 }
 
@@ -279,8 +279,8 @@ static int hvm_add_ioreq_gmfn(
 
     clear_page(iorp->va);
 
-    rc = guest_physmap_add_page(d, iorp->gmfn,
-                                page_to_mfn(iorp->page), 0);
+    rc = guest_physmap_add_page(d, _gfn(iorp->gmfn),
+                                _mfn(page_to_mfn(iorp->page)), 0);
     if ( rc == 0 )
         paging_mark_dirty(d, page_to_mfn(iorp->page));
 
@@ -420,7 +420,7 @@ static int hvm_ioreq_server_map_pages(struct hvm_ioreq_server *s,
     if ( rc )
         return rc;
 
-    if ( bufioreq_pfn != INVALID_GFN )
+    if ( bufioreq_pfn != gfn_x(INVALID_GFN) )
         rc = hvm_map_ioreq_page(s, 1, bufioreq_pfn);
 
     if ( rc )
@@ -434,8 +434,8 @@ static int hvm_ioreq_server_setup_pages(struct hvm_ioreq_server *s,
                                         bool_t handle_bufioreq)
 {
     struct domain *d = s->domain;
-    unsigned long ioreq_pfn = INVALID_GFN;
-    unsigned long bufioreq_pfn = INVALID_GFN;
+    unsigned long ioreq_pfn = gfn_x(INVALID_GFN);
+    unsigned long bufioreq_pfn = gfn_x(INVALID_GFN);
     int rc;
 
     if ( is_default )

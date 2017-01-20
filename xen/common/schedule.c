@@ -379,8 +379,15 @@ void sched_destroy_vcpu(struct vcpu *v)
     SCHED_OP(VCPU2OP(v), free_vdata, v->sched_priv);
 }
 
-int sched_init_domain(struct domain *d)
+int sched_init_domain(struct domain *d, int poolid)
 {
+    int ret;
+
+    ASSERT(d->cpupool == NULL);
+
+    if ( (ret = cpupool_add_domain(d, poolid)) )
+        return ret;
+
     SCHED_STAT_CRANK(dom_init);
     TRACE_1D(TRC_SCHED_DOM_ADD, d->domain_id);
     return SCHED_OP(DOM2OP(d), init_domain, d);
@@ -388,9 +395,13 @@ int sched_init_domain(struct domain *d)
 
 void sched_destroy_domain(struct domain *d)
 {
+    ASSERT(d->cpupool != NULL || is_idle_domain(d));
+
     SCHED_STAT_CRANK(dom_destroy);
     TRACE_1D(TRC_SCHED_DOM_REM, d->domain_id);
     SCHED_OP(DOM2OP(d), destroy_domain, d);
+
+    cpupool_rm_domain(d);
 }
 
 void vcpu_sleep_nosync(struct vcpu *v)
@@ -936,6 +947,8 @@ long vcpu_yield(void)
     SCHED_OP(VCPU2OP(v), yield, v);
     vcpu_schedule_unlock_irq(lock, v);
 
+    SCHED_STAT_CRANK(vcpu_yield);
+
     TRACE_2D(TRC_SCHED_YIELD, current->domain->domain_id, current->vcpu_id);
     raise_softirq(SCHEDULE_SOFTIRQ);
     return 0;
@@ -1109,7 +1122,7 @@ ret_t do_sched_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                  d->domain_id, current->vcpu_id, sched_shutdown.reason);
 
         spin_lock(&d->shutdown_lock);
-        if ( d->shutdown_code == -1 )
+        if ( d->shutdown_code == SHUTDOWN_CODE_INVALID )
             d->shutdown_code = (u8)sched_shutdown.reason;
         spin_unlock(&d->shutdown_lock);
 
@@ -1377,11 +1390,11 @@ static void schedule(void)
         return continue_running(prev);
     }
 
-    TRACE_2D(TRC_SCHED_SWITCH_INFPREV,
-             prev->domain->domain_id,
+    TRACE_3D(TRC_SCHED_SWITCH_INFPREV,
+             prev->domain->domain_id, prev->vcpu_id,
              now - prev->runstate.state_entry_time);
-    TRACE_3D(TRC_SCHED_SWITCH_INFNEXT,
-             next->domain->domain_id,
+    TRACE_4D(TRC_SCHED_SWITCH_INFNEXT,
+             next->domain->domain_id, next->vcpu_id,
              (next->runstate.state == RUNSTATE_runnable) ?
              (now - next->runstate.state_entry_time) : 0,
              next_slice.time);
@@ -1625,7 +1638,8 @@ void __init scheduler_init(void)
     {
         printk("Could not find scheduler: %s\n", opt_sched);
         for ( i = 0; i < NUM_SCHEDULERS; i++ )
-            if ( schedulers[i] )
+            if ( schedulers[i] &&
+                 !strcmp(schedulers[i]->opt_name, CONFIG_SCHED_DEFAULT) )
             {
                 ops = *schedulers[i];
                 break;

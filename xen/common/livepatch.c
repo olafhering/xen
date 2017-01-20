@@ -23,6 +23,7 @@
 #include <xen/wait.h>
 #include <xen/livepatch_elf.h>
 #include <xen/livepatch.h>
+#include <xen/livepatch_payload.h>
 
 #include <asm/event.h>
 
@@ -52,6 +53,8 @@ struct livepatch_build_id {
 struct payload {
     uint32_t state;                      /* One of the LIVEPATCH_STATE_*. */
     int32_t rc;                          /* 0 or -XEN_EXX. */
+    bool reverted;                       /* Whether it was reverted. */
+    bool safe_to_reapply;                /* Can apply safely after revert. */
     struct list_head list;               /* Linked to 'payload_list'. */
     const void *text_addr;               /* Virtual address of .text. */
     size_t text_size;                    /* .. and its size. */
@@ -70,7 +73,11 @@ struct payload {
     unsigned int nsyms;                  /* Nr of entries in .strtab and symbols. */
     struct livepatch_build_id id;        /* ELFNOTE_DESC(.note.gnu.build-id) of the payload. */
     struct livepatch_build_id dep;       /* ELFNOTE_DESC(.livepatch.depends). */
-    char name[XEN_LIVEPATCH_NAME_SIZE]; /* Name of it. */
+    livepatch_loadcall_t *const *load_funcs;   /* The array of funcs to call after */
+    livepatch_unloadcall_t *const *unload_funcs;/* load and unload of the payload. */
+    unsigned int n_load_funcs;           /* Nr of the funcs to load and execute. */
+    unsigned int n_unload_funcs;         /* Nr of funcs to call durung unload. */
+    char name[XEN_LIVEPATCH_NAME_SIZE];  /* Name of it. */
 };
 
 /* Defines an outstanding patching action. */
@@ -121,7 +128,7 @@ static int verify_payload(const xen_sysctl_livepatch_upload_t *upload, char *n)
     if ( !upload->size )
         return -EINVAL;
 
-    if ( upload->size > MB(2) )
+    if ( upload->size > LIVEPATCH_MAX_SIZE )
         return -EINVAL;
 
     if ( !guest_handle_okay(upload->payload, upload->size) )
@@ -230,6 +237,30 @@ static const char *livepatch_symbols_lookup(unsigned long addr,
     return n;
 }
 
+/* Lookup function's old address if not already resolved. */
+static int resolve_old_address(struct livepatch_func *f,
+                               const struct livepatch_elf *elf)
+{
+    if ( f->old_addr )
+        return 0;
+
+    f->old_addr = (void *)symbols_lookup_by_name(f->name);
+    if ( !f->old_addr )
+    {
+        f->old_addr = (void *)livepatch_symbols_lookup_by_name(f->name);
+        if ( !f->old_addr )
+        {
+            dprintk(XENLOG_ERR, LIVEPATCH "%s: Could not resolve old address of %s\n",
+                    elf->name, f->name);
+            return -ENOENT;
+        }
+    }
+    dprintk(XENLOG_DEBUG, LIVEPATCH "%s: Resolved old address %s => %p\n",
+            elf->name, f->name, f->old_addr);
+
+    return 0;
+}
+
 static struct payload *find_payload(const char *name)
 {
     struct payload *data, *found = NULL;
@@ -284,7 +315,7 @@ static void calc_section(const struct livepatch_elf_sec *sec, size_t *size,
 static int move_payload(struct payload *payload, struct livepatch_elf *elf)
 {
     void *text_buf, *ro_buf, *rw_buf;
-    unsigned int i;
+    unsigned int i, rw_buf_sec, rw_buf_cnt = 0;
     size_t size = 0;
     unsigned int *offset;
     int rc = 0;
@@ -301,8 +332,11 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
          * and .shstrtab. For the non-relocate we allocate and copy these
          * via other means - and the .rel we can ignore as we only use it
          * once during loading.
+         *
+         * Also ignore sections with zero size. Those can be for example:
+         * data, or .bss.
          */
-        if ( !(elf->sec[i].sec->sh_flags & SHF_ALLOC) )
+        if ( livepatch_elf_ignore_section(elf->sec[i].sec) )
             offset[i] = UINT_MAX;
         else if ( (elf->sec[i].sec->sh_flags & SHF_EXECINSTR) &&
                    !(elf->sec[i].sec->sh_flags & SHF_WRITE) )
@@ -350,14 +384,18 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
 
     for ( i = 1; i < elf->hdr->e_shnum; i++ )
     {
-        if ( elf->sec[i].sec->sh_flags & SHF_ALLOC )
+        if ( !livepatch_elf_ignore_section(elf->sec[i].sec) )
         {
             void *buf;
 
             if ( elf->sec[i].sec->sh_flags & SHF_EXECINSTR )
                 buf = text_buf;
             else if ( elf->sec[i].sec->sh_flags & SHF_WRITE )
+            {
                 buf = rw_buf;
+                rw_buf_sec = i;
+                rw_buf_cnt++;
+            }
             else
                 buf = ro_buf;
 
@@ -378,6 +416,10 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
         }
     }
 
+    /* Only one RW section with non-zero size: .livepatch.funcs */
+    if ( rw_buf_cnt == 1 &&
+         !strcmp(elf->sec[rw_buf_sec].name, ELF_LIVEPATCH_FUNC) )
+        payload->safe_to_reapply = true;
  out:
     xfree(offset);
 
@@ -386,16 +428,17 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
 
 static int secure_payload(struct payload *payload, struct livepatch_elf *elf)
 {
-    int rc;
+    int rc = 0;
     unsigned int text_pages, rw_pages, ro_pages;
 
     text_pages = PFN_UP(payload->text_size);
-    ASSERT(text_pages);
 
-    rc = arch_livepatch_secure(payload->text_addr, text_pages, LIVEPATCH_VA_RX);
-    if ( rc )
-        return rc;
-
+    if ( text_pages )
+    {
+        rc = arch_livepatch_secure(payload->text_addr, text_pages, LIVEPATCH_VA_RX);
+        if ( rc )
+            return rc;
+    }
     rw_pages = PFN_UP(payload->rw_size);
     if ( rw_pages )
     {
@@ -485,7 +528,8 @@ static int prepare_payload(struct payload *payload,
             return -EOPNOTSUPP;
         }
 
-        if ( !f->new_addr || !f->new_size )
+        /* 'old_addr', 'new_addr', 'new_size' can all be zero. */
+        if ( !f->old_size )
         {
             dprintk(XENLOG_ERR, LIVEPATCH "%s: Address or size fields are zero!\n",
                     elf->name);
@@ -496,25 +540,34 @@ static int prepare_payload(struct payload *payload,
         if ( rc )
             return rc;
 
-        /* Lookup function's old address if not already resolved. */
-        if ( !f->old_addr )
-        {
-            f->old_addr = (void *)symbols_lookup_by_name(f->name);
-            if ( !f->old_addr )
-            {
-                f->old_addr = (void *)livepatch_symbols_lookup_by_name(f->name);
-                if ( !f->old_addr )
-                {
-                    dprintk(XENLOG_ERR, LIVEPATCH "%s: Could not resolve old address of %s\n",
-                            elf->name, f->name);
-                    return -ENOENT;
-                }
-            }
-            dprintk(XENLOG_DEBUG, LIVEPATCH "%s: Resolved old address %s => %p\n",
-                    elf->name, f->name, f->old_addr);
-        }
+        rc = resolve_old_address(f, elf);
+        if ( rc )
+            return rc;
+
+        rc = livepatch_verify_distance(f);
+        if ( rc )
+            return rc;
     }
 
+    sec = livepatch_elf_sec_by_name(elf, ".livepatch.hooks.load");
+    if ( sec )
+    {
+        if ( sec->sec->sh_size % sizeof(*payload->load_funcs) )
+            return -EINVAL;
+
+        payload->load_funcs = sec->load_addr;
+        payload->n_load_funcs = sec->sec->sh_size / sizeof(*payload->load_funcs);
+    }
+
+    sec = livepatch_elf_sec_by_name(elf, ".livepatch.hooks.unload");
+    if ( sec )
+    {
+        if ( sec->sec->sh_size % sizeof(*payload->unload_funcs) )
+            return -EINVAL;
+
+        payload->unload_funcs = sec->load_addr;
+        payload->n_unload_funcs = sec->sec->sh_size / sizeof(*payload->unload_funcs);
+    }
     sec = livepatch_elf_sec_by_name(elf, ELF_BUILD_ID_NOTE);
     if ( sec )
     {
@@ -592,10 +645,10 @@ static int prepare_payload(struct payload *payload,
                                   sizeof(*region->frame[i].bugs);
     }
 
-#ifndef CONFIG_ARM
     sec = livepatch_elf_sec_by_name(elf, ".altinstructions");
     if ( sec )
     {
+#ifdef CONFIG_HAS_ALTERNATIVE
         struct alt_instr *a, *start, *end;
 
         if ( sec->sec->sh_size % sizeof(*a) )
@@ -610,8 +663,8 @@ static int prepare_payload(struct payload *payload,
 
         for ( a = start; a < end; a++ )
         {
-            const void *instr = &a->instr_offset + a->instr_offset;
-            const void *replacement = &a->repl_offset + a->repl_offset;
+            const void *instr = ALT_ORIG_PTR(a);
+            const void *replacement = ALT_REPL_PTR(a);
 
             if ( (instr < region->start && instr >= region->end) ||
                  (replacement < region->start && replacement >= region->end) )
@@ -621,12 +674,18 @@ static int prepare_payload(struct payload *payload,
                 return -EINVAL;
             }
         }
-        apply_alternatives_nocheck(start, end);
+        apply_alternatives(start, end);
+#else
+        dprintk(XENLOG_ERR, LIVEPATCH "%s: We don't support alternative patching!\n",
+                elf->name);
+        return -EOPNOTSUPP;
+#endif
     }
 
     sec = livepatch_elf_sec_by_name(elf, ".ex_table");
     if ( sec )
     {
+#ifdef CONFIG_HAS_EX_TABLE
         struct exception_table_entry *s, *e;
 
         if ( !sec->sec->sh_size ||
@@ -645,8 +704,12 @@ static int prepare_payload(struct payload *payload,
 
         region->ex = s;
         region->ex_end = e;
-    }
+#else
+        dprintk(XENLOG_ERR, LIVEPATCH "%s: We don't support .ex_table!\n",
+                elf->name);
+        return -EOPNOTSUPP;
 #endif
+    }
 
     return 0;
 }
@@ -684,7 +747,7 @@ static bool_t is_payload_symbol(const struct livepatch_elf *elf,
          !strncmp(sym->name, ".L", 2) )
         return 0;
 
-    return 1;
+    return arch_livepatch_symbol_ok(elf, sym);
 }
 
 static int build_symbol_table(struct payload *payload,
@@ -993,14 +1056,32 @@ static int livepatch_list(xen_sysctl_livepatch_list_t *list)
 static int apply_payload(struct payload *data)
 {
     unsigned int i;
+    int rc;
 
     printk(XENLOG_INFO LIVEPATCH "%s: Applying %u functions\n",
             data->name, data->nfuncs);
 
-    arch_livepatch_quiesce();
+    rc = arch_livepatch_quiesce();
+    if ( rc )
+    {
+        printk(XENLOG_ERR LIVEPATCH "%s: unable to quiesce!\n", data->name);
+        return rc;
+    }
+
+    /*
+     * Since we are running with IRQs disabled and the hooks may call common
+     * code - which expects certain spinlocks to run with IRQs enabled - we
+     * temporarily disable the spin locks IRQ state checks.
+     */
+    spin_debug_disable();
+    for ( i = 0; i < data->n_load_funcs; i++ )
+        data->load_funcs[i]();
+    spin_debug_enable();
+
+    ASSERT(!local_irq_is_enabled());
 
     for ( i = 0; i < data->nfuncs; i++ )
-        arch_livepatch_apply_jmp(&data->funcs[i]);
+        arch_livepatch_apply(&data->funcs[i]);
 
     arch_livepatch_revive();
 
@@ -1017,13 +1098,31 @@ static int apply_payload(struct payload *data)
 static int revert_payload(struct payload *data)
 {
     unsigned int i;
+    int rc;
 
     printk(XENLOG_INFO LIVEPATCH "%s: Reverting\n", data->name);
 
-    arch_livepatch_quiesce();
+    rc = arch_livepatch_quiesce();
+    if ( rc )
+    {
+        printk(XENLOG_ERR LIVEPATCH "%s: unable to quiesce!\n", data->name);
+        return rc;
+    }
 
     for ( i = 0; i < data->nfuncs; i++ )
-        arch_livepatch_revert_jmp(&data->funcs[i]);
+        arch_livepatch_revert(&data->funcs[i]);
+
+    /*
+     * Since we are running with IRQs disabled and the hooks may call common
+     * code - which expects certain spinlocks to run with IRQs enabled - we
+     * temporarily disable the spin locks IRQ state checks.
+     */
+    spin_debug_disable();
+    for ( i = 0; i < data->n_unload_funcs; i++ )
+        data->unload_funcs[i]();
+    spin_debug_enable();
+
+    ASSERT(!local_irq_is_enabled());
 
     arch_livepatch_revive();
 
@@ -1034,6 +1133,7 @@ static int revert_payload(struct payload *data)
     list_del_rcu(&data->applied_list);
     unregister_virtual_region(&data->region);
 
+    data->reverted = true;
     return 0;
 }
 
@@ -1415,6 +1515,20 @@ static int livepatch_action(xen_sysctl_livepatch_action_t *action)
     case LIVEPATCH_ACTION_APPLY:
         if ( data->state == LIVEPATCH_STATE_CHECKED )
         {
+            /*
+             * It is unsafe to apply an reverted payload as the .data (or .bss)
+             * may not be in in pristine condition. Hence MUST unload and then
+             * apply patch again. Unless the payload has only one
+             * RW section (.livepatch.funcs).
+             */
+            if ( data->reverted && !data->safe_to_reapply )
+            {
+                dprintk(XENLOG_ERR, "%s%s: can't revert as payload has .data. Please unload!\n",
+                        LIVEPATCH, data->name);
+                data->rc = -EINVAL;
+                break;
+            }
+
             rc = build_id_dep(data, !!list_empty(&applied_list));
             if ( rc )
                 break;
@@ -1546,12 +1660,6 @@ static void livepatch_printall(unsigned char key)
 
 static int __init livepatch_init(void)
 {
-    const void *binary_id;
-    unsigned int len;
-
-    if ( !xen_build_id(&binary_id, &len) )
-        printk(XENLOG_INFO LIVEPATCH ": build-id: %*phN\n", len, binary_id);
-
     register_keyhandler('x', livepatch_printall, "print livepatch info", 1);
 
     arch_livepatch_init();

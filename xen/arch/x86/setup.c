@@ -61,14 +61,6 @@ boolean_param("nosmp", opt_nosmp);
 static unsigned int __initdata max_cpus;
 integer_param("maxcpus", max_cpus);
 
-/* smep: Enable/disable Supervisor Mode Execution Protection (default on). */
-static bool_t __initdata opt_smep = 1;
-boolean_param("smep", opt_smep);
-
-/* smap: Enable/disable Supervisor Mode Access Prevention (default on). */
-static bool_t __initdata opt_smap = 1;
-boolean_param("smap", opt_smap);
-
 unsigned long __read_mostly cr4_pv32_mask;
 
 /* Boot dom0 in pvh mode */
@@ -105,11 +97,64 @@ unsigned long __read_mostly xen_virt_end;
 
 DEFINE_PER_CPU(struct tss_struct, init_tss);
 
-char __section(".bss.stack_aligned") cpu0_stack[STACK_SIZE];
+char __section(".bss.stack_aligned") __aligned(STACK_SIZE)
+    cpu0_stack[STACK_SIZE];
 
 struct cpuinfo_x86 __read_mostly boot_cpu_data = { 0, 0, 0, 0, -1 };
 
 unsigned long __read_mostly mmu_cr4_features = XEN_MINIMAL_CR4;
+
+/* smep: Enable/disable Supervisor Mode Execution Protection (default on). */
+#define SMEP_HVM_ONLY (-1)
+static s8 __initdata opt_smep = 1;
+static void __init parse_smep_param(char *s)
+{
+    if ( !*s )
+    {
+        opt_smep = 1;
+        return;
+    }
+
+    switch ( parse_bool(s) )
+    {
+    case 0:
+        opt_smep = 0;
+        return;
+    case 1:
+        opt_smep = 1;
+        return;
+    }
+
+    if ( !strcmp(s, "hvm") )
+        opt_smep = SMEP_HVM_ONLY;
+}
+custom_param("smep", parse_smep_param);
+
+/* smap: Enable/disable Supervisor Mode Access Prevention (default on). */
+#define SMAP_HVM_ONLY (-1)
+static s8 __initdata opt_smap = 1;
+static void __init parse_smap_param(char *s)
+{
+    if ( !*s )
+    {
+        opt_smap = 1;
+        return;
+    }
+
+    switch ( parse_bool(s) )
+    {
+    case 0:
+        opt_smap = 0;
+        return;
+    case 1:
+        opt_smap = 1;
+        return;
+    }
+
+    if ( !strcmp(s, "hvm") )
+        opt_smap = SMAP_HVM_ONLY;
+}
+custom_param("smap", parse_smap_param);
 
 bool_t __read_mostly acpi_disabled;
 bool_t __initdata acpi_force;
@@ -515,6 +560,7 @@ static inline bool_t using_2M_mapping(void)
 static void noinline init_done(void)
 {
     void *va;
+    unsigned long start, end;
 
     system_state = SYS_STATE_active;
 
@@ -530,18 +576,18 @@ static void noinline init_done(void)
     /* Destroy Xen's mappings, and reuse the pages. */
     if ( using_2M_mapping() )
     {
-        destroy_xen_mappings((unsigned long)&__2M_init_start,
-                             (unsigned long)&__2M_init_end);
-        init_xenheap_pages(__pa(__2M_init_start), __pa(__2M_init_end));
+        start = (unsigned long)&__2M_init_start,
+        end   = (unsigned long)&__2M_init_end;
     }
     else
     {
-        destroy_xen_mappings((unsigned long)&__init_begin,
-                             (unsigned long)&__init_end);
-        init_xenheap_pages(__pa(__init_begin), __pa(__init_end));
+        start = (unsigned long)&__init_begin;
+        end   = (unsigned long)&__init_end;
     }
 
-    printk("Freed %ldkB init memory.\n", (long)(__init_end-__init_begin)>>10);
+    destroy_xen_mappings(start, end);
+    init_xenheap_pages(__pa(start), __pa(end));
+    printk("Freed %lukB init memory\n", (end - start) >> 10);
 
     startup_cpu_idle_loop();
 }
@@ -1044,13 +1090,23 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         }
 
 #ifdef CONFIG_KEXEC
-        /* Don't overlap with modules. */
-        e = consider_modules(s, e, PAGE_ALIGN(kexec_crash_area.size),
-                             mod, mbi->mods_count, -1);
-        if ( !kexec_crash_area.start && (s < e) )
+        /*
+         * Looking backwards from the crash area limit, find a large
+         * enough range that does not overlap with modules.
+         */
+        while ( !kexec_crash_area.start )
         {
-            e = (e - kexec_crash_area.size) & PAGE_MASK;
-            kexec_crash_area.start = e;
+            /* Don't overlap with modules. */
+            e = consider_modules(s, e, PAGE_ALIGN(kexec_crash_area.size),
+                                 mod, mbi->mods_count, -1);
+            if ( s >= e )
+                break;
+            if ( e > kexec_crash_area_limit )
+            {
+                e = kexec_crash_area_limit & PAGE_MASK;
+                continue;
+            }
+            kexec_crash_area.start = (e - kexec_crash_area.size) & PAGE_MASK;
         }
 #endif
     }
@@ -1392,12 +1448,16 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     if ( !opt_smep )
         setup_clear_cpu_cap(X86_FEATURE_SMEP);
-    if ( cpu_has_smep )
+    if ( cpu_has_smep && opt_smep != SMEP_HVM_ONLY )
+        __set_bit(X86_FEATURE_XEN_SMEP, boot_cpu_data.x86_capability);
+    if ( boot_cpu_has(X86_FEATURE_XEN_SMEP) )
         set_in_cr4(X86_CR4_SMEP);
 
     if ( !opt_smap )
         setup_clear_cpu_cap(X86_FEATURE_SMAP);
-    if ( cpu_has_smap )
+    if ( cpu_has_smap && opt_smap != SMAP_HVM_ONLY )
+        __set_bit(X86_FEATURE_XEN_SMAP, boot_cpu_data.x86_capability);
+    if ( boot_cpu_has(X86_FEATURE_XEN_SMAP) )
         set_in_cr4(X86_CR4_SMAP);
 
     cr4_pv32_mask = mmu_cr4_features & XEN_CR4_PV32_BITS;
@@ -1481,11 +1541,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     if ( opt_dom0pvh )
         domcr_flags |= DOMCRF_pvh | DOMCRF_hap;
 
-    /*
-     * Create initial domain 0.
-     * x86 doesn't support arch-configuration. So it's fine to pass
-     * NULL.
-     */
+    /* Create initial domain 0. */
     dom0 = domain_create(0, domcr_flags, 0, &config);
     if ( IS_ERR(dom0) || (alloc_dom0_vcpu0(dom0) == NULL) )
         panic("Error creating domain 0");

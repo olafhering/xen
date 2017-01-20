@@ -138,6 +138,7 @@ S:	Supported
 F:	xen/arch/x86/acpi/
 F:	xen/drivers/acpi/
 F:	xen/include/acpi/
+F:	tools/libacpi/
 
 AMD IOMMU
 M:	Suravee Suthikulpanit <suravee.suthikulpanit@amd.com>
@@ -171,6 +172,7 @@ F:	xen/drivers/char/arm-uart.c
 F:	xen/drivers/char/exynos4210-uart.c
 F:	xen/drivers/char/omap-uart.c
 F:	xen/drivers/char/pl011.c
+F:	xen/drivers/char/scif-uart.c
 F:	xen/drivers/passthrough/arm/
 
 CPU POOLS
@@ -198,14 +200,8 @@ F:     xen/include/efi/
 F:     xen/include/asm-x86/efi*.h
 F:     xen/include/asm-x86/x86_*/efi*.h
 
-EVENT CHANNELS (FIFO-BASED ABI)
-M:	David Vrabel <david.vrabel@citrix.com>
-S:	Supported
-F:	xen/common/event_fifo.c
-F:	xen/include/xen/event_fifo.h
-
 GDBSX DEBUGGER
-M:	Mukesh Rathor <mukesh.rathor@oracle.com>
+M:	Elena Ufimtseva <elena.ufimtseva@oracle.com>
 S:	Supported
 F:	xen/arch/x86/debug.c
 F:	tools/debugger/gdbsx/
@@ -254,7 +250,7 @@ S:	Odd Fixes
 F:	tools/debugger/kdd/
 
 KEXEC
-M:      David Vrabel <david.vrabel@citrix.com>
+M:      Andrew Cooper <andrew.cooper3@citrix.com>
 S:      Supported
 F:      xen/common/{kexec,kimage}.c
 F:      xen/include/{kexec,kimage}.h
@@ -268,8 +264,11 @@ S:  Supported
 F:  docs/misc/livepatch.markdown
 F:  tools/misc/xen-livepatch.c
 F:  xen/arch/*/livepatch*
+F:  xen/arch/*/*/livepatch*
 F:  xen/common/livepatch*
+F:  xen/include/asm-*/livepatch.h
 F:  xen/include/xen/livepatch*
+F:  xen/test/livepatch/*
 
 MACHINE CHECK (MCA) & RAS
 M:	Christoph Egger <chegger@amazon.de>
@@ -400,17 +399,21 @@ VM EVENT, MEM ACCESS and MONITOR
 M:	Razvan Cojocaru <rcojocaru@bitdefender.com>
 M:	Tamas K Lengyel <tamas@tklengyel.com>
 S:	Supported
+F:	tools/tests/xen-access
+F:	xen/arch/*/monitor.c
+F:	xen/arch/*/vm_event.c
+F:	xen/arch/x86/hvm/monitor.c
 F:	xen/common/mem_access.c
-F:	xen/*/vm_event.c
-F:	xen/*/monitor.c
+F:	xen/common/monitor.c
+F:	xen/common/vm_event.c
 F:	xen/include/*/mem_access.h
 F:	xen/include/*/monitor.h
 F:	xen/include/*/vm_event.h
-F:	tools/tests/xen-access
+F:	xen/include/asm-x86/hvm/monitor.h
 
 VTPM
 M:	Daniel De Graaf <dgdegra@tycho.nsa.gov>
-M:	Quan Xu <quan.xu@intel.com>
+M:	Quan Xu <xuquan8@huawei.com>
 S:	Supported
 F:	extras/mini-os/tpm*
 F:	extras/mini-os/include/tpm*

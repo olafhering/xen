@@ -117,6 +117,12 @@
 #define TRAP_virtualisation   20
 #define TRAP_nr               32
 
+#define TRAP_HAVE_EC                                                    \
+    ((1u << TRAP_double_fault) | (1u << TRAP_invalid_tss) |             \
+     (1u << TRAP_no_segment) | (1u << TRAP_stack_error) |               \
+     (1u << TRAP_gp_fault) | (1u << TRAP_page_fault) |                  \
+     (1u << TRAP_alignment_check))
+
 /* Set for entry via SYSCALL. Informs return code to use SYSRETQ not IRETQ. */
 /* NB. Same as VGCF_in_syscall. No bits in common with any other TRAP_ defn. */
 #define TRAP_syscall         256
@@ -211,7 +217,7 @@ extern struct cpuinfo_x86 boot_cpu_data;
 extern struct cpuinfo_x86 cpu_data[];
 #define current_cpu_data cpu_data[smp_processor_id()]
 
-extern void (*ctxt_switch_levelling)(const struct domain *nextd);
+extern void (*ctxt_switch_levelling)(const struct vcpu *next);
 
 extern u64 host_pat;
 extern bool_t opt_cpu_info;
@@ -541,7 +547,7 @@ void show_registers(const struct cpu_user_regs *regs);
 void show_execution_state(const struct cpu_user_regs *regs);
 #define dump_execution_state() run_in_exception_handler(show_execution_state)
 void show_page_walk(unsigned long addr);
-void noreturn fatal_trap(const struct cpu_user_regs *regs);
+void noreturn fatal_trap(const struct cpu_user_regs *regs, bool_t show_remote);
 
 void compat_show_guest_stack(struct vcpu *v,
                              const struct cpu_user_regs *regs, int lines);
@@ -606,8 +612,6 @@ struct stubs {
 DECLARE_PER_CPU(struct stubs, stubs);
 unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn);
 
-extern int hypercall(void);
-
 int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
           uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx);
 int rdmsr_hypervisor_regs(uint32_t idx, uint64_t *val);
@@ -618,9 +622,8 @@ int microcode_update(XEN_GUEST_HANDLE_PARAM(const_void), unsigned long len);
 int microcode_resume_cpu(unsigned int cpu);
 
 enum get_cpu_vendor {
-   gcv_host_early,
-   gcv_host_late,
-   gcv_guest
+    gcv_host,
+    gcv_guest,
 };
 
 int get_cpu_vendor(const char vendor_id[], enum get_cpu_vendor);

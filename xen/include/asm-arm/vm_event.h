@@ -23,21 +23,19 @@
 #include <xen/vm_event.h>
 #include <public/domctl.h>
 
-static inline
-int vm_event_init_domain(struct domain *d)
+static inline int vm_event_init_domain(struct domain *d)
 {
     /* Nothing to do. */
     return 0;
 }
 
-static inline
-void vm_event_cleanup_domain(struct domain *d)
+static inline void vm_event_cleanup_domain(struct domain *d)
 {
     memset(&d->monitor, 0, sizeof(d->monitor));
 }
 
-static inline
-void vm_event_toggle_singlestep(struct domain *d, struct vcpu *v)
+static inline void vm_event_toggle_singlestep(struct domain *d, struct vcpu *v,
+                                              vm_event_response_t *rsp)
 {
     /* Not supported on ARM. */
 }
@@ -49,23 +47,9 @@ void vm_event_register_write_resume(struct vcpu *v, vm_event_response_t *rsp)
 }
 
 static inline
-void vm_event_set_registers(struct vcpu *v, vm_event_response_t *rsp)
+void vm_event_emulate_check(struct vcpu *v, vm_event_response_t *rsp)
 {
     /* Not supported on ARM. */
-}
-
-static inline void vm_event_fill_regs(vm_event_request_t *req)
-{
-    /* Not supported on ARM. */
-}
-
-static inline uint32_t vm_event_monitor_get_capabilities(struct domain *d)
-{
-    uint32_t capabilities = 0;
-
-    capabilities = (1U << XEN_DOMCTL_MONITOR_EVENT_GUEST_REQUEST);
-
-    return capabilities;
 }
 
 #endif /* __ASM_ARM_VM_EVENT_H__ */

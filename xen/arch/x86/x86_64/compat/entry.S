@@ -25,71 +25,10 @@ UNLIKELY_START(ne, msi_check)
         LOAD_C_CLOBBERED compat=1 ax=0
 UNLIKELY_END(msi_check)
 
-        movl  UREGS_rax(%rsp),%eax
         GET_CURRENT(bx)
 
-        cmpl  $NR_hypercalls,%eax
-        jae   compat_bad_hypercall
-#ifndef NDEBUG
-        /* Deliberately corrupt parameter regs not used by this hypercall. */
-        pushq UREGS_rbx(%rsp); pushq %rcx; pushq %rdx; pushq %rsi; pushq %rdi
-        pushq UREGS_rbp+5*8(%rsp)
-        leaq  compat_hypercall_args_table(%rip),%r10
-        movl  $6,%ecx
-        subb  (%r10,%rax,1),%cl
-        movq  %rsp,%rdi
-        movl  $0xDEADBEEF,%eax
-        rep   stosq
-        popq  %r8 ; popq  %r9 ; xchgl %r8d,%r9d /* Args 5&6: zero extend */
-        popq  %rdx; popq  %rcx; xchgl %edx,%ecx /* Args 3&4: zero extend */
-        popq  %rdi; popq  %rsi; xchgl %edi,%esi /* Args 1&2: zero extend */
-        movl  UREGS_rax(%rsp),%eax
-        pushq %rax
-        pushq UREGS_rip+8(%rsp)
-#define SHADOW_BYTES 16 /* Shadow EIP + shadow hypercall # */
-#else
-        /* Relocate argument registers and zero-extend to 64 bits. */
-        xchgl %ecx,%esi              /* Arg 2, Arg 4 */
-        movl  %edx,%edx              /* Arg 3        */
-        movl  %edi,%r8d              /* Arg 5        */
-        movl  %ebp,%r9d              /* Arg 6        */
-        movl  UREGS_rbx(%rsp),%edi   /* Arg 1        */
-#define SHADOW_BYTES 0  /* No on-stack shadow state */
-#endif
-        cmpb  $0,tb_init_done(%rip)
-UNLIKELY_START(ne, compat_trace)
-        call  __trace_hypercall_entry
-        /* Restore the registers that __trace_hypercall_entry clobbered. */
-        movl  UREGS_rax+SHADOW_BYTES(%rsp),%eax   /* Hypercall #  */
-        movl  UREGS_rbx+SHADOW_BYTES(%rsp),%edi   /* Arg 1        */
-        movl  UREGS_rcx+SHADOW_BYTES(%rsp),%esi   /* Arg 2        */
-        movl  UREGS_rdx+SHADOW_BYTES(%rsp),%edx   /* Arg 3        */
-        movl  UREGS_rsi+SHADOW_BYTES(%rsp),%ecx   /* Arg 4        */
-        movl  UREGS_rdi+SHADOW_BYTES(%rsp),%r8d   /* Arg 5        */
-        movl  UREGS_rbp+SHADOW_BYTES(%rsp),%r9d   /* Arg 6        */
-#undef SHADOW_BYTES
-UNLIKELY_END(compat_trace)
-        leaq  compat_hypercall_table(%rip),%r10
-        PERFC_INCR(hypercalls, %rax, %rbx)
-        callq *(%r10,%rax,8)
-#ifndef NDEBUG
-        /* Deliberately corrupt parameter regs used by this hypercall. */
-        popq  %r10         # Shadow RIP
-        cmpq  %r10,UREGS_rip+8(%rsp)
-        popq  %rcx         # Shadow hypercall index
-        jne   compat_skip_clobber /* If RIP has changed then don't clobber. */
-        leaq  compat_hypercall_args_table(%rip),%r10
-        movb  (%r10,%rcx,1),%cl
-        movl  $0xDEADBEEF,%r10d
-        testb %cl,%cl; jz compat_skip_clobber; movl %r10d,UREGS_rbx(%rsp)
-        cmpb  $2, %cl; jb compat_skip_clobber; movl %r10d,UREGS_rcx(%rsp)
-        cmpb  $3, %cl; jb compat_skip_clobber; movl %r10d,UREGS_rdx(%rsp)
-        cmpb  $4, %cl; jb compat_skip_clobber; movl %r10d,UREGS_rsi(%rsp)
-        cmpb  $5, %cl; jb compat_skip_clobber; movl %r10d,UREGS_rdi(%rsp)
-        cmpb  $6, %cl; jb compat_skip_clobber; movl %r10d,UREGS_rbp(%rsp)
-compat_skip_clobber:
-#endif
-        movl  %eax,UREGS_rax(%rsp)       # save the return value
+        mov   %rsp, %rdi
+        call  pv_hypercall
 
 /* %rbx: struct vcpu */
 ENTRY(compat_test_all_events)
@@ -167,10 +106,6 @@ compat_process_trap:
         call  compat_create_bounce_frame
         jmp   compat_test_all_events
 
-compat_bad_hypercall:
-        movl $-ENOSYS,UREGS_rax(%rsp)
-        jmp  compat_test_all_events
-
 /* %rbx: struct vcpu, interrupts disabled */
 ENTRY(compat_restore_all_guest)
         ASSERT_INTERRUPTS_DISABLED
@@ -202,10 +137,10 @@ ENTRY(compat_restore_all_guest)
         .section .altinstructions, "a"
         altinstruction_entry .Lcr4_orig, .Lcr4_orig, X86_FEATURE_ALWAYS, \
                              (.Lcr4_orig_end - .Lcr4_orig), 0
-        altinstruction_entry .Lcr4_orig, .Lcr4_alt, X86_FEATURE_SMEP, \
+        altinstruction_entry .Lcr4_orig, .Lcr4_alt, X86_FEATURE_XEN_SMEP, \
                              (.Lcr4_orig_end - .Lcr4_orig), \
                              (.Lcr4_alt_end - .Lcr4_alt)
-        altinstruction_entry .Lcr4_orig, .Lcr4_alt, X86_FEATURE_SMAP, \
+        altinstruction_entry .Lcr4_orig, .Lcr4_alt, X86_FEATURE_XEN_SMAP, \
                              (.Lcr4_orig_end - .Lcr4_orig), \
                              (.Lcr4_alt_end - .Lcr4_alt)
         .popsection
@@ -318,6 +253,7 @@ ENTRY(compat_int80_direct_trap)
 compat_create_bounce_frame:
         ASSERT_INTERRUPTS_ENABLED
         mov   %fs,%edi
+        ASM_STAC
         testb $2,UREGS_cs+8(%rsp)
         jz    1f
         /* Push new frame at registered guest-OS stack base. */
@@ -364,6 +300,7 @@ compat_create_bounce_frame:
         movl  TRAPBOUNCE_error_code(%rdx),%eax
 .Lft8:  movl  %eax,%fs:(%rsi)           # ERROR CODE
 1:
+        ASM_CLAC
         /* Rewrite our stack frame and return to guest-OS mode. */
         /* IA32 Ref. Vol. 3: TF, VM, RF and NT flags are cleared on trap. */
         andl  $~(X86_EFLAGS_VM|X86_EFLAGS_RF|\
@@ -403,6 +340,7 @@ compat_crash_page_fault_4:
         addl  $4,%esi
 compat_crash_page_fault:
 .Lft14: mov   %edi,%fs
+        ASM_CLAC
         movl  %esi,%edi
         call  show_page_walk
         jmp   dom_crash_sync_extable
@@ -412,119 +350,3 @@ compat_crash_page_fault:
         jmp   .Lft14
 .previous
         _ASM_EXTABLE(.Lft14, .Lfx14)
-
-.section .rodata, "a", @progbits
-
-#ifndef CONFIG_KEXEC
-#define compat_kexec_op do_ni_hypercall
-#endif
-
-#ifndef CONFIG_TMEM
-#define do_tmem_op do_ni_hypercall
-#endif
-
-#ifndef CONFIG_XENOPROF
-#define compat_xenoprof_op do_ni_hypercall
-#endif
-
-ENTRY(compat_hypercall_table)
-        .quad compat_set_trap_table     /*  0 */
-        .quad do_mmu_update
-        .quad compat_set_gdt
-        .quad do_stack_switch
-        .quad compat_set_callbacks
-        .quad do_fpu_taskswitch         /*  5 */
-        .quad do_sched_op_compat
-        .quad compat_platform_op
-        .quad do_set_debugreg
-        .quad do_get_debugreg
-        .quad compat_update_descriptor  /* 10 */
-        .quad compat_ni_hypercall
-        .quad compat_memory_op
-        .quad compat_multicall
-        .quad compat_update_va_mapping
-        .quad compat_set_timer_op       /* 15 */
-        .quad do_event_channel_op_compat
-        .quad compat_xen_version
-        .quad do_console_io
-        .quad compat_physdev_op_compat
-        .quad compat_grant_table_op     /* 20 */
-        .quad compat_vm_assist
-        .quad compat_update_va_mapping_otherdomain
-        .quad compat_iret
-        .quad compat_vcpu_op
-        .quad compat_ni_hypercall       /* 25 */
-        .quad compat_mmuext_op
-        .quad compat_xsm_op
-        .quad compat_nmi_op
-        .quad compat_sched_op
-        .quad compat_callback_op        /* 30 */
-        .quad compat_xenoprof_op
-        .quad do_event_channel_op
-        .quad compat_physdev_op
-        .quad do_hvm_op
-        .quad do_sysctl                 /* 35 */
-        .quad do_domctl
-        .quad compat_kexec_op
-        .quad do_tmem_op
-        .quad do_ni_hypercall           /* reserved for XenClient */
-        .quad do_xenpmu_op              /* 40 */
-        .rept __HYPERVISOR_arch_0-((.-compat_hypercall_table)/8)
-        .quad compat_ni_hypercall
-        .endr
-        .quad do_mca                    /* 48 */
-        .quad paging_domctl_continuation
-        .rept NR_hypercalls-((.-compat_hypercall_table)/8)
-        .quad compat_ni_hypercall
-        .endr
-
-ENTRY(compat_hypercall_args_table)
-        .byte 1 /* compat_set_trap_table    */  /*  0 */
-        .byte 4 /* compat_mmu_update        */
-        .byte 2 /* compat_set_gdt           */
-        .byte 2 /* compat_stack_switch      */
-        .byte 4 /* compat_set_callbacks     */
-        .byte 1 /* compat_fpu_taskswitch    */  /*  5 */
-        .byte 2 /* compat_sched_op_compat   */
-        .byte 1 /* compat_platform_op       */
-        .byte 2 /* compat_set_debugreg      */
-        .byte 1 /* compat_get_debugreg      */
-        .byte 4 /* compat_update_descriptor */  /* 10 */
-        .byte 0 /* compat_ni_hypercall      */
-        .byte 2 /* compat_memory_op         */
-        .byte 2 /* compat_multicall         */
-        .byte 4 /* compat_update_va_mapping */
-        .byte 2 /* compat_set_timer_op      */  /* 15 */
-        .byte 1 /* compat_event_channel_op_compat */
-        .byte 2 /* compat_xen_version       */
-        .byte 3 /* compat_console_io        */
-        .byte 1 /* compat_physdev_op_compat */
-        .byte 3 /* compat_grant_table_op    */  /* 20 */
-        .byte 2 /* compat_vm_assist         */
-        .byte 5 /* compat_update_va_mapping_otherdomain */
-        .byte 0 /* compat_iret              */
-        .byte 3 /* compat_vcpu_op           */
-        .byte 0 /* compat_ni_hypercall      */  /* 25 */
-        .byte 4 /* compat_mmuext_op         */
-        .byte 1 /* do_xsm_op                */
-        .byte 2 /* compat_nmi_op            */
-        .byte 2 /* compat_sched_op          */
-        .byte 2 /* compat_callback_op       */  /* 30 */
-        .byte 2 /* compat_xenoprof_op       */
-        .byte 2 /* compat_event_channel_op  */
-        .byte 2 /* compat_physdev_op        */
-        .byte 2 /* do_hvm_op                */
-        .byte 1 /* do_sysctl                */  /* 35 */
-        .byte 1 /* do_domctl                */
-        .byte 2 /* compat_kexec_op          */
-        .byte 1 /* do_tmem_op               */
-        .byte 0 /* reserved for XenClient   */
-        .byte 2 /* do_xenpmu_op             */  /* 40 */
-        .rept __HYPERVISOR_arch_0-(.-compat_hypercall_args_table)
-        .byte 0 /* compat_ni_hypercall      */
-        .endr
-        .byte 1 /* do_mca                   */
-        .byte 1 /* paging_domctl_continuation      */
-        .rept NR_hypercalls-(.-compat_hypercall_args_table)
-        .byte 0 /* compat_ni_hypercall      */
-        .endr

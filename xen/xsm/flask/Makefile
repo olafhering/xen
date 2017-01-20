@@ -27,6 +27,18 @@ $(FLASK_H_FILES): $(FLASK_H_DEPEND)
 $(AV_H_FILES): $(AV_H_DEPEND)
 	$(CONFIG_SHELL) policy/mkaccess_vector.sh $(AWK) $(AV_H_DEPEND)
 
+obj-$(CONFIG_XSM_POLICY) += policy.o
+
+FLASK_BUILD_DIR := $(CURDIR)
+POLICY_SRC := $(FLASK_BUILD_DIR)/xenpolicy-$(XEN_FULLVERSION)
+
+policy.bin: FORCE
+	$(MAKE) -f $(XEN_ROOT)/tools/flask/policy/Makefile.common -C $(XEN_ROOT)/tools/flask/policy FLASK_BUILD_DIR=$(FLASK_BUILD_DIR)
+	cmp -s $(POLICY_SRC) $@ || cp $(POLICY_SRC) $@
+
+policy.c: policy.bin gen-policy.py
+	$(PYTHON) gen-policy.py < $< > $@
+
 .PHONY: clean
 clean::
-	rm -f $(ALL_H_FILES) *.o $(DEPS)
+	rm -f $(ALL_H_FILES) *.o $(DEPS) policy.* $(POLICY_SRC)

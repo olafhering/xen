@@ -14,6 +14,7 @@
 #include <xen/nmi.h>
 #include <xen/guest_access.h>
 #include <xen/watchdog.h>
+#include <xen/hypercall.h>
 #include <asm/current.h>
 #include <asm/flushtlb.h>
 #include <asm/traps.h>
@@ -30,7 +31,7 @@ static void print_xen_info(void)
 {
     char taint_str[TAINT_STRING_MAX_LEN];
 
-    printk("----[ Xen-%d.%d%s  x86_64  debug=%c  %s ]----\n",
+    printk("----[ Xen-%d.%d%s  x86_64  debug=%c " gcov_string "  %s ]----\n",
            xen_major_version(), xen_minor_version(), xen_extra_version(),
            debug_build() ? 'y' : 'n', print_tainted(taint_str));
 }
@@ -414,7 +415,7 @@ void subarch_percpu_traps_init(void)
     unmap_domain_page(stub_page);
 
     /* Common SYSCALL parameters. */
-    wrmsr(MSR_STAR, 0, (FLAT_RING3_CS32<<16) | __HYPERVISOR_CS);
+    wrmsr(MSR_STAR, 0, ((unsigned int)FLAT_RING3_CS32 << 16) | __HYPERVISOR_CS);
     wrmsr(MSR_SYSCALL_MASK, XEN_SYSCALL_MASK, 0U);
 }
 

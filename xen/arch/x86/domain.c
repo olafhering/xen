@@ -251,7 +251,7 @@ struct domain *alloc_domain_struct(void)
 #endif
 
 
-#ifndef LOCK_PROFILE
+#ifndef CONFIG_LOCK_PROFILE
     BUILD_BUG_ON(sizeof(*d) > PAGE_SIZE);
 #endif
     d = alloc_xenheap_pages(order, MEMF_bits(bits));
@@ -545,25 +545,31 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     }
     else
     {
-        if ( (config->emulation_flags & ~XEN_X86_EMU_ALL) != 0 )
-        {
-            printk(XENLOG_G_ERR "d%d: Invalid emulation bitmap: %#x\n",
-                   d->domain_id, config->emulation_flags);
-            return -EINVAL;
-        }
+        uint32_t emflags;
+
         if ( is_hardware_domain(d) )
             config->emulation_flags |= XEN_X86_EMU_PIT;
-        if ( config->emulation_flags != 0 &&
-             (config->emulation_flags !=
-              (is_hvm_domain(d) ? XEN_X86_EMU_ALL : XEN_X86_EMU_PIT)) )
+
+        emflags = config->emulation_flags;
+        if ( emflags & ~XEN_X86_EMU_ALL )
+        {
+            printk(XENLOG_G_ERR "d%d: Invalid emulation bitmap: %#x\n",
+                   d->domain_id, emflags);
+            return -EINVAL;
+        }
+
+        /* PVHv2 guests can request emulated APIC. */
+        if ( emflags &&
+            (is_hvm_domain(d) ? ((emflags != XEN_X86_EMU_ALL) &&
+                                 (emflags != XEN_X86_EMU_LAPIC)) :
+                                (emflags != XEN_X86_EMU_PIT)) )
         {
             printk(XENLOG_G_ERR "d%d: Xen does not allow %s domain creation "
                    "with the current selection of emulators: %#x\n",
-                   d->domain_id, is_hvm_domain(d) ? "HVM" : "PV",
-                   config->emulation_flags);
+                   d->domain_id, is_hvm_domain(d) ? "HVM" : "PV", emflags);
             return -EOPNOTSUPP;
         }
-        d->arch.emulation_flags = config->emulation_flags;
+        d->arch.emulation_flags = emflags;
     }
 
     if ( has_hvm_container_domain(d) )
@@ -783,7 +789,7 @@ int arch_domain_soft_reset(struct domain *d)
      * gfn == INVALID_GFN indicates that the shared_info page was never mapped
      * to the domain's address space and there is nothing to replace.
      */
-    if ( gfn == INVALID_GFN )
+    if ( gfn == gfn_x(INVALID_GFN) )
         goto exit_put_page;
 
     if ( mfn_x(get_gfn_query(d, gfn, &p2mt)) != mfn )
@@ -802,9 +808,10 @@ int arch_domain_soft_reset(struct domain *d)
         ret = -ENOMEM;
         goto exit_put_gfn;
     }
-    guest_physmap_remove_page(d, gfn, mfn, PAGE_ORDER_4K);
+    guest_physmap_remove_page(d, _gfn(gfn), _mfn(mfn), PAGE_ORDER_4K);
 
-    ret = guest_physmap_add_page(d, gfn, page_to_mfn(new_page), PAGE_ORDER_4K);
+    ret = guest_physmap_add_page(d, _gfn(gfn), _mfn(page_to_mfn(new_page)),
+                                 PAGE_ORDER_4K);
     if ( ret )
     {
         printk(XENLOG_G_ERR "Failed to add a page to replace"
@@ -890,7 +897,13 @@ int arch_set_info_guest(
     {
         if ( !compat )
         {
-            if ( !is_canonical_address(c.nat->user_regs.eip) ||
+            if ( !is_canonical_address(c.nat->user_regs.rip) ||
+                 !is_canonical_address(c.nat->user_regs.rsp) ||
+                 !is_canonical_address(c.nat->kernel_sp) ||
+                 (c.nat->ldt_ents && !is_canonical_address(c.nat->ldt_base)) ||
+                 !is_canonical_address(c.nat->fs_base) ||
+                 !is_canonical_address(c.nat->gs_base_kernel) ||
+                 !is_canonical_address(c.nat->gs_base_user) ||
                  !is_canonical_address(c.nat->event_callback_eip) ||
                  !is_canonical_address(c.nat->syscall_callback_eip) ||
                  !is_canonical_address(c.nat->failsafe_callback_eip) )
@@ -1222,6 +1235,7 @@ int arch_set_info_guest(
                 {
                 case -EINTR:
                     rc = -ERESTART;
+                    /* Fallthrough */
                 case -ERESTART:
                     v->arch.old_guest_table =
                         pagetable_get_page(v->arch.guest_table);
@@ -1743,22 +1757,22 @@ static void load_segments(struct vcpu *n)
             (unsigned long *)pv->kernel_sp;
         unsigned long cs_and_mask, rflags;
 
+        /* Fold upcall mask and architectural IOPL into RFLAGS.IF. */
+        rflags  = regs->rflags & ~(X86_EFLAGS_IF|X86_EFLAGS_IOPL);
+        rflags |= !vcpu_info(n, evtchn_upcall_mask) << 9;
+        if ( VM_ASSIST(n->domain, architectural_iopl) )
+            rflags |= n->arch.pv_vcpu.iopl;
+
         if ( is_pv_32bit_vcpu(n) )
         {
             unsigned int *esp = ring_1(regs) ?
                                 (unsigned int *)regs->rsp :
                                 (unsigned int *)pv->kernel_sp;
-            unsigned int cs_and_mask, eflags;
             int ret = 0;
 
             /* CS longword also contains full evtchn_upcall_mask. */
             cs_and_mask = (unsigned short)regs->cs |
                 ((unsigned int)vcpu_info(n, evtchn_upcall_mask) << 16);
-            /* Fold upcall mask into RFLAGS.IF. */
-            eflags  = regs->_eflags & ~(X86_EFLAGS_IF|X86_EFLAGS_IOPL);
-            eflags |= !vcpu_info(n, evtchn_upcall_mask) << 9;
-            if ( VM_ASSIST(n->domain, architectural_iopl) )
-                eflags |= n->arch.pv_vcpu.iopl;
 
             if ( !ring_1(regs) )
             {
@@ -1768,7 +1782,7 @@ static void load_segments(struct vcpu *n)
             }
 
             if ( ret |
-                 put_user(eflags,              esp-1) |
+                 put_user(rflags,              esp-1) |
                  put_user(cs_and_mask,         esp-2) |
                  put_user(regs->_eip,          esp-3) |
                  put_user(uregs->gs,           esp-4) |
@@ -1802,12 +1816,6 @@ static void load_segments(struct vcpu *n)
         /* CS longword also contains full evtchn_upcall_mask. */
         cs_and_mask = (unsigned long)regs->cs |
             ((unsigned long)vcpu_info(n, evtchn_upcall_mask) << 32);
-
-        /* Fold upcall mask into RFLAGS.IF. */
-        rflags  = regs->rflags & ~(X86_EFLAGS_IF|X86_EFLAGS_IOPL);
-        rflags |= !vcpu_info(n, evtchn_upcall_mask) << 9;
-        if ( VM_ASSIST(n->domain, architectural_iopl) )
-            rflags |= n->arch.pv_vcpu.iopl;
 
         if ( put_user(regs->ss,            rsp- 1) |
              put_user(regs->rsp,           rsp- 2) |
@@ -1926,11 +1934,24 @@ bool_t update_runstate_area(struct vcpu *v)
 {
     bool_t rc;
     smap_check_policy_t smap_policy;
+    void __user *guest_handle = NULL;
 
     if ( guest_handle_is_null(runstate_guest(v)) )
         return 1;
 
     smap_policy = smap_policy_change(v, SMAP_CHECK_ENABLED);
+
+    if ( VM_ASSIST(v->domain, runstate_update_flag) )
+    {
+        guest_handle = has_32bit_shinfo(v->domain)
+            ? &v->runstate_guest.compat.p->state_entry_time + 1
+            : &v->runstate_guest.native.p->state_entry_time + 1;
+        guest_handle--;
+        v->runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
+        __raw_copy_to_guest(guest_handle,
+                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+        smp_wmb();
+    }
 
     if ( has_32bit_shinfo(v->domain) )
     {
@@ -1943,6 +1964,14 @@ bool_t update_runstate_area(struct vcpu *v)
     else
         rc = __copy_to_guest(runstate_guest(v), &v->runstate, 1) !=
              sizeof(v->runstate);
+
+    if ( guest_handle )
+    {
+        v->runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
+        smp_wmb();
+        __raw_copy_to_guest(guest_handle,
+                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+    }
 
     smap_policy_change(v, smap_policy);
 
@@ -2107,7 +2136,7 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
             load_segments(next);
         }
 
-        ctxt_switch_levelling(nextd);
+        ctxt_switch_levelling(next);
     }
 
     context_saved(prev);

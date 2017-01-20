@@ -54,10 +54,7 @@ struct dt_alias_prop {
 
 static LIST_HEAD(aliases_lookup);
 
-// #define DEBUG_DT
-
-#ifdef DEBUG_DT
-# define dt_dprintk(fmt, args...) printk(XENLOG_DEBUG fmt, ##args)
+#ifdef CONFIG_DEVICE_TREE_DEBUG
 static void dt_dump_addr(const char *s, const __be32 *addr, int na)
 {
     dt_dprintk("%s", s);
@@ -66,7 +63,6 @@ static void dt_dump_addr(const char *s, const __be32 *addr, int na)
     dt_dprintk("\n");
 }
 #else
-# define dt_dprintk(fmt, args...) do {} while ( 0 )
 static void dt_dump_addr(const char *s, const __be32 *addr, int na) { }
 #endif
 
@@ -323,7 +319,7 @@ dt_match_node(const struct dt_device_match *matches,
         return NULL;
 
     while ( matches->path || matches->type ||
-            matches->compatible || matches->not_available )
+            matches->compatible || matches->not_available || matches->prop)
     {
         bool_t match = 1;
 
@@ -338,6 +334,9 @@ dt_match_node(const struct dt_device_match *matches,
 
         if ( matches->not_available )
             match &= !dt_device_is_available(node);
+
+        if ( matches->prop )
+            match &= dt_find_property(node, matches->prop, NULL) != NULL;
 
         if ( match )
             return matches;

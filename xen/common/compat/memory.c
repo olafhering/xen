@@ -15,7 +15,6 @@ CHECK_TYPE(domid);
 #undef compat_domid_t
 #undef xen_domid_t
 
-CHECK_mem_access_op;
 CHECK_vmemrange;
 
 #ifdef CONFIG_HAS_PASSTHROUGH
@@ -71,6 +70,7 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
             struct xen_add_to_physmap_batch *atpb;
             struct xen_remove_from_physmap *xrfp;
             struct xen_vnuma_topology_info *vnuma;
+            struct xen_mem_access_op *mao;
         } nat;
         union {
             struct compat_memory_reservation rsrv;
@@ -78,6 +78,7 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
             struct compat_add_to_physmap atp;
             struct compat_add_to_physmap_batch atpb;
             struct compat_vnuma_topology_info vnuma;
+            struct compat_mem_access_op mao;
         } cmp;
 
         set_xen_guest_handle(nat.hnd, COMPAT_ARG_XLAT_VIRT_BASE);
@@ -320,6 +321,22 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
             break;
         }
 
+        case XENMEM_access_op:
+            if ( copy_from_guest(&cmp.mao, compat, 1) )
+                return -EFAULT;
+            
+#define XLAT_mem_access_op_HNDL_pfn_list(_d_, _s_)                      \
+            guest_from_compat_handle((_d_)->pfn_list, (_s_)->pfn_list)
+#define XLAT_mem_access_op_HNDL_access_list(_d_, _s_)                   \
+            guest_from_compat_handle((_d_)->access_list, (_s_)->access_list)
+            
+            XLAT_mem_access_op(nat.mao, &cmp.mao);
+            
+#undef XLAT_mem_access_op_HNDL_pfn_list
+#undef XLAT_mem_access_op_HNDL_access_list
+            
+            break;
+
         case XENMEM_get_vnumainfo:
         {
             enum XLAT_vnuma_topology_info_vdistance vdistance =
@@ -353,7 +370,7 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
             struct get_reserved_device_memory grdm;
 
             if ( unlikely(start_extent) )
-                return -ENOSYS;
+                return -EINVAL;
 
             if ( copy_from_guest(&grdm.map, compat, 1) ||
                  !compat_handle_okay(grdm.map.buffer, grdm.map.nr_entries) )
@@ -495,10 +512,6 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
             break;
         }
 
-        case XENMEM_access_op:
-            rc = mem_access_memop(cmd, guest_handle_cast(compat, xen_mem_access_op_t));
-            break;
-
         case XENMEM_add_to_physmap_batch:
             start_extent = end_extent;
             break;
@@ -509,6 +522,7 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
         case XENMEM_maximum_gpfn:
         case XENMEM_add_to_physmap:
         case XENMEM_remove_from_physmap:
+        case XENMEM_access_op:
             break;
 
         case XENMEM_get_vnumainfo:

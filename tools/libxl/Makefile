@@ -5,10 +5,10 @@
 XEN_ROOT = $(CURDIR)/../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-MAJOR = 4.7
+MAJOR = 4.8
 MINOR = 0
 
-XLUMAJOR = 4.7
+XLUMAJOR = 4.8
 XLUMINOR = 0
 
 CFLAGS += -Werror -Wno-format-zero-length -Wmissing-declarations \
@@ -75,8 +75,29 @@ else
 LIBXL_OBJS-y += libxl_no_colo.o
 endif
 
-LIBXL_OBJS-$(CONFIG_X86) += libxl_cpuid.o libxl_x86.o libxl_psr.o
+ACPI_PATH  = $(XEN_ROOT)/tools/libacpi
+DSDT_FILES-$(CONFIG_X86) = dsdt_pvh.c
+ACPI_OBJS  = $(patsubst %.c,%.o,$(DSDT_FILES-y)) build.o static_tables.o
+$(DSDT_FILES-y): acpi
+$(ACPI_OBJS): CFLAGS += -I. -DLIBACPI_STDUTILS=\"$(CURDIR)/libxl_x86_acpi.h\"
+vpath build.c $(ACPI_PATH)/
+vpath static_tables.c $(ACPI_PATH)/
+LIBXL_OBJS-$(CONFIG_X86) += $(ACPI_OBJS)
+
+.PHONY: acpi
+acpi:
+	$(MAKE) -C $(ACPI_PATH) ACPI_BUILD_DIR=$(CURDIR) DSDT_FILES="$(DSDT_FILES-y)"
+
+LIBXL_OBJS-$(CONFIG_X86) += libxl_cpuid.o libxl_x86.o libxl_psr.o libxl_x86_acpi.o
 LIBXL_OBJS-$(CONFIG_ARM) += libxl_nocpuid.o libxl_arm.o libxl_libfdt_compat.o
+ifeq ($(CONFIG_ARM_64),y)
+DSDT_FILES-y = dsdt_anycpu_arm.c
+LIBXL_OBJS-y += libxl_arm_acpi.o $(patsubst %.c,%.o,$(DSDT_FILES-y))
+dsdt_anycpu_arm.c:
+	$(MAKE) -C $(ACPI_PATH) ACPI_BUILD_DIR=$(CURDIR) DSDT_FILES="$(DSDT_FILES-y)"
+else
+LIBXL_OBJS-$(CONFIG_ARM) += libxl_arm_no_acpi.o
+endif
 
 ifeq ($(CONFIG_NetBSD),y)
 LIBXL_OBJS-y += libxl_netbsd.o
@@ -115,7 +136,8 @@ LIBXL_OBJS = flexarray.o libxl.o libxl_create.o libxl_dm.o libxl_pci.o \
 			libxl_stream_read.o libxl_stream_write.o \
 			libxl_save_callout.o _libxl_save_msgs_callout.o \
 			libxl_qmp.o libxl_event.o libxl_fork.o \
-			libxl_dom_suspend.o libxl_dom_save.o libxl_pvusb.o \
+			libxl_dom_suspend.o libxl_dom_save.o libxl_usb.o \
+			libxl_vtpm.o libxl_nic.o \
                         $(LIBXL_OBJS-y)
 LIBXL_OBJS += libxl_genid.o
 LIBXL_OBJS += _libxl_types.o libxl_flask.o _libxl_types_internal.o
@@ -166,6 +188,9 @@ $(XL_OBJS) $(TEST_PROG_OBJS) _libxl.api-for-check: \
             CFLAGS += $(CFLAGS_libxentoollog)
 $(XL_OBJS): CFLAGS += $(CFLAGS_XL)
 $(XL_OBJS): CFLAGS += -include $(XEN_ROOT)/tools/config.h # libxl_json.h needs it.
+
+libxl_dom.o: CFLAGS += -I$(XEN_ROOT)/tools  # include libacpi/x86.h
+libxl_x86_acpi.o: CFLAGS += -I$(XEN_ROOT)/tools
 
 SAVE_HELPER_OBJS = libxl_save_helper.o _libxl_save_msgs_helper.o
 $(SAVE_HELPER_OBJS): CFLAGS += $(CFLAGS_libxenctrl) $(CFLAGS_libxenevtchn)
@@ -285,7 +310,7 @@ install: all
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)
 	$(INSTALL_DIR) $(DESTDIR)$(BASH_COMPLETION_DIR)
 	$(INSTALL_DIR) $(DESTDIR)$(LIBEXEC_BIN)
-	$(INSTALL_DIR) $(DESTDIR)$(SHAREDIR)/pkgconfig
+	$(INSTALL_DIR) $(DESTDIR)$(PKG_INSTALLDIR)
 	$(INSTALL_PROG) xl $(DESTDIR)$(sbindir)
 	$(INSTALL_PROG) libxl-save-helper $(DESTDIR)$(LIBEXEC_BIN)
 	$(INSTALL_SHLIB) libxenlight_olh.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)
@@ -298,8 +323,8 @@ install: all
 	$(INSTALL_DATA) libxlutil.a $(DESTDIR)$(libdir)
 	$(INSTALL_DATA) libxl.h libxl_event.h libxl_json.h _libxl_types.h _libxl_types_json.h _libxl_list.h libxl_utils.h libxl_uuid.h libxlutil.h $(DESTDIR)$(includedir)
 	$(INSTALL_DATA) bash-completion $(DESTDIR)$(BASH_COMPLETION_DIR)/xl.sh
-	$(INSTALL_DATA) xenlight.pc $(DESTDIR)$(SHAREDIR)/pkgconfig/
-	$(INSTALL_DATA) xlutil.pc $(DESTDIR)$(SHAREDIR)/pkgconfig/
+	$(INSTALL_DATA) xenlight.pc $(DESTDIR)$(PKG_INSTALLDIR)
+	$(INSTALL_DATA) xlutil.pc $(DESTDIR)$(PKG_INSTALLDIR)
 
 .PHONY: clean
 clean:
@@ -308,6 +333,7 @@ clean:
 	$(RM) -f testidl.c.new testidl.c *.api-ok
 	$(RM) -f xenlight.pc
 	$(RM) -f xlutil.pc
+	$(MAKE) -C $(ACPI_PATH) ACPI_BUILD_DIR=$(CURDIR) clean
 
 distclean: clean
 	$(RM) -f xenlight.pc.in xlutil.pc.in

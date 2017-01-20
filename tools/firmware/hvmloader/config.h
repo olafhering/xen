@@ -22,7 +22,7 @@ struct bios_config {
     /* ROMS */
     void (*load_roms)(void);
 
-    void (*bios_load)(const struct bios_config *config);
+    void (*bios_load)(const struct bios_config *config, void *addr, uint32_t size);
 
     void (*bios_info_setup)(void);
     void (*bios_info_finish)(void);
@@ -42,9 +42,10 @@ extern struct bios_config ovmf_config;
 #define PAGE_SHIFT 12
 #define PAGE_SIZE  (1ul << PAGE_SHIFT)
 
-#define IOAPIC_BASE_ADDRESS 0xfec00000
+extern uint32_t ioapic_base_address;
+extern uint8_t ioapic_version;
+
 #define IOAPIC_ID           0x01
-#define IOAPIC_VERSION      0x11
 
 #define LAPIC_BASE_ADDRESS  0xfee00000
 #define LAPIC_ID(vcpu_id)   ((vcpu_id) * 2)
@@ -54,6 +55,8 @@ extern struct bios_config ovmf_config;
 
 /* MMIO hole: Hardcoded defaults, which can be dynamically expanded. */
 #define PCI_MEM_END         0xfc000000
+
+#define ACPI_TIS_HDR_ADDRESS 0xFED40F00UL
 
 extern unsigned long pci_mem_start, pci_mem_end;
 extern uint64_t pci_hi_mem_start, pci_hi_mem_end;

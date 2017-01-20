@@ -50,7 +50,7 @@ static int atomic_write_ept_entry(ept_entry_t *entryptr, ept_entry_t new,
                                   int level)
 {
     int rc;
-    unsigned long oldmfn = INVALID_MFN;
+    unsigned long oldmfn = mfn_x(INVALID_MFN);
     bool_t check_foreign = (new.mfn != entryptr->mfn ||
                             new.sa_p2mt != entryptr->sa_p2mt);
 
@@ -91,7 +91,7 @@ static int atomic_write_ept_entry(ept_entry_t *entryptr, ept_entry_t new,
 
     write_atomic(&entryptr->epte, new.epte);
 
-    if ( unlikely(oldmfn != INVALID_MFN) )
+    if ( unlikely(oldmfn != mfn_x(INVALID_MFN)) )
         put_page(mfn_to_page(oldmfn));
 
     rc = 0;
@@ -171,7 +171,7 @@ static void ept_p2m_type_to_flags(struct p2m_domain *p2m, ept_entry_t *entry,
             entry->a = entry->d = !!cpu_has_vmx_ept_ad;
             break;
         case p2m_grant_map_ro:
-        case p2m_mmio_write_dm:
+        case p2m_ioreq_server:
             entry->r = 1;
             entry->w = entry->x = 0;
             entry->a = !!cpu_has_vmx_ept_ad;
@@ -667,6 +667,7 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
     unsigned long gfn_remainder = gfn;
     unsigned int i, target = order / EPT_TABLE_ORDER;
     int ret, rc = 0;
+    bool_t entry_written = 0;
     bool_t direct_mmio = (p2mt == p2m_mmio_direct);
     uint8_t ipat = 0;
     bool_t need_modify_vtd_table = 1;
@@ -812,10 +813,15 @@ ept_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
     rc = atomic_write_ept_entry(ept_entry, new_entry, target);
     if ( unlikely(rc) )
         old_entry.epte = 0;
-    else if ( p2mt != p2m_invalid &&
-              (gfn + (1UL << order) - 1 > p2m->max_mapped_pfn) )
-        /* Track the highest gfn for which we have ever had a valid mapping */
-        p2m->max_mapped_pfn = gfn + (1UL << order) - 1;
+    else
+    {
+        entry_written = 1;
+
+        if ( p2mt != p2m_invalid &&
+             (gfn + (1UL << order) - 1 > p2m->max_mapped_pfn) )
+            /* Track the highest gfn for which we have ever had a valid mapping */
+            p2m->max_mapped_pfn = gfn + (1UL << order) - 1;
+    }
 
 out:
     if ( needs_sync )
@@ -826,15 +832,30 @@ out:
          need_modify_vtd_table )
     {
         if ( iommu_hap_pt_share )
-            iommu_pte_flush(d, gfn, &ept_entry->epte, order, vtd_pte_present);
+            rc = iommu_pte_flush(d, gfn, &ept_entry->epte, order, vtd_pte_present);
         else
         {
             if ( iommu_flags )
                 for ( i = 0; i < (1 << order); i++ )
-                    iommu_map_page(d, gfn + i, mfn_x(mfn) + i, iommu_flags);
+                {
+                    rc = iommu_map_page(d, gfn + i, mfn_x(mfn) + i, iommu_flags);
+                    if ( unlikely(rc) )
+                    {
+                        while ( i-- )
+                            /* If statement to satisfy __must_check. */
+                            if ( iommu_unmap_page(p2m->domain, gfn + i) )
+                                continue;
+
+                        break;
+                    }
+                }
             else
                 for ( i = 0; i < (1 << order); i++ )
-                    iommu_unmap_page(d, gfn + i);
+                {
+                    ret = iommu_unmap_page(d, gfn + i);
+                    if ( !rc )
+                        rc = ret;
+                }
         }
     }
 
@@ -847,7 +868,7 @@ out:
     if ( is_epte_present(&old_entry) )
         ept_free_entry(p2m, &old_entry, target);
 
-    if ( rc == 0 && p2m_is_hostp2m(p2m) )
+    if ( entry_written && p2m_is_hostp2m(p2m) )
         p2m_altp2m_propagate_change(d, _gfn(gfn), mfn, order, p2mt, p2ma);
 
     return rc;
@@ -866,7 +887,7 @@ static mfn_t ept_get_entry(struct p2m_domain *p2m,
     int i;
     int ret = 0;
     bool_t recalc = 0;
-    mfn_t mfn = _mfn(INVALID_MFN);
+    mfn_t mfn = INVALID_MFN;
     struct ept_data *ept = &p2m->ept;
 
     *t = p2m_mmio_dm;

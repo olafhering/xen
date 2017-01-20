@@ -19,10 +19,12 @@
  * License along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <xen/event.h>
 #include <xen/monitor.h>
 #include <xen/sched.h>
+#include <xen/vm_event.h>
 #include <xsm/xsm.h>
-#include <public/domctl.h>
+#include <asm/altp2m.h>
 #include <asm/monitor.h>
 #include <asm/vm_event.h>
 
@@ -48,12 +50,12 @@ int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
         if ( unlikely(mop->event > 31) )
             return -EINVAL;
         /* Check if event type is available. */
-        if ( unlikely(!(vm_event_monitor_get_capabilities(d) & (1U << mop->event))) )
+        if ( unlikely(!(arch_monitor_get_capabilities(d) & (1U << mop->event))) )
             return -EOPNOTSUPP;
         break;
 
     case XEN_DOMCTL_MONITOR_OP_GET_CAPABILITIES:
-        mop->event = vm_event_monitor_get_capabilities(d);
+        mop->event = arch_monitor_get_capabilities(d);
         return 0;
 
     default:
@@ -83,6 +85,63 @@ int monitor_domctl(struct domain *d, struct xen_domctl_monitor_op *mop)
     }
 
     return 0;
+}
+
+int monitor_traps(struct vcpu *v, bool_t sync, vm_event_request_t *req)
+{
+    int rc;
+    struct domain *d = v->domain;
+
+    rc = vm_event_claim_slot(d, &d->vm_event->monitor);
+    switch ( rc )
+    {
+    case 0:
+        break;
+    case -ENOSYS:
+        /*
+         * If there was no ring to handle the event, then
+         * simply continue executing normally.
+         */
+        return 0;
+    default:
+        return rc;
+    };
+
+    req->vcpu_id = v->vcpu_id;
+
+    if ( sync )
+    {
+        req->flags |= VM_EVENT_FLAG_VCPU_PAUSED;
+        vm_event_vcpu_pause(v);
+        rc = 1;
+    }
+
+    if ( altp2m_active(d) )
+    {
+        req->flags |= VM_EVENT_FLAG_ALTERNATE_P2M;
+        req->altp2m_idx = altp2m_vcpu_idx(v);
+    }
+
+    vm_event_fill_regs(req);
+    vm_event_put_request(d, &d->vm_event->monitor, req);
+
+    return rc;
+}
+
+void monitor_guest_request(void)
+{
+    struct vcpu *curr = current;
+    struct domain *d = curr->domain;
+
+    if ( d->monitor.guest_request_enabled )
+    {
+        vm_event_request_t req = {
+            .reason = VM_EVENT_REASON_GUEST_REQUEST,
+            .vcpu_id = curr->vcpu_id,
+        };
+
+        monitor_traps(curr, d->monitor.guest_request_sync, &req);
+    }
 }
 
 /*

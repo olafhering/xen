@@ -86,12 +86,6 @@ uint64_t get_msr_xss(void)
     return this_cpu(xss);
 }
 
-static bool_t xsave_area_compressed(const struct xsave_struct *xsave_area)
-{
-     return xsave_area && (xsave_area->xsave_hdr.xcomp_bv
-                           & XSTATE_COMPACTION_ENABLED);
-}
-
 static int setup_xstate_features(bool_t bsp)
 {
     unsigned int leaf, eax, ebx, ecx, edx;
@@ -160,21 +154,29 @@ static void setup_xstate_comp(uint16_t *comp_offsets,
     ASSERT(offset <= xsave_cntxt_size);
 }
 
-static void *get_xsave_addr(struct xsave_struct *xsave,
-                            const uint16_t *comp_offsets,
-                            unsigned int xfeature_idx)
-{
-    ASSERT(xsave_area_compressed(xsave));
-    return (1ul << xfeature_idx) & xsave->xsave_hdr.xstate_bv ?
-           (void *)xsave + comp_offsets[xfeature_idx] : NULL;
-}
-
+/*
+ * Serialise a vcpus xsave state into a representation suitable for the
+ * toolstack.
+ *
+ * Internally a vcpus xsave state may be compressed or uncompressed, depending
+ * on the features in use, but the ABI with the toolstack is strictly
+ * uncompressed.
+ *
+ * It is the callers responsibility to ensure that there is xsave state to
+ * serialise, and that the provided buffer is exactly the right size.
+ */
 void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size)
 {
-    struct xsave_struct *xsave = v->arch.xsave_area;
+    const struct xsave_struct *xsave = v->arch.xsave_area;
+    const void *src;
     uint16_t comp_offsets[sizeof(xfeature_mask)*8];
     u64 xstate_bv = xsave->xsave_hdr.xstate_bv;
     u64 valid;
+
+    /* Check there is state to serialise (i.e. at least an XSAVE_HDR) */
+    BUG_ON(!v->arch.xcr0_accum);
+    /* Check there is the correct room to decompress into. */
+    BUG_ON(size != xstate_ctxt_size(v->arch.xcr0_accum));
 
     if ( !(xsave->xsave_hdr.xcomp_bv & XSTATE_COMPACTION_ENABLED) )
     {
@@ -189,6 +191,7 @@ void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size)
      * Copy legacy XSAVE area and XSAVE hdr area.
      */
     memcpy(dest, xsave, XSTATE_AREA_MIN_SIZE);
+    memset(dest + XSTATE_AREA_MIN_SIZE, 0, size - XSTATE_AREA_MIN_SIZE);
 
     ((struct xsave_struct *)dest)->xsave_hdr.xcomp_bv =  0;
 
@@ -196,33 +199,49 @@ void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size)
      * Copy each region from the possibly compacted offset to the
      * non-compacted offset.
      */
+    src = xsave;
     valid = xstate_bv & ~XSTATE_FP_SSE;
     while ( valid )
     {
         u64 feature = valid & -valid;
         unsigned int index = fls(feature) - 1;
-        const void *src = get_xsave_addr(xsave, comp_offsets, index);
 
-        if ( src )
-        {
-            ASSERT((xstate_offsets[index] + xstate_sizes[index]) <= size);
-            memcpy(dest + xstate_offsets[index], src, xstate_sizes[index]);
-        }
-        else
-            memset(dest + xstate_offsets[index], 0, xstate_sizes[index]);
+        /*
+         * We previously verified xstate_bv.  If there isn't valid
+         * comp_offsets[] information, something is very broken.
+         */
+        BUG_ON(!comp_offsets[index]);
+        BUG_ON((xstate_offsets[index] + xstate_sizes[index]) > size);
+
+        memcpy(dest + xstate_offsets[index], src + comp_offsets[index],
+               xstate_sizes[index]);
 
         valid &= ~feature;
     }
 }
 
+/*
+ * Deserialise a toolstack's xsave state representation suitably for a vcpu.
+ *
+ * Internally a vcpus xsave state may be compressed or uncompressed, depending
+ * on the features in use, but the ABI with the toolstack is strictly
+ * uncompressed.
+ *
+ * It is the callers responsibility to ensure that the source buffer contains
+ * xsave state, is uncompressed, and is exactly the right size.
+ */
 void compress_xsave_states(struct vcpu *v, const void *src, unsigned int size)
 {
     struct xsave_struct *xsave = v->arch.xsave_area;
+    void *dest;
     uint16_t comp_offsets[sizeof(xfeature_mask)*8];
-    u64 xstate_bv = ((const struct xsave_struct *)src)->xsave_hdr.xstate_bv;
-    u64 valid;
+    u64 xstate_bv, valid;
 
+    BUG_ON(!v->arch.xcr0_accum);
+    BUG_ON(size != xstate_ctxt_size(v->arch.xcr0_accum));
     ASSERT(!xsave_area_compressed(src));
+
+    xstate_bv = ((const struct xsave_struct *)src)->xsave_hdr.xstate_bv;
 
     if ( !(v->arch.xcr0_accum & XSTATE_XSAVES_ONLY) )
     {
@@ -246,18 +265,22 @@ void compress_xsave_states(struct vcpu *v, const void *src, unsigned int size)
      * Copy each region from the non-compacted offset to the
      * possibly compacted offset.
      */
+    dest = xsave;
     valid = xstate_bv & ~XSTATE_FP_SSE;
     while ( valid )
     {
         u64 feature = valid & -valid;
         unsigned int index = fls(feature) - 1;
-        void *dest = get_xsave_addr(xsave, comp_offsets, index);
 
-        if ( dest )
-        {
-            ASSERT((xstate_offsets[index] + xstate_sizes[index]) <= size);
-            memcpy(dest, src + xstate_offsets[index], xstate_sizes[index]);
-        }
+        /*
+         * We previously verified xstate_bv.  If we don't have valid
+         * comp_offset[] information, something is very broken.
+         */
+        BUG_ON(!comp_offsets[index]);
+        BUG_ON((xstate_offsets[index] + xstate_sizes[index]) > size);
+
+        memcpy(dest + comp_offsets[index], src + xstate_offsets[index],
+               xstate_sizes[index]);
 
         valid &= ~feature;
     }
@@ -387,8 +410,11 @@ void xrstor(struct vcpu *v, uint64_t mask)
         { \
             if ( unlikely(!(ptr->xsave_hdr.xcomp_bv & \
                             XSTATE_COMPACTION_ENABLED)) ) \
-                ptr->xsave_hdr.xcomp_bv |= ptr->xsave_hdr.xstate_bv | \
-                                           XSTATE_COMPACTION_ENABLED; \
+            { \
+                ASSERT(!ptr->xsave_hdr.xcomp_bv); \
+                ptr->xsave_hdr.xcomp_bv = ptr->xsave_hdr.xstate_bv | \
+                                          XSTATE_COMPACTION_ENABLED; \
+            } \
             _xrstor(pfx "0x0f,0xc7,0x1f"); /* xrstors */ \
         } \
         else \
@@ -571,8 +597,8 @@ void xstate_init(struct cpuinfo_x86 *c)
          * We know FP/SSE and YMM about eax, and nothing about edx at present.
          */
         xsave_cntxt_size = _xstate_ctxt_size(feature_mask);
-        printk("%s: using cntxt_size: %#x and states: %#"PRIx64"\n",
-            __func__, xsave_cntxt_size, xfeature_mask);
+        printk("xstate: size: %#x and states: %#"PRIx64"\n",
+               xsave_cntxt_size, xfeature_mask);
 
         asm ( "fxsave %0" : "=m" (ctxt) );
         if ( ctxt.mxcsr_mask )

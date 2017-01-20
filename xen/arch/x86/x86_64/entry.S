@@ -101,61 +101,8 @@ ENTRY(lstar_enter)
         testb $TF_kernel_mode,VCPU_thread_flags(%rbx)
         jz    switch_to_kernel
 
-/*hypercall:*/
-        movq  %r10,%rcx
-        cmpq  $NR_hypercalls,%rax
-        jae   bad_hypercall
-#ifndef NDEBUG
-        /* Deliberately corrupt parameter regs not used by this hypercall. */
-        pushq %rdi; pushq %rsi; pushq %rdx; pushq %rcx; pushq %r8 ; pushq %r9 
-        leaq  hypercall_args_table(%rip),%r10
-        movq  $6,%rcx
-        sub   (%r10,%rax,1),%cl
-        movq  %rsp,%rdi
-        movl  $0xDEADBEEF,%eax
-        rep   stosq
-        popq  %r9 ; popq  %r8 ; popq  %rcx; popq  %rdx; popq  %rsi; popq  %rdi
-        movq  UREGS_rax(%rsp),%rax
-        pushq %rax
-        pushq UREGS_rip+8(%rsp)
-#define SHADOW_BYTES 16 /* Shadow EIP + shadow hypercall # */
-#else
-#define SHADOW_BYTES 0  /* No on-stack shadow state */
-#endif
-        cmpb  $0,tb_init_done(%rip)
-UNLIKELY_START(ne, trace)
-        call  __trace_hypercall_entry
-        /* Restore the registers that __trace_hypercall_entry clobbered. */
-        movq  UREGS_rax+SHADOW_BYTES(%rsp),%rax   /* Hypercall #  */
-        movq  UREGS_rdi+SHADOW_BYTES(%rsp),%rdi   /* Arg 1        */
-        movq  UREGS_rsi+SHADOW_BYTES(%rsp),%rsi   /* Arg 2        */
-        movq  UREGS_rdx+SHADOW_BYTES(%rsp),%rdx   /* Arg 3        */
-        movq  UREGS_r10+SHADOW_BYTES(%rsp),%rcx   /* Arg 4        */
-        movq  UREGS_r8 +SHADOW_BYTES(%rsp),%r8    /* Arg 5        */
-        movq  UREGS_r9 +SHADOW_BYTES(%rsp),%r9    /* Arg 6        */
-#undef SHADOW_BYTES
-UNLIKELY_END(trace)
-        leaq  hypercall_table(%rip),%r10
-        PERFC_INCR(hypercalls, %rax, %rbx)
-        callq *(%r10,%rax,8)
-#ifndef NDEBUG
-        /* Deliberately corrupt parameter regs used by this hypercall. */
-        popq  %r10         # Shadow RIP
-        cmpq  %r10,UREGS_rip+8(%rsp)
-        popq  %rcx         # Shadow hypercall index
-        jne   skip_clobber /* If RIP has changed then don't clobber. */
-        leaq  hypercall_args_table(%rip),%r10
-        movb  (%r10,%rcx,1),%cl
-        movl  $0xDEADBEEF,%r10d
-        cmpb  $1,%cl; jb skip_clobber; movq %r10,UREGS_rdi(%rsp)
-        cmpb  $2,%cl; jb skip_clobber; movq %r10,UREGS_rsi(%rsp)
-        cmpb  $3,%cl; jb skip_clobber; movq %r10,UREGS_rdx(%rsp)
-        cmpb  $4,%cl; jb skip_clobber; movq %r10,UREGS_r10(%rsp)
-        cmpb  $5,%cl; jb skip_clobber; movq %r10,UREGS_r8(%rsp)
-        cmpb  $6,%cl; jb skip_clobber; movq %r10,UREGS_r9(%rsp)
-skip_clobber:
-#endif
-        movq  %rax,UREGS_rax(%rsp)       # save the return value
+        mov   %rsp, %rdi
+        call  pv_hypercall
 
 /* %rbx: struct vcpu */
 test_all_events:
@@ -229,10 +176,6 @@ process_nmi:
 process_trap:
         leaq VCPU_trap_bounce(%rbx),%rdx
         call create_bounce_frame
-        jmp  test_all_events
-
-bad_hypercall:
-        movq $-ENOSYS,UREGS_rax(%rsp)
         jmp  test_all_events
 
 ENTRY(sysenter_entry)
@@ -420,9 +363,11 @@ domain_crash_page_fault_16:
 domain_crash_page_fault_8:
         addq  $8,%rsi
 domain_crash_page_fault:
+        ASM_CLAC
         movq  %rsi,%rdi
         call  show_page_walk
 ENTRY(dom_crash_sync_extable)
+        ASM_CLAC
         # Get out of the guest-save area of the stack.
         GET_STACK_END(ax)
         leaq  STACK_CPUINFO_FIELD(guest_cpu_user_regs)(%rax),%rsp
@@ -472,11 +417,11 @@ handle_exception_saved:
 .Lcr4_pv32_alt_end:
         .section .altinstructions, "a"
         altinstruction_entry .Lcr4_pv32_orig, .Lcr4_pv32_alt, \
-                             X86_FEATURE_SMEP, \
+                             X86_FEATURE_XEN_SMEP, \
                              (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt), \
                              (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt)
         altinstruction_entry .Lcr4_pv32_orig, .Lcr4_pv32_alt, \
-                             X86_FEATURE_SMAP, \
+                             X86_FEATURE_XEN_SMAP, \
                              (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt), \
                              (.Lcr4_pv32_alt_end - .Lcr4_pv32_alt)
         .popsection
@@ -558,6 +503,7 @@ exception_with_ints_disabled:
 
 /* No special register assumptions. */
 FATAL_exception_with_ints_disabled:
+        xorl  %esi,%esi
         movq  %rsp,%rdi
         call  fatal_trap
         BUG   /* fatal_trap() shouldn't return. */
@@ -712,144 +658,30 @@ GLOBAL(trap_nop)
 .section .rodata, "a", @progbits
 
 ENTRY(exception_table)
-        .quad do_divide_error
+        .quad do_trap
         .quad do_debug
         .quad do_nmi
         .quad do_int3
-        .quad do_overflow
-        .quad do_bounds
+        .quad do_trap
+        .quad do_trap
         .quad do_invalid_op
         .quad do_device_not_available
         .quad do_reserved_trap /* double_fault - has its own entry. */
         .quad do_reserved_trap /* coproc_seg_overrun - Intel 387 only. */
-        .quad do_invalid_TSS
-        .quad do_segment_not_present
-        .quad do_stack_segment
+        .quad do_trap
+        .quad do_trap
+        .quad do_trap
         .quad do_general_protection
         .quad do_page_fault
         .quad do_reserved_trap /* Default PIC spurious irq - architecturally reserved. */
-        .quad do_coprocessor_error
-        .quad do_alignment_check
+        .quad do_trap
+        .quad do_trap
         .quad do_machine_check
-        .quad do_simd_coprocessor_error
+        .quad do_trap
         .rept TRAP_nr - ((. - exception_table) / 8)
         .quad do_reserved_trap /* Architecturally reserved exceptions. */
         .endr
         .size exception_table, . - exception_table
-
-#ifndef CONFIG_KEXEC
-#define do_kexec_op do_ni_hypercall
-#endif
-
-#ifndef CONFIG_TMEM
-#define do_tmem_op do_ni_hypercall
-#endif
-
-#ifndef CONFIG_XENOPROF
-#define do_xenoprof_op do_ni_hypercall
-#endif
-
-ENTRY(hypercall_table)
-        .quad do_set_trap_table     /*  0 */
-        .quad do_mmu_update
-        .quad do_set_gdt
-        .quad do_stack_switch
-        .quad do_set_callbacks
-        .quad do_fpu_taskswitch     /*  5 */
-        .quad do_sched_op_compat
-        .quad do_platform_op
-        .quad do_set_debugreg
-        .quad do_get_debugreg
-        .quad do_update_descriptor  /* 10 */
-        .quad do_ni_hypercall
-        .quad do_memory_op
-        .quad do_multicall
-        .quad do_update_va_mapping
-        .quad do_set_timer_op       /* 15 */
-        .quad do_event_channel_op_compat
-        .quad do_xen_version
-        .quad do_console_io
-        .quad do_physdev_op_compat
-        .quad do_grant_table_op     /* 20 */
-        .quad do_vm_assist
-        .quad do_update_va_mapping_otherdomain
-        .quad do_iret
-        .quad do_vcpu_op
-        .quad do_set_segment_base   /* 25 */
-        .quad do_mmuext_op
-        .quad do_xsm_op
-        .quad do_nmi_op
-        .quad do_sched_op
-        .quad do_callback_op        /* 30 */
-        .quad do_xenoprof_op
-        .quad do_event_channel_op
-        .quad do_physdev_op
-        .quad do_hvm_op
-        .quad do_sysctl             /* 35 */
-        .quad do_domctl
-        .quad do_kexec_op
-        .quad do_tmem_op
-        .quad do_ni_hypercall       /* reserved for XenClient */
-        .quad do_xenpmu_op          /* 40 */
-        .rept __HYPERVISOR_arch_0-((.-hypercall_table)/8)
-        .quad do_ni_hypercall
-        .endr
-        .quad do_mca                /* 48 */
-        .quad paging_domctl_continuation
-        .rept NR_hypercalls-((.-hypercall_table)/8)
-        .quad do_ni_hypercall
-        .endr
-
-ENTRY(hypercall_args_table)
-        .byte 1 /* do_set_trap_table    */  /*  0 */
-        .byte 4 /* do_mmu_update        */
-        .byte 2 /* do_set_gdt           */
-        .byte 2 /* do_stack_switch      */
-        .byte 3 /* do_set_callbacks     */
-        .byte 1 /* do_fpu_taskswitch    */  /*  5 */
-        .byte 2 /* do_sched_op_compat   */
-        .byte 1 /* do_platform_op       */
-        .byte 2 /* do_set_debugreg      */
-        .byte 1 /* do_get_debugreg      */
-        .byte 2 /* do_update_descriptor */  /* 10 */
-        .byte 0 /* do_ni_hypercall      */
-        .byte 2 /* do_memory_op         */
-        .byte 2 /* do_multicall         */
-        .byte 3 /* do_update_va_mapping */
-        .byte 1 /* do_set_timer_op      */  /* 15 */
-        .byte 1 /* do_event_channel_op_compat */
-        .byte 2 /* do_xen_version       */
-        .byte 3 /* do_console_io        */
-        .byte 1 /* do_physdev_op_compat */
-        .byte 3 /* do_grant_table_op    */  /* 20 */
-        .byte 2 /* do_vm_assist         */
-        .byte 4 /* do_update_va_mapping_otherdomain */
-        .byte 0 /* do_iret              */
-        .byte 3 /* do_vcpu_op           */
-        .byte 2 /* do_set_segment_base  */  /* 25 */
-        .byte 4 /* do_mmuext_op         */
-        .byte 1 /* do_xsm_op            */
-        .byte 2 /* do_nmi_op            */
-        .byte 2 /* do_sched_op          */
-        .byte 2 /* do_callback_op       */  /* 30 */
-        .byte 2 /* do_xenoprof_op       */
-        .byte 2 /* do_event_channel_op  */
-        .byte 2 /* do_physdev_op        */
-        .byte 2 /* do_hvm_op            */
-        .byte 1 /* do_sysctl            */  /* 35 */
-        .byte 1 /* do_domctl            */
-        .byte 2 /* do_kexec             */
-        .byte 1 /* do_tmem_op           */
-        .byte 0 /* reserved for XenClient */
-        .byte 2 /* do_xenpmu_op         */  /* 40 */
-        .rept __HYPERVISOR_arch_0-(.-hypercall_args_table)
-        .byte 0 /* do_ni_hypercall      */
-        .endr
-        .byte 1 /* do_mca               */  /* 48 */
-        .byte 1 /* paging_domctl_continuation */
-        .rept NR_hypercalls-(.-hypercall_args_table)
-        .byte 0 /* do_ni_hypercall      */
-        .endr
 
 /* Table of automatically generated entry points.  One per vector. */
         .section .init.rodata, "a", @progbits
@@ -866,11 +698,11 @@ autogen_stubs: /* Automatically generated stubs. */
 
         vec = 0
         .rept NR_VECTORS
-        ALIGN
 
         /* Common interrupts, heading towards do_IRQ(). */
         .if vec >= FIRST_DYNAMIC_VECTOR && vec != HYPERCALL_VECTOR && vec != LEGACY_SYSCALL_VECTOR
 
+        ALIGN
 1:      pushq $0
         movb  $vec,4(%rsp)
         jmp   common_interrupt

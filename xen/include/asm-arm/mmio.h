@@ -20,6 +20,7 @@
 #define __ASM_ARM_MMIO_H__
 
 #include <xen/lib.h>
+#include <xen/rwlock.h>
 #include <asm/processor.h>
 #include <asm/regs.h>
 
@@ -51,15 +52,18 @@ struct mmio_handler {
 
 struct vmmio {
     int num_entries;
-    spinlock_t lock;
-    struct mmio_handler handlers[MAX_IO_HANDLER];
+    int max_num_entries;
+    rwlock_t lock;
+    struct mmio_handler *handlers;
 };
 
 extern int handle_mmio(mmio_info_t *info);
 void register_mmio_handler(struct domain *d,
                            const struct mmio_handler_ops *ops,
                            paddr_t addr, paddr_t size, void *priv);
-int domain_io_init(struct domain *d);
+int domain_io_init(struct domain *d, int max_count);
+void domain_io_free(struct domain *d);
+
 
 #endif  /* __ASM_ARM_MMIO_H__ */
 

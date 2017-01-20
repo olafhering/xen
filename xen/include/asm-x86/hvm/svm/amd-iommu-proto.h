@@ -42,6 +42,7 @@ struct acpi_ivrs_hardware;
 
 /* amd-iommu-detect functions */
 int amd_iommu_get_ivrs_dev_entries(void);
+int amd_iommu_get_supported_ivhd_type(void);
 int amd_iommu_detect_one_acpi(const struct acpi_ivrs_hardware *);
 int amd_iommu_detect_acpi(void);
 void get_iommu_features(struct amd_iommu *iommu);
@@ -51,9 +52,9 @@ int amd_iommu_init(void);
 int amd_iommu_update_ivrs_mapping_acpi(void);
 
 /* mapping functions */
-int amd_iommu_map_page(struct domain *d, unsigned long gfn, unsigned long mfn,
-                       unsigned int flags);
-int amd_iommu_unmap_page(struct domain *d, unsigned long gfn);
+int __must_check amd_iommu_map_page(struct domain *d, unsigned long gfn,
+                                    unsigned long mfn, unsigned int flags);
+int __must_check amd_iommu_unmap_page(struct domain *d, unsigned long gfn);
 u64 amd_iommu_get_next_table_from_pte(u32 *entry);
 int amd_iommu_reserve_domain_unity_map(struct domain *domain,
                                        u64 phys_addr, unsigned long size,
@@ -119,7 +120,7 @@ extern unsigned long *shared_intremap_inuse;
 
 /* power management support */
 void amd_iommu_resume(void);
-void amd_iommu_suspend(void);
+int __must_check amd_iommu_suspend(void);
 void amd_iommu_crash_shutdown(void);
 
 /* guest iommu support */

@@ -1031,6 +1031,9 @@ long do_set_segment_base(unsigned int which, unsigned long base)
     struct vcpu *v = current;
     long ret = 0;
 
+    if ( is_pv_32bit_vcpu(v) )
+        return -ENOSYS; /* x86/64 only. */
+
     switch ( which )
     {
     case SEGBASE_FS:
@@ -1085,7 +1088,7 @@ int check_descriptor(const struct domain *dom, struct desc_struct *d)
 
     /* A not-present descriptor will always fault, so is safe. */
     if ( !(b & _SEGMENT_P) ) 
-        goto good;
+        return 1;
 
     /* Check and fix up the DPL. */
     dpl = (b >> 13) & 3;
@@ -1127,7 +1130,7 @@ int check_descriptor(const struct domain *dom, struct desc_struct *d)
 
     /* Invalid type 0 is harmless. It is used for 2nd half of a call gate. */
     if ( (b & _SEGMENT_TYPE) == 0x000 )
-        goto good;
+        return 1;
 
     /* Everything but a call gate is discarded here. */
     if ( (b & _SEGMENT_TYPE) != 0xc00 )
@@ -1386,21 +1389,21 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
             goto destroy_directmap;
     }
 
-    old_node_start = NODE_DATA(node)->node_start_pfn;
-    old_node_span = NODE_DATA(node)->node_spanned_pages;
+    old_node_start = node_start_pfn(node);
+    old_node_span = node_spanned_pages(node);
     orig_online = node_online(node);
 
     if ( !orig_online )
     {
         dprintk(XENLOG_WARNING, "node %x pxm %x is not online\n",node, pxm);
-        NODE_DATA(node)->node_id = node;
         NODE_DATA(node)->node_start_pfn = spfn;
         NODE_DATA(node)->node_spanned_pages =
                 epfn - node_start_pfn(node);
         node_set_online(node);
-    }else
+    }
+    else
     {
-        if (NODE_DATA(node)->node_start_pfn > spfn)
+        if (node_start_pfn(node) > spfn)
             NODE_DATA(node)->node_start_pfn = spfn;
         if (node_end_pfn(node) < epfn)
             NODE_DATA(node)->node_spanned_pages = epfn - node_start_pfn(node);
@@ -1436,7 +1439,10 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
         if ( i != epfn )
         {
             while (i-- > old_max)
-                iommu_unmap_page(hardware_domain, i);
+                /* If statement to satisfy __must_check. */
+                if ( iommu_unmap_page(hardware_domain, i) )
+                    continue;
+
             goto destroy_m2p;
         }
     }

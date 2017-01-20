@@ -3,32 +3,33 @@
 # If you change any of these configuration options then you must
 # 'make clean' before rebuilding.
 #
-verbose       ?= n
-perfc         ?= n
-perfc_arrays  ?= n
-lock_profile  ?= n
-crash_debug   ?= n
-frame_pointer ?= n
 lto           ?= n
 
 -include $(BASEDIR)/include/config/auto.conf
 
 include $(XEN_ROOT)/Config.mk
 
-# Hardcoded configuration implications and dependencies.
-# Do this is a neater way if it becomes unwieldy.
-ifeq ($(debug),y)
-verbose       := y
-frame_pointer := y
-else
-CFLAGS += -DNDEBUG
-endif
-ifeq ($(perfc_arrays),y)
-perfc := y
-endif
 
+ifneq ($(origin crash_debug),undefined)
+$(error "You must use 'make menuconfig' to enable/disable crash_debug now.")
+endif
+ifeq ($(origin debug),command line)
+$(warning "You must use 'make menuconfig' to enable/disable debug now.")
+endif
+ifneq ($(origin frame_pointer),undefined)
+$(error "You must use 'make menuconfig' to enable/disable frame_pointer now.")
+endif
 ifneq ($(origin kexec),undefined)
 $(error "You must use 'make menuconfig' to enable/disable kexec now.")
+endif
+ifneq ($(origin lock_profile),undefined)
+$(error "You must use 'make menuconfig' to enable/disable lock_profile now.")
+endif
+ifneq ($(origin perfc),undefined)
+$(error "You must use 'make menuconfig' to enable/disable perfc now.")
+endif
+ifneq ($(origin verbose),undefined)
+$(error "You must use 'make menuconfig' to enable/disable verbose now.")
 endif
 
 # Set ARCH/SUBARCH appropriately.
@@ -43,7 +44,13 @@ ALL_OBJS-y               += $(BASEDIR)/common/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/drivers/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/xsm/built_in.o
 ALL_OBJS-y               += $(BASEDIR)/arch/$(TARGET_ARCH)/built_in.o
-ALL_OBJS-$(CONFIG_X86)   += $(BASEDIR)/crypto/built_in.o
+ALL_OBJS-$(CONFIG_CRYPTO)   += $(BASEDIR)/crypto/built_in.o
+
+ifeq ($(CONFIG_DEBUG),y)
+CFLAGS += -O1
+else
+CFLAGS += -O2 -fomit-frame-pointer
+endif
 
 CFLAGS += -nostdinc -fno-builtin -fno-common
 CFLAGS += -Werror -Wredundant-decls -Wno-pointer-arith
@@ -57,18 +64,13 @@ ifneq ($(clang),y)
 CFLAGS += -Wa,--strip-local-absolute
 endif
 
-CFLAGS-$(verbose)       += -DVERBOSE
-CFLAGS-$(crash_debug)   += -DCRASH_DEBUG
-CFLAGS-$(perfc)         += -DPERF_COUNTERS
-CFLAGS-$(perfc_arrays)  += -DPERF_ARRAYS
-CFLAGS-$(lock_profile)  += -DLOCK_PROFILE
-CFLAGS-$(frame_pointer) += -fno-omit-frame-pointer -DCONFIG_FRAME_POINTER
+CFLAGS-$(CONFIG_FRAME_POINTER) += -fno-omit-frame-pointer
 
 ifneq ($(max_phys_irqs),)
 CFLAGS-y                += -DMAX_PHYS_IRQS=$(max_phys_irqs)
 endif
 
-AFLAGS-y                += -D__ASSEMBLY__ -include $(BASEDIR)/include/xen/config.h
+AFLAGS-y                += -D__ASSEMBLY__
 
 # Clang's built-in assembler can't handle .code16/.code32/.code64 yet
 AFLAGS-$(clang)         += -no-integrated-as
@@ -83,7 +85,7 @@ CFLAGS += $(CFLAGS-y)
 # Most CFLAGS are safe for assembly files:
 #  -std=gnu{89,99} gets confused by #-prefixed end-of-line comments
 #  -flto makes no sense and annoys clang
-AFLAGS += $(AFLAGS-y) $(filter-out -std=gnu%,$(filter-out -flto,$(CFLAGS)))
+AFLAGS += $(AFLAGS-y) $(filter-out -std=gnu% -flto,$(CFLAGS))
 
 # LDFLAGS are only passed directly to $(LD)
 LDFLAGS += $(LDFLAGS_DIRECT)
@@ -92,9 +94,10 @@ LDFLAGS += $(LDFLAGS-y)
 
 include $(BASEDIR)/arch/$(TARGET_ARCH)/Rules.mk
 
+DEPS = .*.d
+
 include Makefile
 
-DEPS = .*.d
 define gendep
     ifneq ($(1),$(subst /,:,$(1)))
         DEPS += $(dir $(1)).$(notdir $(1)).d
@@ -118,7 +121,9 @@ subdir-all := $(subdir-y) $(subdir-n)
 
 $(filter %.init.o,$(obj-y) $(obj-bin-y) $(extra-y)): CFLAGS += -DINIT_SECTIONS_ONLY
 
-$(obj-$(coverage)): CFLAGS += -fprofile-arcs -ftest-coverage -DTEST_COVERAGE
+ifeq ($(CONFIG_GCOV),y)
+$(filter-out %.init.o $(nogcov-y),$(obj-y) $(obj-bin-y) $(extra-y)): CFLAGS += -fprofile-arcs -ftest-coverage
+endif
 
 ifeq ($(lto),y)
 # Would like to handle all object files as bitcode, but objects made from

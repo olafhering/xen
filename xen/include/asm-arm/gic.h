@@ -20,7 +20,6 @@
 
 #define NR_GIC_LOCAL_IRQS  NR_LOCAL_IRQS
 #define NR_GIC_SGI         16
-#define MAX_RDIST_COUNT    4
 
 #define GICD_CTLR       (0x000)
 #define GICD_TYPER      (0x004)
@@ -101,6 +100,7 @@
 #define GICD_TYPE_CPUS_SHIFT 5
 #define GICD_TYPE_CPUS  0x0e0
 #define GICD_TYPE_SEC   0x400
+#define GICD_TYPER_DVIS (1U << 18)
 
 #define GICC_CTL_ENABLE 0x1
 #define GICC_CTL_EOI    (0x1 << 9)
@@ -222,9 +222,11 @@ enum gic_version {
 
 extern enum gic_version gic_hw_version(void);
 
+/* Program the IRQ type into the GIC */
+void gic_set_irq_type(struct irq_desc *desc, unsigned int type);
+
 /* Program the GIC to route an interrupt */
-extern void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
-                                 unsigned int priority);
+extern void gic_route_irq_to_xen(struct irq_desc *desc, unsigned int priority);
 extern int gic_route_irq_to_guest(struct domain *, unsigned int virq,
                                   struct irq_desc *desc,
                                   unsigned int priority);
@@ -329,10 +331,10 @@ struct gic_hw_operations {
     void (*deactivate_irq)(struct irq_desc *irqd);
     /* Read IRQ id and Ack */
     unsigned int (*read_irq)(void);
-    /* Set IRQ property */
-    void (*set_irq_properties)(struct irq_desc *desc,
-                               const cpumask_t *cpu_mask,
-                               unsigned int priority);
+    /* Set IRQ type */
+    void (*set_irq_type)(struct irq_desc *desc, unsigned int type);
+    /* Set IRQ priority */
+    void (*set_irq_priority)(struct irq_desc *desc, unsigned int priority);
     /* Send SGI */
     void (*send_SGI)(enum gic_sgi sgi, enum gic_sgi_mode irqmode,
                      const cpumask_t *online_mask);
@@ -360,6 +362,8 @@ struct gic_hw_operations {
                               const struct dt_device_node *gic, void *fdt);
     /* Create MADT table for the hardware domain */
     int (*make_hwdom_madt)(const struct domain *d, u32 offset);
+    /* Map extra GIC MMIO, irqs and other hw stuffs to the hardware domain. */
+    int (*map_hwdom_extra_mappings)(struct domain *d);
     /* Deny access to GIC regions */
     int (*iomem_deny_access)(const struct domain *d);
 };
@@ -369,6 +373,7 @@ int gic_make_hwdom_dt_node(const struct domain *d,
                            const struct dt_device_node *gic,
                            void *fdt);
 int gic_make_hwdom_madt(const struct domain *d, u32 offset);
+int gic_map_hwdom_extra_mappings(struct domain *d);
 int gic_iomem_deny_access(const struct domain *d);
 
 #endif /* __ASSEMBLY__ */

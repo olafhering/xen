@@ -92,6 +92,7 @@ static int fd_lock = -1;
 static const char savefileheader_magic[32]=
     "Xen saved domain, xl format\n \0 \r";
 
+#ifndef LIBXL_HAVE_NO_SUSPEND_RESUME
 static const char migrate_receiver_banner[]=
     "xl migration receiver ready, send binary domain data.\n";
 static const char migrate_receiver_ready[]=
@@ -100,6 +101,8 @@ static const char migrate_permission_to_go[]=
     "domain is yours, you are cleared to unpause";
 static const char migrate_report[]=
     "my copy unpause results are as follows";
+#endif
+
   /* followed by one byte:
    *     0: everything went well, domain is running
    *            next thing is we all exit
@@ -1547,6 +1550,7 @@ static void parse_config_data(const char *config_source,
     b_info->cmdline = parse_cmdline(config);
 
     xlu_cfg_get_defbool(config, "driver_domain", &c_info->driver_domain, 0);
+    xlu_cfg_get_defbool(config, "acpi", &b_info->acpi, 0);
 
     switch(b_info->type) {
     case LIBXL_DOMAIN_TYPE_HVM:
@@ -1562,16 +1566,20 @@ static void parse_config_data(const char *config_source,
 
         xlu_cfg_replace_string (config, "firmware_override",
                                 &b_info->u.hvm.firmware, 0);
-        if (!xlu_cfg_get_string(config, "bios", &buf, 0) &&
-            libxl_bios_type_from_string(buf, &b_info->u.hvm.bios)) {
+        xlu_cfg_replace_string (config, "bios_path_override",
+                                &b_info->u.hvm.system_firmware, 0);
+        if (!xlu_cfg_get_string(config, "bios", &buf, 0)) {
+            if (libxl_bios_type_from_string(buf, &b_info->u.hvm.bios)) {
                 fprintf(stderr, "ERROR: invalid value \"%s\" for \"bios\"\n",
                     buf);
                 exit (1);
-        }
+            }
+        } else if (b_info->u.hvm.system_firmware)
+            fprintf(stderr, "WARNING: "
+                    "bios_path_override given without specific bios name\n");
 
         xlu_cfg_get_defbool(config, "pae", &b_info->u.hvm.pae, 0);
         xlu_cfg_get_defbool(config, "apic", &b_info->u.hvm.apic, 0);
-        xlu_cfg_get_defbool(config, "acpi", &b_info->u.hvm.acpi, 0);
         xlu_cfg_get_defbool(config, "acpi_s3", &b_info->u.hvm.acpi_s3, 0);
         xlu_cfg_get_defbool(config, "acpi_s4", &b_info->u.hvm.acpi_s4, 0);
         xlu_cfg_get_defbool(config, "nx", &b_info->u.hvm.nx, 0);
@@ -2677,7 +2685,7 @@ static int preserve_domain(uint32_t *r_domid, libxl_event *event,
 
     libxl_uuid_generate(&new_uuid);
 
-    LOG("Preserving domain %d %s with suffix%s",
+    LOG("Preserving domain %u %s with suffix%s",
         *r_domid, d_config->c_info.name, strtime);
     rc = libxl_domain_preserve(ctx, *r_domid, &d_config->c_info,
                                strtime, new_uuid);
@@ -2699,7 +2707,7 @@ static int preserve_domain(uint32_t *r_domid, libxl_event *event,
 static bool freemem(uint32_t domid, libxl_domain_build_info *b_info)
 {
     int rc, retries = 3;
-    uint32_t need_memkb, free_memkb;
+    uint64_t need_memkb, free_memkb;
 
     if (!autoballoon)
         return true;
@@ -2736,6 +2744,7 @@ static void autoconnect_console(libxl_ctx *ctx_ignored,
                                 libxl_event *ev, void *priv)
 {
     uint32_t bldomid = ev->domid;
+    int notify_fd = *(int*)priv; /* write end of the notification pipe */
 
     libxl_event_free(ctx, ev);
 
@@ -2748,7 +2757,7 @@ static void autoconnect_console(libxl_ctx *ctx_ignored,
     postfork();
 
     sleep(1);
-    libxl_primary_console_exec(ctx, bldomid);
+    libxl_primary_console_exec(ctx, bldomid, notify_fd);
     /* Do not return. xl continued in child process */
     perror("xl: unable to exec console client");
     _exit(1);
@@ -2760,7 +2769,7 @@ static int domain_wait_event(uint32_t domid, libxl_event **event_r)
     for (;;) {
         ret = libxl_event_wait(ctx, event_r, LIBXL_EVENTMASK_ALL, 0,0);
         if (ret) {
-            LOG("Domain %d, failed to get event, quitting (rc=%d)", domid, ret);
+            LOG("Domain %u, failed to get event, quitting (rc=%d)", domid, ret);
             return ret;
         }
         if ((*event_r)->domid != domid) {
@@ -2818,6 +2827,7 @@ static int create_domain(struct domain_create *dom_info)
     int restore_fd_to_close = -1;
     int send_back_fd = -1;
     const libxl_asyncprogress_how *autoconnect_console_how;
+    int notify_pipe[2] = { -1, -1 };
     struct save_file_header hdr;
     uint32_t domid_soft_reset = INVALID_DOMID;
 
@@ -3005,7 +3015,12 @@ start:
 
     libxl_asyncprogress_how autoconnect_console_how_buf;
     if ( dom_info->console_autoconnect ) {
+        if (libxl_pipe(ctx, notify_pipe)) {
+            ret = ERROR_FAIL;
+            goto error_out;
+        }
         autoconnect_console_how_buf.callback = autoconnect_console;
+        autoconnect_console_how_buf.for_callback = &notify_pipe[1];
         autoconnect_console_how = &autoconnect_console_how_buf;
     }else{
         autoconnect_console_how = 0;
@@ -3055,6 +3070,33 @@ start:
         restore_fd_to_close = -1;
     }
 
+    if (autoconnect_console_how) {
+        char buf[1];
+        int r;
+
+        /* Try to get notification from xenconsole. Just move on if
+         * error occurs -- it's only minor annoyance if console
+         * doesn't show up.
+         */
+        do {
+            r = read(notify_pipe[0], buf, 1);
+        } while (r == -1 && errno == EINTR);
+
+        if (r == -1)
+            fprintf(stderr,
+                    "Failed to get notification from xenconsole: %s\n",
+                    strerror(errno));
+        else if (r == 0)
+            fprintf(stderr, "Got EOF from xenconsole notification fd\n");
+        else if (r == 1 && buf[0] != 0x00)
+            fprintf(stderr, "Got unexpected response from xenconsole: %#x\n",
+                    buf[0]);
+
+        close(notify_pipe[0]);
+        close(notify_pipe[1]);
+        notify_pipe[0] = notify_pipe[1] = -1;
+    }
+
     if (!paused)
         libxl_domain_unpause(ctx, domid);
 
@@ -3077,7 +3119,7 @@ start:
         }
         need_daemon = 0;
     }
-    LOG("Waiting for domain %s (domid %d) to die [pid %ld]",
+    LOG("Waiting for domain %s (domid %u) to die [pid %ld]",
         d_config.c_info.name, domid, (long)getpid());
 
     ret = libxl_evenable_domain_death(ctx, domid, 0, &deathw);
@@ -3103,7 +3145,7 @@ start:
         switch (event->type) {
 
         case LIBXL_EVENT_TYPE_DOMAIN_SHUTDOWN:
-            LOG("Domain %d has shut down, reason code %d 0x%x", domid,
+            LOG("Domain %u has shut down, reason code %d 0x%x", domid,
                 event->u.domain_shutdown.shutdown_reason,
                 event->u.domain_shutdown.shutdown_reason);
             switch (handle_domain_death(&domid, event, &d_config)) {
@@ -3167,7 +3209,7 @@ start:
             }
 
         case LIBXL_EVENT_TYPE_DOMAIN_DEATH:
-            LOG("Domain %d has been destroyed.", domid);
+            LOG("Domain %u has been destroyed.", domid);
             libxl_event_free(ctx, event);
             ret = 0;
             goto out;
@@ -3411,7 +3453,7 @@ static int set_memory_max(uint32_t domid, const char *mem)
     }
 
     if (libxl_domain_setmaxmem(ctx, domid, memorykb)) {
-        fprintf(stderr, "cannot set domid %d static max memory to : %s\n", domid, mem);
+        fprintf(stderr, "cannot set domid %u static max memory to : %s\n", domid, mem);
         return EXIT_FAILURE;
     }
 
@@ -3445,7 +3487,7 @@ static int set_memory_target(uint32_t domid, const char *mem)
     }
 
     if (libxl_set_memory_target(ctx, domid, memorykb, 0, /* enforce */ 1)) {
-        fprintf(stderr, "cannot set domid %d dynamic max memory to : %s\n", domid, mem);
+        fprintf(stderr, "cannot set domid %u dynamic max memory to : %s\n", domid, mem);
         return EXIT_FAILURE;
     }
 
@@ -3490,16 +3532,16 @@ static int cd_insert(uint32_t domid, const char *virtdev, char *phys)
         && stat(disk.pdev_path, &b)) {
         fprintf(stderr, "Cannot stat file: %s\n",
                 disk.pdev_path);
-        r = EXIT_FAILURE;
+        r = 1;
         goto out;
     }
 
     if (libxl_cdrom_insert(ctx, domid, &disk, NULL)) {
-        r = EXIT_FAILURE;
+        r = 1;
         goto out;
     }
 
-    r = EXIT_SUCCESS;
+    r = 0;
 
 out:
     libxl_device_disk_dispose(&disk);
@@ -3521,7 +3563,10 @@ int main_cd_eject(int argc, char **argv)
     domid = find_domain(argv[optind]);
     virtdev = argv[optind + 1];
 
-    return cd_insert(domid, virtdev, NULL);
+    if (cd_insert(domid, virtdev, NULL))
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 int main_cd_insert(int argc, char **argv)
@@ -3539,7 +3584,10 @@ int main_cd_insert(int argc, char **argv)
     virtdev = argv[optind + 1];
     file = argv[optind + 2];
 
-    return cd_insert(domid, virtdev, file);
+    if (cd_insert(domid, virtdev, file))
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 int main_usbctrl_attach(int argc, char **argv)
@@ -3691,14 +3739,14 @@ int main_usblist(int argc, char **argv)
     }
 
     for (i = 0; i < numctrl; ++i) {
-        printf("%-6s %-6s %-3s %-5s %-7s %-5s\n",
+        printf("%-6s %-12s %-3s %-5s %-7s %-5s\n",
                 "Devid", "Type", "BE", "state", "usb-ver", "ports");
 
         libxl_usbctrlinfo_init(&usbctrlinfo);
 
         if (!libxl_device_usbctrl_getinfo(ctx, domid,
                                 &usbctrls[i], &usbctrlinfo)) {
-            printf("%-6d %-6s %-3d %-5d %-7d %-5d\n",
+            printf("%-6d %-12s %-3d %-5d %-7d %-5d\n",
                     usbctrlinfo.devid,
                     libxl_usbctrl_type_to_string(usbctrlinfo.type),
                     usbctrlinfo.backend_id, usbctrlinfo.state,
@@ -3756,9 +3804,9 @@ int main_console(int argc, char **argv)
 
     domid = find_domain(argv[optind]);
     if (!type)
-        libxl_primary_console_exec(ctx, domid);
+        libxl_primary_console_exec(ctx, domid, -1);
     else
-        libxl_console_exec(ctx, domid, num, type);
+        libxl_console_exec(ctx, domid, num, type, -1);
     fprintf(stderr, "Unable to attach console\n");
     return EXIT_FAILURE;
 }
@@ -3819,10 +3867,11 @@ int main_pcilist(int argc, char **argv)
     return 0;
 }
 
-static void pcidetach(uint32_t domid, const char *bdf, int force)
+static int pcidetach(uint32_t domid, const char *bdf, int force)
 {
     libxl_device_pci pcidev;
     XLU_Config *config;
+    int r = 0;
 
     libxl_device_pci_init(&pcidev);
 
@@ -3833,13 +3882,18 @@ static void pcidetach(uint32_t domid, const char *bdf, int force)
         fprintf(stderr, "pci-detach: malformed BDF specification \"%s\"\n", bdf);
         exit(2);
     }
-    if (force)
-        libxl_device_pci_destroy(ctx, domid, &pcidev, 0);
-    else
-        libxl_device_pci_remove(ctx, domid, &pcidev, 0);
+    if (force) {
+        if (libxl_device_pci_destroy(ctx, domid, &pcidev, 0))
+            r = 1;
+    } else {
+        if (libxl_device_pci_remove(ctx, domid, &pcidev, 0))
+            r = 1;
+    }
 
     libxl_device_pci_dispose(&pcidev);
     xlu_cfg_destroy(config);
+
+    return r;
 }
 
 int main_pcidetach(int argc, char **argv)
@@ -3858,13 +3912,17 @@ int main_pcidetach(int argc, char **argv)
     domid = find_domain(argv[optind]);
     bdf = argv[optind + 1];
 
-    pcidetach(domid, bdf, force);
-    return 0;
+    if (pcidetach(domid, bdf, force))
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
-static void pciattach(uint32_t domid, const char *bdf, const char *vs)
+
+static int pciattach(uint32_t domid, const char *bdf, const char *vs)
 {
     libxl_device_pci pcidev;
     XLU_Config *config;
+    int r = 0;
 
     libxl_device_pci_init(&pcidev);
 
@@ -3875,10 +3933,14 @@ static void pciattach(uint32_t domid, const char *bdf, const char *vs)
         fprintf(stderr, "pci-attach: malformed BDF specification \"%s\"\n", bdf);
         exit(2);
     }
-    libxl_device_pci_add(ctx, domid, &pcidev, 0);
+
+    if (libxl_device_pci_add(ctx, domid, &pcidev, 0))
+        r = 1;
 
     libxl_device_pci_dispose(&pcidev);
     xlu_cfg_destroy(config);
+
+    return r;
 }
 
 int main_pciattach(int argc, char **argv)
@@ -3897,8 +3959,10 @@ int main_pciattach(int argc, char **argv)
     if (optind + 1 < argc)
         vs = argv[optind + 2];
 
-    pciattach(domid, bdf, vs);
-    return 0;
+    if (pciattach(domid, bdf, vs))
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 static void pciassignable_list(void)
@@ -3930,10 +3994,11 @@ int main_pciassignable_list(int argc, char **argv)
     return 0;
 }
 
-static void pciassignable_add(const char *bdf, int rebind)
+static int pciassignable_add(const char *bdf, int rebind)
 {
     libxl_device_pci pcidev;
     XLU_Config *config;
+    int r = 0;
 
     libxl_device_pci_init(&pcidev);
 
@@ -3944,10 +4009,14 @@ static void pciassignable_add(const char *bdf, int rebind)
         fprintf(stderr, "pci-assignable-add: malformed BDF specification \"%s\"\n", bdf);
         exit(2);
     }
-    libxl_device_pci_assignable_add(ctx, &pcidev, rebind);
+
+    if (libxl_device_pci_assignable_add(ctx, &pcidev, rebind))
+        r = 1;
 
     libxl_device_pci_dispose(&pcidev);
     xlu_cfg_destroy(config);
+
+    return r;
 }
 
 int main_pciassignable_add(int argc, char **argv)
@@ -3961,14 +4030,17 @@ int main_pciassignable_add(int argc, char **argv)
 
     bdf = argv[optind];
 
-    pciassignable_add(bdf, 1);
-    return 0;
+    if (pciassignable_add(bdf, 1))
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
-static void pciassignable_remove(const char *bdf, int rebind)
+static int pciassignable_remove(const char *bdf, int rebind)
 {
     libxl_device_pci pcidev;
     XLU_Config *config;
+    int r = 0;
 
     libxl_device_pci_init(&pcidev);
 
@@ -3979,10 +4051,14 @@ static void pciassignable_remove(const char *bdf, int rebind)
         fprintf(stderr, "pci-assignable-remove: malformed BDF specification \"%s\"\n", bdf);
         exit(2);
     }
-    libxl_device_pci_assignable_remove(ctx, &pcidev, rebind);
+
+    if (libxl_device_pci_assignable_remove(ctx, &pcidev, rebind))
+        r = 1;
 
     libxl_device_pci_dispose(&pcidev);
     xlu_cfg_destroy(config);
+
+    return r;
 }
 
 int main_pciassignable_remove(int argc, char **argv)
@@ -3999,8 +4075,10 @@ int main_pciassignable_remove(int argc, char **argv)
 
     bdf = argv[optind];
 
-    pciassignable_remove(bdf, rebind);
-    return 0;
+    if (pciassignable_remove(bdf, rebind))
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 static void pause_domain(uint32_t domid)
@@ -4066,7 +4144,7 @@ static void shutdown_domain(uint32_t domid,
 {
     int rc;
 
-    fprintf(stderr, "Shutting down domain %d\n", domid);
+    fprintf(stderr, "Shutting down domain %u\n", domid);
     rc=libxl_domain_shutdown(ctx, domid);
     if (rc == ERROR_NOPARAVIRT) {
         if (fallback_trigger) {
@@ -4098,7 +4176,7 @@ static void reboot_domain(uint32_t domid, libxl_evgen_domain_death **deathw,
 {
     int rc;
 
-    fprintf(stderr, "Rebooting domain %d\n", domid);
+    fprintf(stderr, "Rebooting domain %u\n", domid);
     rc=libxl_domain_reboot(ctx, domid);
     if (rc == ERROR_NOPARAVIRT) {
         if (fallback_trigger) {
@@ -4754,6 +4832,7 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 }
 
 static void migrate_receive(int debug, int daemonize, int monitor,
+                            int pause_after_migration,
                             int send_fd, int recv_fd,
                             libxl_checkpointed_stream checkpointed,
                             char *colo_proxy_script)
@@ -4763,8 +4842,6 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     char rc_buf;
     char *migration_domname;
     struct domain_create dom_info;
-    const char *ha = checkpointed == LIBXL_CHECKPOINTED_STREAM_COLO ?
-                     "COLO" : "Remus";
 
     signal(SIGPIPE, SIG_IGN);
     /* if we get SIGPIPE we'd rather just have it as an error */
@@ -4799,6 +4876,9 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     switch (checkpointed) {
     case LIBXL_CHECKPOINTED_STREAM_REMUS:
     case LIBXL_CHECKPOINTED_STREAM_COLO:
+    {
+        const char *ha = checkpointed == LIBXL_CHECKPOINTED_STREAM_COLO ?
+                         "COLO" : "Remus";
         /* If we are here, it means that the sender (primary) has crashed.
          * TODO: Split-Brain Check.
          */
@@ -4835,6 +4915,7 @@ static void migrate_receive(int debug, int daemonize, int monitor,
                     ha, common_domname, domid, rc);
 
         exit(rc ? EXIT_FAILURE : EXIT_SUCCESS);
+    }
     default:
         /* do nothing */
         break;
@@ -4861,8 +4942,10 @@ static void migrate_receive(int debug, int daemonize, int monitor,
         if (rc) goto perhaps_destroy_notify_rc;
     }
 
-    rc = libxl_domain_unpause(ctx, domid);
-    if (rc) goto perhaps_destroy_notify_rc;
+    if (!pause_after_migration) {
+        rc = libxl_domain_unpause(ctx, domid);
+        if (rc) goto perhaps_destroy_notify_rc;
+    }
 
     fprintf(stderr, "migration target: Domain started successsfully.\n");
     rc = 0;
@@ -4976,7 +5059,7 @@ int main_restore(int argc, char **argv)
 
 int main_migrate_receive(int argc, char **argv)
 {
-    int debug = 0, daemonize = 1, monitor = 1;
+    int debug = 0, daemonize = 1, monitor = 1, pause_after_migration = 0;
     libxl_checkpointed_stream checkpointed = LIBXL_CHECKPOINTED_STREAM_NONE;
     int opt;
     char *script = NULL;
@@ -4987,7 +5070,7 @@ int main_migrate_receive(int argc, char **argv)
         COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "Fedr", opts, "migrate-receive", 0) {
+    SWITCH_FOREACH_OPT(opt, "Fedrp", opts, "migrate-receive", 0) {
     case 'F':
         daemonize = 0;
         break;
@@ -5007,13 +5090,16 @@ int main_migrate_receive(int argc, char **argv)
     case 0x200:
         script = optarg;
         break;
+    case 'p':
+        pause_after_migration = 1;
+        break;
     }
 
     if (argc-optind != 0) {
         help("migrate-receive");
         return EXIT_FAILURE;
     }
-    migrate_receive(debug, daemonize, monitor,
+    migrate_receive(debug, daemonize, monitor, pause_after_migration,
                     STDOUT_FILENO, STDIN_FILENO,
                     checkpointed, script);
 
@@ -5059,14 +5145,14 @@ int main_migrate(int argc, char **argv)
     const char *ssh_command = "ssh";
     char *rune = NULL;
     char *host;
-    int opt, daemonize = 1, monitor = 1, debug = 0;
+    int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
         COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "FC:s:e", opts, "migrate", 2) {
+    SWITCH_FOREACH_OPT(opt, "FC:s:ep", opts, "migrate", 2) {
     case 'C':
         config_filename = optarg;
         break;
@@ -5079,6 +5165,9 @@ int main_migrate(int argc, char **argv)
     case 'e':
         daemonize = 0;
         monitor = 0;
+        break;
+    case 'p':
+        pause_after_migration = 1;
         break;
     case 0x100: /* --debug */
         debug = 1;
@@ -5107,12 +5196,13 @@ int main_migrate(int argc, char **argv)
         } else {
             verbose_len = (minmsglevel_default - minmsglevel) + 2;
         }
-        xasprintf(&rune, "exec %s %s xl%s%.*s migrate-receive%s%s",
+        xasprintf(&rune, "exec %s %s xl%s%.*s migrate-receive%s%s%s",
                   ssh_command, host,
                   pass_tty_arg ? " -t" : "",
                   verbose_len, verbose_buf,
                   daemonize ? "" : " -e",
-                  debug ? " -d" : "");
+                  debug ? " -d" : "",
+                  pause_after_migration ? " -p" : "");
     }
 
     migrate_domain(domid, rune, debug, config_filename);
@@ -5546,7 +5636,7 @@ int main_config_update(int argc, char **argv)
         printf_info(default_output_format, -1, &d_config, stdout);
 
     if (!dryrun_only) {
-        fprintf(stderr, "setting dom%d configuration\n", domid);
+        fprintf(stderr, "setting dom%u configuration\n", domid);
         rc = libxl_userdata_store(ctx, domid, "xl",
                                    config_data, config_len);
         if (rc) {
@@ -5872,7 +5962,7 @@ static int vcpuset(uint32_t domid, const char* nr_vcpus, int check_host)
     if (rc == ERROR_DOMAIN_NOTFOUND)
         fprintf(stderr, "Domain %u does not exist.\n", domid);
     else if (rc)
-        fprintf(stderr, "libxl_set_vcpuonline failed domid=%d max_vcpus=%d," \
+        fprintf(stderr, "libxl_set_vcpuonline failed domid=%u max_vcpus=%d," \
                 " rc: %d\n", domid, max_vcpus, rc);
 
     libxl_bitmap_dispose(&cpumap);
@@ -5901,6 +5991,33 @@ int main_vcpuset(int argc, char **argv)
     return EXIT_SUCCESS;
 }
 
+/* Possibly select a specific piece of `xl info` to print. */
+static const char *info_name;
+static int maybe_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
+static int maybe_printf(const char *fmt, ...)
+{
+    va_list ap;
+    char *str;
+    int count = 0;
+
+    va_start(ap, fmt);
+    if (vasprintf(&str, fmt, ap) != -1) {
+        if (info_name) {
+            char *s;
+
+            if (!strncmp(str, info_name, strlen(info_name)) &&
+                (s = strchr(str, ':')) && s[1] == ' ')
+                count = fputs(&s[2], stdout);
+        } else
+            count = fputs(str, stdout);
+
+        free(str);
+    }
+    va_end(ap);
+
+    return count;
+}
+
 static void output_xeninfo(void)
 {
     const libxl_version_info *info;
@@ -5919,22 +6036,22 @@ static void output_xeninfo(void)
     }
     sched = rc;
 
-    printf("xen_major              : %d\n", info->xen_version_major);
-    printf("xen_minor              : %d\n", info->xen_version_minor);
-    printf("xen_extra              : %s\n", info->xen_version_extra);
-    printf("xen_version            : %d.%d%s\n", info->xen_version_major,
+    maybe_printf("xen_major              : %d\n", info->xen_version_major);
+    maybe_printf("xen_minor              : %d\n", info->xen_version_minor);
+    maybe_printf("xen_extra              : %s\n", info->xen_version_extra);
+    maybe_printf("xen_version            : %d.%d%s\n", info->xen_version_major,
            info->xen_version_minor, info->xen_version_extra);
-    printf("xen_caps               : %s\n", info->capabilities);
-    printf("xen_scheduler          : %s\n", libxl_scheduler_to_string(sched));
-    printf("xen_pagesize           : %u\n", info->pagesize);
-    printf("platform_params        : virt_start=0x%"PRIx64"\n", info->virt_start);
-    printf("xen_changeset          : %s\n", info->changeset);
-    printf("xen_commandline        : %s\n", info->commandline);
-    printf("cc_compiler            : %s\n", info->compiler);
-    printf("cc_compile_by          : %s\n", info->compile_by);
-    printf("cc_compile_domain      : %s\n", info->compile_domain);
-    printf("cc_compile_date        : %s\n", info->compile_date);
-    printf("build_id               : %s\n", info->build_id);
+    maybe_printf("xen_caps               : %s\n", info->capabilities);
+    maybe_printf("xen_scheduler          : %s\n", libxl_scheduler_to_string(sched));
+    maybe_printf("xen_pagesize           : %u\n", info->pagesize);
+    maybe_printf("platform_params        : virt_start=0x%"PRIx64"\n", info->virt_start);
+    maybe_printf("xen_changeset          : %s\n", info->changeset);
+    maybe_printf("xen_commandline        : %s\n", info->commandline);
+    maybe_printf("cc_compiler            : %s\n", info->compiler);
+    maybe_printf("cc_compile_by          : %s\n", info->compile_by);
+    maybe_printf("cc_compile_domain      : %s\n", info->compile_domain);
+    maybe_printf("cc_compile_date        : %s\n", info->compile_date);
+    maybe_printf("build_id               : %s\n", info->build_id);
 
     return;
 }
@@ -5946,10 +6063,10 @@ static void output_nodeinfo(void)
     if (uname(&utsbuf) < 0)
         return;
 
-    printf("host                   : %s\n", utsbuf.nodename);
-    printf("release                : %s\n", utsbuf.release);
-    printf("version                : %s\n", utsbuf.version);
-    printf("machine                : %s\n", utsbuf.machine);
+    maybe_printf("host                   : %s\n", utsbuf.nodename);
+    maybe_printf("release                : %s\n", utsbuf.release);
+    maybe_printf("version                : %s\n", utsbuf.version);
+    maybe_printf("machine                : %s\n", utsbuf.machine);
 }
 
 static void output_physinfo(void)
@@ -5964,35 +6081,37 @@ static void output_physinfo(void)
         fprintf(stderr, "libxl_physinfo failed.\n");
         return;
     }
-    printf("nr_cpus                : %d\n", info.nr_cpus);
-    printf("max_cpu_id             : %d\n", info.max_cpu_id);
-    printf("nr_nodes               : %d\n", info.nr_nodes);
-    printf("cores_per_socket       : %d\n", info.cores_per_socket);
-    printf("threads_per_core       : %d\n", info.threads_per_core);
-    printf("cpu_mhz                : %d\n", info.cpu_khz / 1000);
-    printf("hw_caps                : ");
-    for (i = 0; i < 8; i++)
-        printf("%08x%c", info.hw_cap[i], i < 7 ? ':' : '\n');
-    printf("virt_caps              :");
-    if (info.cap_hvm)
-        printf(" hvm");
-    if (info.cap_hvm_directio)
-        printf(" hvm_directio");
-    printf("\n");
+    maybe_printf("nr_cpus                : %d\n", info.nr_cpus);
+    maybe_printf("max_cpu_id             : %d\n", info.max_cpu_id);
+    maybe_printf("nr_nodes               : %d\n", info.nr_nodes);
+    maybe_printf("cores_per_socket       : %d\n", info.cores_per_socket);
+    maybe_printf("threads_per_core       : %d\n", info.threads_per_core);
+    maybe_printf("cpu_mhz                : %d\n", info.cpu_khz / 1000);
+
+    maybe_printf("hw_caps                : %08x:%08x:%08x:%08x:%08x:%08x:%08x:%08x\n",
+         info.hw_cap[0], info.hw_cap[1], info.hw_cap[2], info.hw_cap[3],
+         info.hw_cap[4], info.hw_cap[5], info.hw_cap[6], info.hw_cap[7]
+        );
+
+    maybe_printf("virt_caps              :%s%s\n",
+         info.cap_hvm ? " hvm" : "",
+         info.cap_hvm_directio ? " hvm_directio" : ""
+        );
+
     vinfo = libxl_get_version_info(ctx);
     if (vinfo) {
         i = (1 << 20) / vinfo->pagesize;
-        printf("total_memory           : %"PRIu64"\n", info.total_pages / i);
-        printf("free_memory            : %"PRIu64"\n", (info.free_pages - info.outstanding_pages) / i);
-        printf("sharing_freed_memory   : %"PRIu64"\n", info.sharing_freed_pages / i);
-        printf("sharing_used_memory    : %"PRIu64"\n", info.sharing_used_frames / i);
-        printf("outstanding_claims     : %"PRIu64"\n", info.outstanding_pages / i);
+        maybe_printf("total_memory           : %"PRIu64"\n", info.total_pages / i);
+        maybe_printf("free_memory            : %"PRIu64"\n", (info.free_pages - info.outstanding_pages) / i);
+        maybe_printf("sharing_freed_memory   : %"PRIu64"\n", info.sharing_freed_pages / i);
+        maybe_printf("sharing_used_memory    : %"PRIu64"\n", info.sharing_used_frames / i);
+        maybe_printf("outstanding_claims     : %"PRIu64"\n", info.outstanding_pages / i);
     }
     if (!libxl_get_freecpus(ctx, &cpumap)) {
         libxl_for_each_bit(i, cpumap)
             if (libxl_bitmap_test(&cpumap, i))
                 n++;
-        printf("free_cpus              : %d\n", n);
+        maybe_printf("free_cpus              : %d\n", n);
         free(cpumap.map);
     }
     libxl_physinfo_dispose(&info);
@@ -6092,7 +6211,7 @@ static void print_info(int numa)
     }
     output_xeninfo();
 
-    printf("xend_config_format     : 4\n");
+    maybe_printf("xend_config_format     : 4\n");
 
     return;
 }
@@ -6111,6 +6230,13 @@ int main_info(int argc, char **argv)
         numa = 1;
         break;
     }
+
+    /*
+     * If an extra argument is provided, filter out a specific piece of
+     * information.
+     */
+    if (numa == 0 && argc > optind)
+        info_name = argv[optind];
 
     print_info(numa);
     return 0;
@@ -6342,8 +6468,29 @@ static int sched_credit_pool_output(uint32_t poolid)
     return 0;
 }
 
-static int sched_credit2_domain_output(
-    int domid)
+static int sched_credit2_params_set(int poolid,
+                                    libxl_sched_credit2_params *scinfo)
+{
+    if (libxl_sched_credit2_params_set(ctx, poolid, scinfo)) {
+        fprintf(stderr, "libxl_sched_credit2_params_set failed.\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+static int sched_credit2_params_get(int poolid,
+                                    libxl_sched_credit2_params *scinfo)
+{
+    if (libxl_sched_credit2_params_get(ctx, poolid, scinfo)) {
+        fprintf(stderr, "libxl_sched_credit2_params_get failed.\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+static int sched_credit2_domain_output(int domid)
 {
     char *domname;
     libxl_domain_sched_params scinfo;
@@ -6365,6 +6512,22 @@ static int sched_credit2_domain_output(
         scinfo.weight);
     free(domname);
     libxl_domain_sched_params_dispose(&scinfo);
+    return 0;
+}
+
+static int sched_credit2_pool_output(uint32_t poolid)
+{
+    libxl_sched_credit2_params scparam;
+    char *poolname = libxl_cpupoolid_to_name(ctx, poolid);
+
+    if (sched_credit2_params_get(poolid, &scparam))
+        printf("Cpupool %s: [sched params unavailable]\n", poolname);
+    else
+        printf("Cpupool %s: ratelimit=%dus\n",
+               poolname, scparam.ratelimit_us);
+
+    free(poolname);
+
     return 0;
 }
 
@@ -6463,17 +6626,6 @@ static int sched_rtds_pool_output(uint32_t poolid)
     poolname = libxl_cpupoolid_to_name(ctx, poolid);
     printf("Cpupool %s: sched=RTDS\n", poolname);
 
-    free(poolname);
-    return 0;
-}
-
-static int sched_default_pool_output(uint32_t poolid)
-{
-    char *poolname;
-
-    poolname = libxl_cpupoolid_to_name(ctx, poolid);
-    printf("Cpupool %s:\n",
-           poolname);
     free(poolname);
     return 0;
 }
@@ -6723,23 +6875,35 @@ int main_sched_credit2(int argc, char **argv)
 {
     const char *dom = NULL;
     const char *cpupool = NULL;
+    int ratelimit = 0;
     int weight = 256;
+    bool opt_s = false;
+    bool opt_r = false;
     bool opt_w = false;
     int opt, rc;
     static struct option opts[] = {
         {"domain", 1, 0, 'd'},
         {"weight", 1, 0, 'w'},
+        {"schedparam", 0, 0, 's'},
+        {"ratelimit_us", 1, 0, 'r'},
         {"cpupool", 1, 0, 'p'},
         COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "d:w:p:", opts, "sched-credit2", 0) {
+    SWITCH_FOREACH_OPT(opt, "d:w:p:r:s", opts, "sched-credit2", 0) {
     case 'd':
         dom = optarg;
         break;
     case 'w':
         weight = strtol(optarg, NULL, 10);
         opt_w = true;
+        break;
+    case 's':
+        opt_s = true;
+        break;
+    case 'r':
+        ratelimit = strtol(optarg, NULL, 10);
+        opt_r = true;
         break;
     case 'p':
         cpupool = optarg;
@@ -6756,10 +6920,31 @@ int main_sched_credit2(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (!dom) { /* list all domain's credit scheduler info */
+    if (opt_s) {
+        libxl_sched_credit2_params scparam;
+        uint32_t poolid = 0;
+
+        if (cpupool) {
+            if (libxl_cpupool_qualifier_to_cpupoolid(ctx, cpupool,
+                                                     &poolid, NULL) ||
+                !libxl_cpupoolid_is_valid(ctx, poolid)) {
+                fprintf(stderr, "unknown cpupool \'%s\'\n", cpupool);
+                return EXIT_FAILURE;
+            }
+        }
+
+        if (!opt_r) { /* Output scheduling parameters */
+            if (sched_credit2_pool_output(poolid))
+                return EXIT_FAILURE;
+        } else {      /* Set scheduling parameters (so far, just ratelimit) */
+            scparam.ratelimit_us = ratelimit;
+            if (sched_credit2_params_set(poolid, &scparam))
+                return EXIT_FAILURE;
+        }
+    } else if (!dom) { /* list all domain's credit scheduler info */
         if (sched_domain_output(LIBXL_SCHEDULER_CREDIT2,
                                 sched_credit2_domain_output,
-                                sched_default_pool_output,
+                                sched_credit2_pool_output,
                                 cpupool))
             return EXIT_FAILURE;
     } else {
@@ -6998,7 +7183,7 @@ int main_domid(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    printf("%d\n", domid);
+    printf("%u\n", domid);
 
     return EXIT_SUCCESS;
 }
@@ -7023,7 +7208,7 @@ int main_domname(int argc, char **argv)
 
     domname = libxl_domid_to_name(ctx, domid);
     if (!domname) {
-        fprintf(stderr, "Can't get domain name of domain id '%d', maybe this domain does not exist.\n", domid);
+        fprintf(stderr, "Can't get domain name of domain id '%u', maybe this domain does not exist.\n", domid);
         return EXIT_FAILURE;
     }
 
@@ -8008,11 +8193,11 @@ int main_tmem_list(int argc, char **argv)
 
     buf = libxl_tmem_list(ctx, domid, use_long);
     if (buf == NULL)
-        return -1;
+        return EXIT_FAILURE;
 
     printf("%s\n", buf);
     free(buf);
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 int main_tmem_freeze(int argc, char **argv)
@@ -8032,7 +8217,7 @@ int main_tmem_freeze(int argc, char **argv)
     if (!dom && all == 0) {
         fprintf(stderr, "You must specify -a or a domain id.\n\n");
         help("tmem-freeze");
-        return 1;
+        return EXIT_FAILURE;
     }
 
     if (all)
@@ -8040,8 +8225,10 @@ int main_tmem_freeze(int argc, char **argv)
     else
         domid = find_domain(dom);
 
-    libxl_tmem_freeze(ctx, domid);
-    return 0;
+    if (libxl_tmem_freeze(ctx, domid) < 0)
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 int main_tmem_thaw(int argc, char **argv)
@@ -8061,7 +8248,7 @@ int main_tmem_thaw(int argc, char **argv)
     if (!dom && all == 0) {
         fprintf(stderr, "You must specify -a or a domain id.\n\n");
         help("tmem-thaw");
-        return 1;
+        return EXIT_FAILURE;
     }
 
     if (all)
@@ -8069,8 +8256,10 @@ int main_tmem_thaw(int argc, char **argv)
     else
         domid = find_domain(dom);
 
-    libxl_tmem_thaw(ctx, domid);
-    return 0;
+    if (libxl_tmem_thaw(ctx, domid) < 0)
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 int main_tmem_set(int argc, char **argv)
@@ -8081,6 +8270,7 @@ int main_tmem_set(int argc, char **argv)
     int opt_w = 0, opt_c = 0, opt_p = 0;
     int all = 0;
     int opt;
+    int rc = 0;
 
     SWITCH_FOREACH_OPT(opt, "aw:c:p:", NULL, "tmem-set", 0) {
     case 'a':
@@ -8104,7 +8294,7 @@ int main_tmem_set(int argc, char **argv)
     if (!dom && all == 0) {
         fprintf(stderr, "You must specify -a or a domain id.\n\n");
         help("tmem-set");
-        return 1;
+        return EXIT_FAILURE;
     }
 
     if (all)
@@ -8115,17 +8305,20 @@ int main_tmem_set(int argc, char **argv)
     if (!opt_w && !opt_c && !opt_p) {
         fprintf(stderr, "No set value specified.\n\n");
         help("tmem-set");
-        return 1;
+        return EXIT_FAILURE;
     }
 
     if (opt_w)
-        libxl_tmem_set(ctx, domid, "weight", weight);
+        rc = libxl_tmem_set(ctx, domid, "weight", weight);
     if (opt_c)
-        libxl_tmem_set(ctx, domid, "cap", cap);
+        rc = libxl_tmem_set(ctx, domid, "cap", cap);
     if (opt_p)
-        libxl_tmem_set(ctx, domid, "compress", compress);
+        rc = libxl_tmem_set(ctx, domid, "compress", compress);
 
-    return 0;
+    if (rc < 0)
+        return EXIT_FAILURE;
+
+    return EXIT_SUCCESS;
 }
 
 int main_tmem_shared_auth(int argc, char **argv)
@@ -8155,7 +8348,7 @@ int main_tmem_shared_auth(int argc, char **argv)
     if (!dom && all == 0) {
         fprintf(stderr, "You must specify -a or a domain id.\n\n");
         help("tmem-shared-auth");
-        return 1;
+        return EXIT_FAILURE;
     }
 
     if (all)
@@ -8166,18 +8359,19 @@ int main_tmem_shared_auth(int argc, char **argv)
     if (uuid == NULL || autharg == NULL) {
         fprintf(stderr, "No uuid or auth specified.\n\n");
         help("tmem-shared-auth");
-        return 1;
+        return EXIT_FAILURE;
     }
 
     auth = strtol(autharg, &endptr, 10);
     if (*endptr != '\0') {
         fprintf(stderr, "Invalid auth, valid auth are <0|1>.\n\n");
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    libxl_tmem_shared_auth(ctx, domid, uuid, auth);
+    if (libxl_tmem_shared_auth(ctx, domid, uuid, auth) < 0)
+        return EXIT_FAILURE;
 
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 int main_tmem_freeable(int argc, char **argv)
@@ -8191,10 +8385,10 @@ int main_tmem_freeable(int argc, char **argv)
 
     mb = libxl_tmem_freeable(ctx);
     if (mb == -1)
-        return -1;
+        return EXIT_FAILURE;
 
     printf("%d\n", mb);
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 int main_cpupoolcreate(int argc, char **argv)
@@ -8715,7 +8909,11 @@ int main_cpupoolnumasplit(int argc, char **argv)
             n++;
         }
     }
-    if (libxl_set_vcpuonline(ctx, 0, &cpumap)) {
+    if (libxl_domain_info(ctx, &info, 0)) {
+        fprintf(stderr, "error on getting info for Domain-0\n");
+        goto out;
+    }
+    if (info.vcpu_online > n && libxl_set_vcpuonline(ctx, 0, &cpumap)) {
         fprintf(stderr, "error on removing vcpus for Domain-0\n");
         goto out;
     }
@@ -8730,7 +8928,7 @@ int main_cpupoolnumasplit(int argc, char **argv)
             fprintf(stderr, "error on getting info for Domain-0\n");
             goto out;
         }
-        if (info.vcpu_online == n) {
+        if (info.vcpu_online <= n) {
             break;
         }
         sleep(1);
@@ -9619,6 +9817,35 @@ int main_psr_hwinfo(int argc, char **argv)
 }
 
 #endif
+
+int main_qemu_monitor_command(int argc, char **argv)
+{
+    int opt;
+    uint32_t domid;
+    char *cmd;
+    char *output;
+    int ret;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "qemu-monitor-command", 2) {
+        /* No options */
+    }
+
+    domid = find_domain(argv[optind]);
+    cmd = argv[optind + 1];
+
+    if (argc - optind > 2) {
+        fprintf(stderr, "Invalid arguments.\n");
+        return EXIT_FAILURE;
+    }
+
+    ret = libxl_qemu_monitor_command(ctx, domid, cmd, &output);
+    if (!ret && output) {
+        printf("%s\n", output);
+        free(output);
+    }
+
+    return ret ? EXIT_FAILURE : EXIT_SUCCESS;
+}
 
 /*
  * Local variables:

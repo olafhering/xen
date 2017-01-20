@@ -1,4 +1,5 @@
 obj-y += bitmap.o
+obj-y += bsearch.o
 obj-$(CONFIG_CORE_PARKING) += core_parking.o
 obj-y += cpu.o
 obj-y += cpupool.o
@@ -8,6 +9,7 @@ obj-y += domain.o
 obj-y += event_2l.o
 obj-y += event_channel.o
 obj-y += event_fifo.o
+obj-$(CONFIG_CRASH_DEBUG) += gdbstub.o
 obj-y += grant_table.o
 obj-y += guestcopy.o
 obj-bin-y += gunzip.init.o
@@ -26,6 +28,7 @@ obj-y += multicall.o
 obj-y += notifier.o
 obj-y += page_alloc.o
 obj-$(CONFIG_HAS_PDX) += pdx.o
+obj-$(CONFIG_PERF_COUNTERS) += perfc.o
 obj-y += preempt.o
 obj-y += random.o
 obj-y += rangeset.o
@@ -57,13 +60,12 @@ obj-y += vm_event.o
 obj-y += vmap.o
 obj-y += vsprintf.o
 obj-y += wait.o
+obj-bin-y += warning.init.o
 obj-$(CONFIG_XENOPROF) += xenoprof.o
 obj-y += xmalloc_tlsf.o
 
 obj-bin-$(CONFIG_X86) += $(foreach n,decompress bunzip2 unxz unlzma unlzo unlz4 earlycpio,$(n).init.o)
 
-obj-$(perfc)       += perfc.o
-obj-$(crash_debug) += gdbstub.o
 
 obj-$(CONFIG_COMPAT) += $(addprefix compat/,domain.o kernel.o memory.o multicall.o xlat.o)
 
@@ -73,7 +75,7 @@ obj-$(CONFIG_TMEM) += $(tmem-y)
 
 subdir-$(CONFIG_X86) += hvm
 
-subdir-$(coverage) += gcov
+subdir-$(CONFIG_GCOV) += gcov
 
 subdir-y += libelf
 subdir-$(CONFIG_HAS_DEVICE_TREE) += libfdt

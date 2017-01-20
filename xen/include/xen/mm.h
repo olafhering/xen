@@ -50,25 +50,67 @@
 #include <xen/list.h>
 #include <xen/spinlock.h>
 #include <xen/typesafe.h>
+#include <xen/kernel.h>
+#include <xen/perfc.h>
 #include <public/memory.h>
 
 TYPE_SAFE(unsigned long, mfn);
 #define PRI_mfn          "05lx"
-#define INVALID_MFN      (~0UL)
+#define INVALID_MFN      _mfn(~0UL)
 
 #ifndef mfn_t
 #define mfn_t /* Grep fodder: mfn_t, _mfn() and mfn_x() are defined above */
 #undef mfn_t
 #endif
 
+static inline mfn_t mfn_add(mfn_t mfn, unsigned long i)
+{
+    return _mfn(mfn_x(mfn) + i);
+}
+
+static inline mfn_t mfn_max(mfn_t x, mfn_t y)
+{
+    return _mfn(max(mfn_x(x), mfn_x(y)));
+}
+
+static inline mfn_t mfn_min(mfn_t x, mfn_t y)
+{
+    return _mfn(min(mfn_x(x), mfn_x(y)));
+}
+
+static inline bool_t mfn_eq(mfn_t x, mfn_t y)
+{
+    return mfn_x(x) == mfn_x(y);
+}
+
 TYPE_SAFE(unsigned long, gfn);
 #define PRI_gfn          "05lx"
-#define INVALID_GFN      (~0UL)
+#define INVALID_GFN      _gfn(~0UL)
 
 #ifndef gfn_t
 #define gfn_t /* Grep fodder: gfn_t, _gfn() and gfn_x() are defined above */
 #undef gfn_t
 #endif
+
+static inline gfn_t gfn_add(gfn_t gfn, unsigned long i)
+{
+    return _gfn(gfn_x(gfn) + i);
+}
+
+static inline gfn_t gfn_max(gfn_t x, gfn_t y)
+{
+    return _gfn(max(gfn_x(x), gfn_x(y)));
+}
+
+static inline gfn_t gfn_min(gfn_t x, gfn_t y)
+{
+    return _gfn(min(gfn_x(x), gfn_x(y)));
+}
+
+static inline bool_t gfn_eq(gfn_t x, gfn_t y)
+{
+    return gfn_x(x) == gfn_x(y);
+}
 
 TYPE_SAFE(unsigned long, pfn);
 #define PRI_pfn          "05lx"
@@ -105,8 +147,8 @@ int map_pages_to_xen(
     unsigned long nr_mfns,
     unsigned int flags);
 /* Alter the permissions of a range of Xen virtual address space. */
-void modify_xen_mappings(unsigned long s, unsigned long e, unsigned int flags);
-void destroy_xen_mappings(unsigned long v, unsigned long e);
+int modify_xen_mappings(unsigned long s, unsigned long e, unsigned int flags);
+int destroy_xen_mappings(unsigned long v, unsigned long e);
 /*
  * Create only non-leaf page table entries for the
  * page range in Xen virtual address space.
@@ -180,6 +222,8 @@ struct npfec {
 #define  MEMF_exact_node  (1U<<_MEMF_exact_node)
 #define _MEMF_no_owner    5
 #define  MEMF_no_owner    (1U<<_MEMF_no_owner)
+#define _MEMF_no_tlbflush 6
+#define  MEMF_no_tlbflush (1U<<_MEMF_no_tlbflush)
 #define _MEMF_node        8
 #define  MEMF_node_mask   ((1U << (8 * sizeof(nodeid_t))) - 1)
 #define  MEMF_node(n)     ((((n) + 1) & MEMF_node_mask) << _MEMF_node)
@@ -507,11 +551,11 @@ void scrub_one_page(struct page_info *);
 
 int xenmem_add_to_physmap_one(struct domain *d, unsigned int space,
                               union xen_add_to_physmap_batch_extra extra,
-                              unsigned long idx, xen_pfn_t gpfn);
+                              unsigned long idx, gfn_t gfn);
 
 /* Returns 1 on success, 0 on error, negative if the ring
  * for event propagation is full in the presence of paging */
-int guest_remove_page(struct domain *d, unsigned long gmfn);
+int guest_remove_page(struct domain *d, unsigned long gfn);
 
 #define RAM_TYPE_CONVENTIONAL 0x00000001
 #define RAM_TYPE_RESERVED     0x00000002
@@ -525,5 +569,33 @@ int page_is_ram_type(unsigned long mfn, unsigned long mem_type);
 int prepare_ring_for_helper(struct domain *d, unsigned long gmfn,
                             struct page_info **_page, void **_va);
 void destroy_ring_for_helper(void **_va, struct page_info *page);
+
+#include <asm/flushtlb.h>
+
+static inline void accumulate_tlbflush(bool *need_tlbflush,
+                                       const struct page_info *page,
+                                       uint32_t *tlbflush_timestamp)
+{
+    if ( page->u.free.need_tlbflush &&
+         page->tlbflush_timestamp <= tlbflush_current_time() &&
+         (!*need_tlbflush ||
+          page->tlbflush_timestamp > *tlbflush_timestamp) )
+    {
+        *need_tlbflush = true;
+        *tlbflush_timestamp = page->tlbflush_timestamp;
+    }
+}
+
+static inline void filtered_flush_tlb_mask(uint32_t tlbflush_timestamp)
+{
+    cpumask_t mask = cpu_online_map;
+
+    tlbflush_filter(mask, tlbflush_timestamp);
+    if ( !cpumask_empty(&mask) )
+    {
+        perfc_incr(need_flush_tlb_flush);
+        flush_tlb_mask(&mask);
+    }
+}
 
 #endif /* __XEN_MM_H__ */

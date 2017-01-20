@@ -87,14 +87,14 @@ __start:
         jne     not_multiboot
 
         /* Set up trampoline segment 64k below EBDA */
-        movzwl  0x40e,%eax          /* EBDA segment */
-        cmp     $0xa000,%eax        /* sanity check (high) */
+        movzwl  0x40e,%ecx          /* EBDA segment */
+        cmp     $0xa000,%ecx        /* sanity check (high) */
         jae     0f
-        cmp     $0x4000,%eax        /* sanity check (low) */
+        cmp     $0x4000,%ecx        /* sanity check (low) */
         jae     1f
 0:
-        movzwl  0x413,%eax          /* use base memory size on failure */
-        shl     $10-4,%eax
+        movzwl  0x413,%ecx          /* use base memory size on failure */
+        shl     $10-4,%ecx
 1:
         /*
          * Compare the value in the BDA with the information from the
@@ -106,20 +106,21 @@ __start:
         cmp     $0x100,%edx         /* is the multiboot value too small? */
         jb      2f                  /* if so, do not use it */
         shl     $10-4,%edx
-        cmp     %eax,%edx           /* compare with BDA value */
-        cmovb   %edx,%eax           /* and use the smaller */
+        cmp     %ecx,%edx           /* compare with BDA value */
+        cmovb   %edx,%ecx           /* and use the smaller */
 
 2:      /* Reserve 64kb for the trampoline */
-        sub     $0x1000,%eax
+        sub     $0x1000,%ecx
 
         /* From arch/x86/smpboot.c: start_eip had better be page-aligned! */
-        xor     %al, %al
-        shl     $4, %eax
-        mov     %eax,sym_phys(trampoline_phys)
+        xor     %cl, %cl
+        shl     $4, %ecx
+        mov     %ecx,sym_phys(trampoline_phys)
 
         /* Save the Multiboot info struct (after relocation) for later use. */
         mov     $sym_phys(cpu0_stack)+1024,%esp
-        push    %ebx
+        push    %ecx                /* Boot trampoline address. */
+        push    %ebx                /* Multiboot information address. */
         call    reloc
         mov     %eax,sym_phys(multiboot_ptr)
 
@@ -128,7 +129,8 @@ __start:
         mov     $sym_phys(__bss_end),%ecx
         sub     %edi,%ecx
         xor     %eax,%eax
-        rep     stosb
+        shr     $2,%ecx
+        rep stosl
 
         /* Interrogate CPU extended features via CPUID. */
         mov     $0x80000000,%eax
@@ -192,8 +194,8 @@ __start:
 
         /* Copy bootstrap trampoline to low memory, below 1MB. */
         mov     $sym_phys(trampoline_start),%esi
-        mov     $trampoline_end - trampoline_start,%ecx
-        rep     movsb
+        mov     $((trampoline_end - trampoline_start) / 4),%ecx
+        rep movsl
 
         /* Jump into the relocated trampoline. */
         lret
@@ -205,6 +207,6 @@ reloc:
 
 ENTRY(trampoline_start)
 #include "trampoline.S"
-GLOBAL(trampoline_end)
+ENTRY(trampoline_end)
 
 #include "x86_64.S"

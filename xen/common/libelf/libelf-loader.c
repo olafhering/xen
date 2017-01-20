@@ -21,10 +21,17 @@
 
 #include "libelf-private.h"
 
+/* ------------------------------------------------------------------------ */
+
 /* Number of section header needed in order to fit the SYMTAB and STRTAB. */
 #define ELF_BSDSYM_SECTIONS 3
-
-/* ------------------------------------------------------------------------ */
+struct elf_sym_header {
+    uint32_t size;
+    struct {
+        elf_ehdr header;
+        elf_shdr section[ELF_BSDSYM_SECTIONS];
+    } elf_header;
+} __attribute__((packed));
 
 elf_errorstatus elf_init(struct elf_binary *elf, const char *image_input, size_t size)
 {
@@ -33,7 +40,7 @@ elf_errorstatus elf_init(struct elf_binary *elf, const char *image_input, size_t
 
     if ( !elf_is_elfbinary(image_input, size) )
     {
-        elf_err(elf, "%s: not an ELF binary\n", __FUNCTION__);
+        elf_err(elf, "ELF: not an ELF binary\n");
         return -1;
     }
 
@@ -43,16 +50,14 @@ elf_errorstatus elf_init(struct elf_binary *elf, const char *image_input, size_t
     elf->ehdr = ELF_MAKE_HANDLE(elf_ehdr, (elf_ptrval)image_input);
     elf->class = elf_uval_3264(elf, elf->ehdr, e32.e_ident[EI_CLASS]);
     elf->data = elf_uval_3264(elf, elf->ehdr, e32.e_ident[EI_DATA]);
-    elf->caller_xdest_base = NULL;
-    elf->caller_xdest_size = 0;
 
     /* Sanity check phdr. */
     offset = elf_uval(elf, elf->ehdr, e_phoff) +
         elf_uval(elf, elf->ehdr, e_phentsize) * elf_phdr_count(elf);
     if ( offset > elf->size )
     {
-        elf_err(elf, "%s: phdr overflow (off %" PRIx64 " > size %lx)\n",
-                __FUNCTION__, offset, (unsigned long)elf->size);
+        elf_err(elf, "ELF: phdr overflow (off %" PRIx64 " > size %lx)\n",
+                offset, (unsigned long)elf->size);
         return -1;
     }
 
@@ -61,8 +66,8 @@ elf_errorstatus elf_init(struct elf_binary *elf, const char *image_input, size_t
         elf_uval(elf, elf->ehdr, e_shentsize) * elf_shdr_count(elf);
     if ( offset > elf->size )
     {
-        elf_err(elf, "%s: shdr overflow (off %" PRIx64 " > size %lx)\n",
-                __FUNCTION__, offset, (unsigned long)elf->size);
+        elf_err(elf, "ELF: shdr overflow (off %" PRIx64 " > size %lx)\n",
+                offset, (unsigned long)elf->size);
         return -1;
     }
 
@@ -174,9 +179,10 @@ void elf_parse_bsdsyms(struct elf_binary *elf, uint64_t pstart)
     /* Space to store the size of the elf image */
     sz = sizeof(uint32_t);
 
-    /* Space for the elf and elf section headers */
-    sz += elf_uval(elf, elf->ehdr, e_ehsize) +
-          ELF_BSDSYM_SECTIONS * elf_uval(elf, elf->ehdr, e_shentsize);
+    /* Space for the ELF header and section headers */
+    sz += offsetof(struct elf_sym_header, elf_header.section) +
+          ELF_BSDSYM_SECTIONS * (elf_64bit(elf) ? sizeof(Elf64_Shdr) :
+                                                  sizeof(Elf32_Shdr));
     sz = elf_round_up(elf, sz);
 
     /*
@@ -253,18 +259,11 @@ static void elf_load_bsdsyms(struct elf_binary *elf)
      * strtab, so we only need three section headers in our fake ELF
      * header (first section header is always the undefined section).
      */
-    struct {
-        uint32_t size;
-        struct {
-            elf_ehdr header;
-            elf_shdr section[ELF_BSDSYM_SECTIONS];
-        } __attribute__((packed)) elf_header;
-    } __attribute__((packed)) header;
-
+    struct elf_sym_header header;
     ELF_HANDLE_DECL(elf_ehdr) header_handle;
-    unsigned long shdr_size;
+    unsigned long shdr_size, ehdr_size, header_size;
     ELF_HANDLE_DECL(elf_shdr) section_handle;
-    unsigned int link, rc;
+    unsigned int link, rc, i;
     elf_ptrval header_base;
     elf_ptrval elf_header_base;
     elf_ptrval symtab_base;
@@ -284,9 +283,8 @@ do {                                                                \
 #define SYMTAB_INDEX    1
 #define STRTAB_INDEX    2
 
-    /* Allow elf_memcpy_safe to write to symbol_header. */
-    elf->caller_xdest_base = &header;
-    elf->caller_xdest_size = sizeof(header);
+    /* Allow elf_memcpy_safe to write to header. */
+    elf_set_xdest(elf, &header, sizeof(header));
 
     /*
      * Calculate the position of the various elements in GUEST MEMORY SPACE.
@@ -300,12 +298,28 @@ do {                                                                \
                       sizeof(uint32_t);
     symtab_base = elf_round_up(elf, header_base + sizeof(header));
 
+    /*
+     * Set the size of the ELF header and the section headers, based on the
+     * size of our local copy.
+     */
+    ehdr_size = elf_64bit(elf) ? sizeof(header.elf_header.header.e64) :
+                                 sizeof(header.elf_header.header.e32);
+    shdr_size = elf_64bit(elf) ? sizeof(header.elf_header.section[0].e64) :
+                                 sizeof(header.elf_header.section[0].e32);
+
     /* Fill the ELF header, copied from the original ELF header. */
     header_handle = ELF_MAKE_HANDLE(elf_ehdr,
                                 ELF_REALPTR2PTRVAL(&header.elf_header.header));
     elf_memcpy_safe(elf, ELF_HANDLE_PTRVAL(header_handle),
-                    ELF_HANDLE_PTRVAL(elf->ehdr),
-                    elf_uval(elf, elf->ehdr, e_ehsize));
+                    ELF_HANDLE_PTRVAL(elf->ehdr), ehdr_size);
+
+    /*
+     * Set the ELF header size, section header entry size and version
+     * (in case we are dealing with an input ELF header that has extensions).
+     */
+    elf_store_field_bitness(elf, header_handle, e_ehsize, ehdr_size);
+    elf_store_field_bitness(elf, header_handle, e_shentsize, shdr_size);
+    elf_store_field_bitness(elf, header_handle, e_version, EV_CURRENT);
 
     /* Set the offset to the shdr array. */
     elf_store_field_bitness(elf, header_handle, e_shoff,
@@ -318,12 +332,7 @@ do {                                                                \
     elf_store_field_bitness(elf, header_handle, e_phoff, 0);
     elf_store_field_bitness(elf, header_handle, e_phentsize, 0);
     elf_store_field_bitness(elf, header_handle, e_phnum, 0);
-
-    /* Zero the undefined section. */
-    section_handle = ELF_MAKE_HANDLE(elf_shdr,
-                     ELF_REALPTR2PTRVAL(&header.elf_header.section[SHN_UNDEF]));
-    shdr_size = elf_uval(elf, elf->ehdr, e_shentsize);
-    elf_memset_safe(elf, ELF_HANDLE_PTRVAL(section_handle), 0, shdr_size);
+    elf_store_field_bitness(elf, header_handle, e_shstrndx, 0);
 
     /*
      * The symtab section header is going to reside in section[SYMTAB_INDEX],
@@ -394,18 +403,37 @@ do {                                                                \
     header.size = strtab_base + elf_uval(elf, section_handle, sh_size) -
                   elf_header_base;
 
-    /* Load the headers. */
+    /* Load the size plus ELF header. */
+    header_size = offsetof(typeof(header), elf_header.section);
     rc = elf_load_image(elf, header_base, ELF_REALPTR2PTRVAL(&header),
-                        sizeof(header), sizeof(header));
+                        header_size, header_size);
     if ( rc != 0 )
     {
         elf_mark_broken(elf, "unable to load ELF headers into guest memory");
         return;
     }
 
+    /*
+     * Load the section headers.
+     *
+     * NB: this _must_ be done one by one, and taking the bitness into account,
+     * so that the guest can treat this as an array of type Elf{32/64}_Shdr.
+     */
+    for ( i = 0; i < ELF_BSDSYM_SECTIONS; i++ )
+    {
+        rc = elf_load_image(elf, header_base + header_size + shdr_size * i,
+                            ELF_REALPTR2PTRVAL(&header.elf_header.section[i]),
+                            shdr_size, shdr_size);
+        if ( rc != 0 )
+        {
+            elf_mark_broken(elf,
+                        "unable to load ELF section header into guest memory");
+            return;
+        }
+    }
+
     /* Remove permissions from elf_memcpy_safe. */
-    elf->caller_xdest_base = NULL;
-    elf->caller_xdest_size = 0;
+    elf_set_xdest(elf, NULL, 0);
 
 #undef SYMTAB_INDEX
 #undef STRTAB_INDEX
@@ -430,8 +458,8 @@ void elf_parse_binary(struct elf_binary *elf)
             continue;
         paddr = elf_uval(elf, phdr, p_paddr);
         memsz = elf_uval(elf, phdr, p_memsz);
-        elf_msg(elf, "%s: phdr: paddr=0x%" PRIx64
-                " memsz=0x%" PRIx64 "\n", __FUNCTION__, paddr, memsz);
+        elf_msg(elf, "ELF: phdr: paddr=%#" PRIx64 " memsz=%#" PRIx64 "\n",
+                paddr, memsz);
         if ( low > paddr )
             low = paddr;
         if ( high < paddr + memsz )
@@ -439,8 +467,8 @@ void elf_parse_binary(struct elf_binary *elf)
     }
     elf->pstart = low;
     elf->pend = high;
-    elf_msg(elf, "%s: memory: 0x%" PRIx64 " -> 0x%" PRIx64 "\n",
-            __FUNCTION__, elf->pstart, elf->pend);
+    elf_msg(elf, "ELF: memory: %#" PRIx64 " -> %#" PRIx64 "\n",
+            elf->pstart, elf->pend);
 }
 
 elf_errorstatus elf_load_binary(struct elf_binary *elf)
@@ -483,8 +511,9 @@ elf_errorstatus elf_load_binary(struct elf_binary *elf)
         }
         remain_allow_copy -= memsz;
 
-        elf_msg(elf, "%s: phdr %" PRIu64 " at 0x%"ELF_PRPTRVAL" -> 0x%"ELF_PRPTRVAL"\n",
-                __func__, i, dest, (elf_ptrval)(dest + filesz));
+        elf_msg(elf,
+                "ELF: phdr %" PRIu64 " at %#"ELF_PRPTRVAL" -> %#"ELF_PRPTRVAL"\n",
+                i, dest, (elf_ptrval)(dest + filesz));
         if ( elf_load_image(elf, dest, ELF_IMAGE_BASE(elf) + offset, filesz, memsz) != 0 )
             return -1;
     }

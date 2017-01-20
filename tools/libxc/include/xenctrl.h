@@ -442,7 +442,7 @@ typedef struct xc_dominfo {
     uint32_t      ssidref;
     unsigned int  dying:1, crashed:1, shutdown:1,
                   paused:1, blocked:1, running:1,
-                  hvm:1, debugged:1, pvh:1, xenstore:1;
+                  hvm:1, debugged:1, pvh:1, xenstore:1, hap:1;
     unsigned int  shutdown_reason; /* only meaningful if shutdown==1 */
     unsigned long nr_pages; /* current number, not maximum */
     unsigned long nr_outstanding_pages;
@@ -910,25 +910,31 @@ int xc_sched_credit_domain_get(xc_interface *xch,
                                uint32_t domid,
                                struct xen_domctl_sched_credit *sdom);
 int xc_sched_credit_params_set(xc_interface *xch,
-                              uint32_t cpupool_id,
-                              struct xen_sysctl_credit_schedule *schedule);
+                               uint32_t cpupool_id,
+                               struct xen_sysctl_credit_schedule *schedule);
 int xc_sched_credit_params_get(xc_interface *xch,
-                              uint32_t cpupool_id,
-                              struct xen_sysctl_credit_schedule *schedule);
-int xc_sched_credit2_domain_set(xc_interface *xch,
-                               uint32_t domid,
-                               struct xen_domctl_sched_credit2 *sdom);
+                               uint32_t cpupool_id,
+                               struct xen_sysctl_credit_schedule *schedule);
 
+int xc_sched_credit2_params_set(xc_interface *xch,
+                                uint32_t cpupool_id,
+                                struct xen_sysctl_credit2_schedule *schedule);
+int xc_sched_credit2_params_get(xc_interface *xch,
+                                uint32_t cpupool_id,
+                                struct xen_sysctl_credit2_schedule *schedule);
+int xc_sched_credit2_domain_set(xc_interface *xch,
+                                uint32_t domid,
+                                struct xen_domctl_sched_credit2 *sdom);
 int xc_sched_credit2_domain_get(xc_interface *xch,
-                               uint32_t domid,
-                               struct xen_domctl_sched_credit2 *sdom);
+                                uint32_t domid,
+                                struct xen_domctl_sched_credit2 *sdom);
 
 int xc_sched_rtds_domain_set(xc_interface *xch,
-                            uint32_t domid,
-                            struct xen_domctl_sched_rtds *sdom);
+                             uint32_t domid,
+                             struct xen_domctl_sched_rtds *sdom);
 int xc_sched_rtds_domain_get(xc_interface *xch,
-                            uint32_t domid,
-                            struct xen_domctl_sched_rtds *sdom);
+                             uint32_t domid,
+                             struct xen_domctl_sched_rtds *sdom);
 int xc_sched_rtds_vcpu_set(xc_interface *xch,
                            uint32_t domid,
                            struct xen_domctl_schedparam_vcpu *vcpus,
@@ -2061,11 +2067,11 @@ int xc_disable_turbo(xc_interface *xch, int cpuid);
  */
 
 int xc_tmem_control_oid(xc_interface *xch, int32_t pool_id, uint32_t subop,
-                        uint32_t cli_id, uint32_t arg1, uint32_t arg2,
+                        uint32_t cli_id, uint32_t len, uint32_t arg,
                         struct xen_tmem_oid oid, void *buf);
 int xc_tmem_control(xc_interface *xch,
                     int32_t pool_id, uint32_t subop, uint32_t cli_id,
-                    uint32_t arg1, uint32_t arg2, void *buf);
+                    uint32_t len, uint32_t arg, void *buf);
 int xc_tmem_auth(xc_interface *xch, int cli_id, char *uuid_str, int arg1);
 int xc_tmem_save(xc_interface *xch, int dom, int live, int fd, int field_marker);
 int xc_tmem_save_extra(xc_interface *xch, int dom, int fd, int field_marker);
@@ -2126,6 +2132,15 @@ int xc_set_mem_access(xc_interface *xch, domid_t domain_id,
                       uint32_t nr);
 
 /*
+ * Set an array of pages to their respective access in the access array.
+ * The nr parameter specifies the size of the pages and access arrays.
+ * The same allowed access types as for xc_set_mem_access() apply.
+ */
+int xc_set_mem_access_multi(xc_interface *xch, domid_t domain_id,
+                            uint8_t *access, uint64_t *pages,
+                            uint32_t nr);
+
+/*
  * Gets the mem access for the given page (returned in access on success)
  */
 int xc_get_mem_access(xc_interface *xch, domid_t domain_id,
@@ -2153,14 +2168,23 @@ int xc_monitor_get_capabilities(xc_interface *xch, domid_t domain_id,
 int xc_monitor_write_ctrlreg(xc_interface *xch, domid_t domain_id,
                              uint16_t index, bool enable, bool sync,
                              bool onchangeonly);
-int xc_monitor_mov_to_msr(xc_interface *xch, domid_t domain_id, bool enable,
-                          bool extended_capture);
+/*
+ * A list of MSR indices can usually be found in /usr/include/asm/msr-index.h.
+ * Please consult the Intel/AMD manuals for more information on
+ * non-architectural indices.
+ */
+int xc_monitor_mov_to_msr(xc_interface *xch, domid_t domain_id, uint32_t msr,
+                          bool enable);
 int xc_monitor_singlestep(xc_interface *xch, domid_t domain_id, bool enable);
 int xc_monitor_software_breakpoint(xc_interface *xch, domid_t domain_id,
                                    bool enable);
 int xc_monitor_guest_request(xc_interface *xch, domid_t domain_id,
                              bool enable, bool sync);
-
+int xc_monitor_debug_exceptions(xc_interface *xch, domid_t domain_id,
+                                bool enable, bool sync);
+int xc_monitor_cpuid(xc_interface *xch, domid_t domain_id, bool enable);
+int xc_monitor_privileged_call(xc_interface *xch, domid_t domain_id,
+                               bool enable);
 /**
  * This function enables / disables emulation for each REP for a
  * REP-compatible instruction.
@@ -2326,6 +2350,21 @@ int xc_memshr_add_to_physmap(xc_interface *xch,
                     uint64_t source_handle,
                     domid_t client_domain,
                     unsigned long client_gfn);
+
+/* Allows to deduplicate a range of memory of a client domain. Using
+ * this function is equivalent of calling xc_memshr_nominate_gfn for each gfn
+ * in the two domains followed by xc_memshr_share_gfns.
+ *
+ * May fail with -EINVAL if the source and client domain have different
+ * memory size or if memory sharing is not enabled on either of the domains.
+ * May also fail with -ENOMEM if there isn't enough memory available to store
+ * the sharing metadata before deduplication can happen.
+ */
+int xc_memshr_range_share(xc_interface *xch,
+                          domid_t source_domain,
+                          domid_t client_domain,
+                          uint64_t first_gfn,
+                          uint64_t last_gfn);
 
 /* Debug calls: return the number of pages referencing the shared frame backing
  * the input argument. Should be one or greater. 

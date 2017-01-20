@@ -25,8 +25,6 @@
 #include <xen/irq.h>
 #include <xen/sched.h>
 #include <xen/perfc.h>
-#include <xen/iocap.h>
-#include <xen/acpi.h>
 
 #include <asm/current.h>
 
@@ -90,6 +88,29 @@ static void vgic_rank_init(struct vgic_irq_rank *rank, uint8_t index,
         rank->vcpu[i] = vcpu;
 }
 
+int domain_vgic_register(struct domain *d, int *mmio_count)
+{
+    switch ( d->arch.vgic.version )
+    {
+#ifdef CONFIG_HAS_GICV3
+    case GIC_V3:
+        if ( vgic_v3_init(d, mmio_count) )
+           return -ENODEV;
+        break;
+#endif
+    case GIC_V2:
+        if ( vgic_v2_init(d, mmio_count) )
+            return -ENODEV;
+        break;
+    default:
+        printk(XENLOG_G_ERR "d%d: Unknown vGIC version %u\n",
+               d->domain_id, d->arch.vgic.version);
+        return -ENODEV;
+    }
+
+    return 0;
+}
+
 int domain_vgic_init(struct domain *d, unsigned int nr_spis)
 {
     int i;
@@ -102,24 +123,6 @@ int domain_vgic_init(struct domain *d, unsigned int nr_spis)
         return -EINVAL;
 
     d->arch.vgic.nr_spis = nr_spis;
-
-    switch ( d->arch.vgic.version )
-    {
-#ifdef CONFIG_HAS_GICV3
-    case GIC_V3:
-        if ( vgic_v3_init(d) )
-           return -ENODEV;
-        break;
-#endif
-    case GIC_V2:
-        if ( vgic_v2_init(d) )
-            return -ENODEV;
-        break;
-    default:
-        printk(XENLOG_G_ERR "d%d: Unknown vGIC version %u\n",
-               d->domain_id, d->arch.vgic.version);
-        return -ENODEV;
-    }
 
     spin_lock_init(&d->arch.vgic.lock);
 
@@ -179,6 +182,7 @@ void domain_vgic_free(struct domain *d)
         }
     }
 
+    d->arch.vgic.handler->domain_free(d);
     xfree(d->arch.vgic.shared_irqs);
     xfree(d->arch.vgic.pending_irqs);
     xfree(d->arch.vgic.allocated_irqs);
@@ -336,6 +340,22 @@ void vgic_disable_irqs(struct vcpu *v, uint32_t r, int n)
     }
 }
 
+#define VGIC_ICFG_MASK(intr) (1 << ((2 * ((intr) % 16)) + 1))
+
+/* The function should be called with the rank lock taken */
+static inline unsigned int vgic_get_virq_type(struct vcpu *v, int n, int index)
+{
+    struct vgic_irq_rank *r = vgic_get_rank(v, n);
+    uint32_t tr = r->icfg[index >> 4];
+
+    ASSERT(spin_is_locked(&r->lock));
+
+    if ( tr & VGIC_ICFG_MASK(index) )
+        return IRQ_TYPE_EDGE_RISING;
+    else
+        return IRQ_TYPE_LEVEL_HIGH;
+}
+
 void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
 {
     const unsigned long mask = r;
@@ -348,18 +368,6 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
 
     while ( (i = find_next_bit(&mask, 32, i)) < 32 ) {
         irq = i + (32 * n);
-        /* Set the irq type and route it to guest only for SPI and Dom0 */
-        if( irq_access_permitted(d, irq) && is_hardware_domain(d) &&
-            ( irq >= 32 ) && ( !acpi_disabled ) )
-        {
-            static int log_once = 0;
-            if ( !log_once )
-            {
-                gprintk(XENLOG_WARNING, "Routing SPIs to Dom0 on ACPI systems is unimplemented.\n");
-                log_once++;
-            }
-        }
-
         v_target = __vgic_get_target_vcpu(v, irq);
         p = irq_to_pending(v_target, irq);
         set_bit(GIC_IRQ_GUEST_ENABLED, &p->status);
@@ -371,6 +379,13 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
         {
             irq_set_affinity(p->desc, cpumask_of(v_target->processor));
             spin_lock_irqsave(&p->desc->lock, flags);
+            /*
+             * The irq cannot be a PPI, we only support delivery of SPIs
+             * to guests.
+             */
+            ASSERT(irq >= 32);
+            if ( irq_type_set_by_domain(d) )
+                gic_set_irq_type(p->desc, vgic_get_virq_type(v, n, i));
             p->desc->handler->enable(p->desc);
             spin_unlock_irqrestore(&p->desc->lock, flags);
         }

@@ -2,6 +2,7 @@
 #define __ARCH_ARM_ATOMIC__
 
 #include <xen/config.h>
+#include <xen/atomic.h>
 #include <xen/prefetch.h>
 #include <asm/system.h>
 
@@ -95,22 +96,13 @@ void __bad_atomic_size(void);
     default: __bad_atomic_size(); break;                                \
     }                                                                   \
 })
-    
-/*
- * NB. I've pushed the volatile qualifier into the operations. This allows
- * fast accessors such as _atomic_read() and _atomic_set() which don't give
- * the compiler a fit.
- */
-typedef struct { int counter; } atomic_t;
-
-#define ATOMIC_INIT(i) { (i) }
 
 /*
  * On ARM, ordinary assignment (str instruction) doesn't clear the local
  * strex/ldrex monitor on some implementations. The reason we can use it for
  * atomic_set() is the clrex or dummy strex done on every exception return.
  */
-static inline int atomic_read(atomic_t *v)
+static inline int atomic_read(const atomic_t *v)
 {
     return *(volatile int *)&v->counter;
 }
@@ -137,6 +129,53 @@ static inline void _atomic_set(atomic_t *v, int i)
 #else
 # error "unknown ARM variant"
 #endif
+
+static inline int atomic_sub_and_test(int i, atomic_t *v)
+{
+    return atomic_sub_return(i, v) == 0;
+}
+
+static inline void atomic_inc(atomic_t *v)
+{
+    atomic_add(1, v);
+}
+
+static inline int atomic_inc_return(atomic_t *v)
+{
+    return atomic_add_return(1, v);
+}
+
+static inline int atomic_inc_and_test(atomic_t *v)
+{
+    return atomic_add_return(1, v) == 0;
+}
+
+static inline void atomic_dec(atomic_t *v)
+{
+    atomic_sub(1, v);
+}
+
+static inline int atomic_dec_return(atomic_t *v)
+{
+    return atomic_sub_return(1, v);
+}
+
+static inline int atomic_dec_and_test(atomic_t *v)
+{
+    return atomic_sub_return(1, v) == 0;
+}
+
+static inline int atomic_add_negative(int i, atomic_t *v)
+{
+    return atomic_add_return(i, v) < 0;
+}
+
+static inline int atomic_add_unless(atomic_t *v, int a, int u)
+{
+    return __atomic_add_unless(v, a, u);
+}
+
+#define atomic_xchg(v, new) (xchg(&((v)->counter), new))
 
 #endif /* __ARCH_ARM_ATOMIC__ */
 /*

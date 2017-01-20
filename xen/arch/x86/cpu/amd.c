@@ -203,12 +203,31 @@ static void __init noinline probe_masking_msrs(void)
  * used to context switch to the default host state (by the cpu bringup-code,
  * crash path, etc).
  */
-static void amd_ctxt_switch_levelling(const struct domain *nextd)
+static void amd_ctxt_switch_levelling(const struct vcpu *next)
 {
 	struct cpuidmasks *these_masks = &this_cpu(cpuidmasks);
+	const struct domain *nextd = next ? next->domain : NULL;
 	const struct cpuidmasks *masks =
 		(nextd && is_pv_domain(nextd) && nextd->arch.pv_domain.cpuidmasks)
 		? nextd->arch.pv_domain.cpuidmasks : &cpuidmask_defaults;
+
+	if ((levelling_caps & LCAP_1cd) == LCAP_1cd) {
+		uint64_t val = masks->_1cd;
+
+		/*
+		 * OSXSAVE defaults to 1, which causes fast-forwarding of
+		 * Xen's real setting.  Clobber it if disabled by the guest
+		 * kernel.
+		 */
+		if (next && is_pv_vcpu(next) && !is_idle_vcpu(next) &&
+		    !(next->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE))
+			val &= ~((uint64_t)cpufeat_mask(X86_FEATURE_OSXSAVE) << 32);
+
+		if (unlikely(these_masks->_1cd != val)) {
+			wrmsr_amd(MSR_K8_FEATURE_MASK, val);
+			these_masks->_1cd = val;
+		}
+	}
 
 #define LAZY(cap, msr, field)						\
 	({								\
@@ -220,7 +239,6 @@ static void amd_ctxt_switch_levelling(const struct domain *nextd)
 		}							\
 	})
 
-	LAZY(LCAP_1cd,  MSR_K8_FEATURE_MASK,       _1cd);
 	LAZY(LCAP_e1cd, MSR_K8_EXT_FEATURE_MASK,   e1cd);
 	LAZY(LCAP_7ab0, MSR_AMD_L7S0_FEATURE_MASK, _7ab0);
 	LAZY(LCAP_6c,   MSR_AMD_THRM_FEATURE_MASK, _6c);
@@ -541,6 +559,9 @@ static void init_amd(struct cpuinfo_x86 *c)
 			wrmsr_amd_safe(0xc001100d, l, h & ~1);
 	}
 
+	/* MFENCE stops RDTSC speculation */
+	__set_bit(X86_FEATURE_MFENCE_RDTSC, c->x86_capability);
+
 	switch(c->x86)
 	{
 	case 0xf ... 0x17:
@@ -639,6 +660,18 @@ static void init_amd(struct cpuinfo_x86 *c)
 				       "CPU%u: Applying workaround for erratum 793\n",
 				       smp_processor_id());
 			wrmsrl(MSR_AMD64_LS_CFG, value | (1 << 15));
+		}
+	} else if (c->x86 == 0x12) {
+		rdmsrl(MSR_AMD64_DE_CFG, value);
+		if (!(value & (1U << 31))) {
+			static bool warned;
+
+			if (c == &boot_cpu_data || opt_cpu_info ||
+			    !test_and_set_bool(warned))
+				printk(KERN_WARNING
+				       "CPU%u: Applying workaround for erratum 665\n",
+				       smp_processor_id());
+			wrmsrl(MSR_AMD64_DE_CFG, value | (1U << 31));
 		}
 	}
 

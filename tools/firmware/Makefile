@@ -6,12 +6,8 @@ TARGET      := hvmloader/hvmloader
 INST_DIR := $(DESTDIR)$(XENFIRMWAREDIR)
 
 SUBDIRS-y :=
-ifeq ($(OVMF_PATH),)
 SUBDIRS-$(CONFIG_OVMF) += ovmf-dir
-endif
-ifeq ($(SEABIOS_PATH),)
 SUBDIRS-$(CONFIG_SEABIOS) += seabios-dir
-endif
 SUBDIRS-$(CONFIG_ROMBIOS) += rombios
 SUBDIRS-$(CONFIG_ROMBIOS) += vgabios
 SUBDIRS-$(CONFIG_ROMBIOS) += etherboot
@@ -45,6 +41,12 @@ endif
 install: all
 	[ -d $(INST_DIR) ] || $(INSTALL_DIR) $(INST_DIR)
 	[ ! -e $(TARGET) ] || $(INSTALL_DATA) $(TARGET) $(INST_DIR)
+ifeq ($(CONFIG_SEABIOS),y)
+	$(INSTALL_DATA) seabios-dir/out/bios.bin $(INST_DIR)/seabios.bin
+endif
+ifeq ($(CONFIG_OVMF),y)
+	$(INSTALL_DATA) ovmf-dir/ovmf.bin $(INST_DIR)/ovmf.bin
+endif
 
 .PHONY: clean
 clean: subdirs-clean

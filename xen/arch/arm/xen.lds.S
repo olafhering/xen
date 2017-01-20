@@ -54,7 +54,7 @@ SECTIONS
        *(.rodata)
        *(.rodata.*)
 
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
        . = ALIGN(POINTER_ALIGN);
        __lock_profile_start = .;
        *(.lockprofile.data)
@@ -135,37 +135,41 @@ SECTIONS
        *(.init.rodata)
        *(.init.rodata.rel)
        *(.init.rodata.str*)
+
+       . = ALIGN(POINTER_ALIGN);
+       __setup_start = .;
+       *(.init.setup)
+       __setup_end = .;
+
+       __proc_info_start = .;
+       *(.init.proc.info)
+       __proc_info_end = .;
+
+       __initcall_start = .;
+       *(.initcallpresmp.init)
+       __presmp_initcall_end = .;
+       *(.initcall1.init)
+       __initcall_end = .;
+
+#ifdef CONFIG_HAS_ALTERNATIVE
+       . = ALIGN(4);
+       __alt_instructions = .;
+       *(.altinstructions)
+       __alt_instructions_end = .;
+       . = ALIGN(4);
+       *(.altinstr_replacement)
+#endif
+
        *(.init.data)
        *(.init.data.rel)
        *(.init.data.rel.*)
 
        . = ALIGN(8);
        __ctors_start = .;
+       *(.ctors)
        *(.init_array)
+       *(SORT(.init_array.*))
        __ctors_end = .;
-  } :text
-  . = ALIGN(32);
-  .init.setup : {
-       __setup_start = .;
-       *(.init.setup)
-       __setup_end = .;
-  } :text
-  .init.proc.info : {
-       __proc_info_start = .;
-       *(.init.proc.info)
-       __proc_info_end = .;
-  } :text
-  .initcall.init : {
-       __initcall_start = .;
-       *(.initcallpresmp.init)
-       __presmp_initcall_end = .;
-       *(.initcall1.init)
-       __initcall_end = .;
-  } :text
-  .xsm_initcall.init : {
-       __xsm_initcall_start = .;
-       *(.xsm_initcall.init)
-       __xsm_initcall_end = .;
   } :text
   __init_end_efi = .;
   . = ALIGN(STACK_SIZE);
@@ -217,3 +221,9 @@ SECTIONS
  * code running on the boot time identity map cannot cross a section boundary.
  */
 ASSERT( _end_boot - start <= PAGE_SIZE, "Boot code is larger than 4K")
+/*
+ * __init_[begin|end] MUST be at word size boundary otherwise we cannot
+ * write fault instructions in the space properly.
+ */
+ASSERT(IS_ALIGNED(__init_begin,     4), "__init_begin is misaligned")
+ASSERT(IS_ALIGNED(__init_end,       4), "__init_end is misaligned")

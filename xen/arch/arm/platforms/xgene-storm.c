@@ -20,7 +20,6 @@
 
 #include <xen/config.h>
 #include <asm/platform.h>
-#include <xen/stdbool.h>
 #include <xen/vmap.h>
 #include <xen/device_tree.h>
 #include <asm/io.h>
@@ -66,6 +65,11 @@ static void __init xgene_check_pirq_eoi(void)
     if ( dbase == XGENE_SEC_GICV2_DIST_ADDR )
         panic("OLD X-Gene Firmware is not supported by Xen.\n"
               "Please upgrade your firmware to the latest version");
+}
+
+static uint32_t xgene_storm_quirks(void)
+{
+    return PLATFORM_QUIRK_GIC_64K_STRIDE;
 }
 
 static void xgene_storm_reset(void)
@@ -117,6 +121,7 @@ PLATFORM_START(xgene_storm, "APM X-GENE STORM")
     .compatible = xgene_storm_dt_compat,
     .init = xgene_storm_init,
     .reset = xgene_storm_reset,
+    .quirks = xgene_storm_quirks,
 PLATFORM_END
 
 /*

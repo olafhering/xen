@@ -48,9 +48,9 @@ void __bug(char *file, int line) __attribute__((noreturn));
 #define max_t(type,x,y) \
         ({ type __x = (x); type __y = (y); __x > __y ? __x: __y; })
 
-static inline int test_bit(unsigned int b, void *p)
+static inline int test_bit(unsigned int b, const void *p)
 {
-    return !!(((uint8_t *)p)[b>>3] & (1u<<(b&7)));
+    return !!(((const uint8_t *)p)[b>>3] & (1u<<(b&7)));
 }
 
 static inline int test_and_clear_bit(int nr, volatile void *addr)
@@ -157,6 +157,9 @@ static inline void cpu_relax(void)
 /* HVM-builder info. */
 struct hvm_info_table *get_hvm_info_table(void) __attribute__ ((const));
 #define hvm_info (get_hvm_info_table())
+
+/* HVM start info */
+extern const struct hvm_start_info *hvm_start_info;
 
 /* String and memory functions */
 int strcmp(const char *cs, const char *ct);
@@ -272,6 +275,10 @@ int get_mem_mapping_layout(struct e820entry entries[],
 extern struct e820map memory_map;
 bool check_overlap(uint64_t start, uint64_t size,
                    uint64_t reserved_start, uint64_t reserved_size);
+
+struct acpi_config;
+void hvmloader_acpi_build_tables(struct acpi_config *config,
+                                 unsigned int physical);
 
 #endif /* __HVMLOADER_UTIL_H__ */
 

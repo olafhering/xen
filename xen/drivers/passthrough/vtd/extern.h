@@ -25,6 +25,7 @@
 
 #define VTDPREFIX "[VT-D]"
 
+struct pci_ats_dev;
 extern bool_t rwbf_quirk;
 
 void print_iommu_regs(struct acpi_drhd_unit *drhd);
@@ -59,8 +60,9 @@ int ats_device(const struct pci_dev *, const struct acpi_drhd_unit *);
 int dev_invalidate_iotlb(struct iommu *iommu, u16 did,
                          u64 addr, unsigned int size_order, u64 type);
 
-int qinval_device_iotlb(struct iommu *iommu,
-                        u32 max_invs_pend, u16 sid, u16 size, u64 addr);
+int __must_check qinval_device_iotlb_sync(struct iommu *iommu,
+                                          struct pci_dev *pdev,
+                                          u16 did, u16 size, u64 addr);
 
 unsigned int get_cache_line_size(void);
 void cacheline_flush(char *);
@@ -91,7 +93,8 @@ int is_igd_vt_enabled_quirk(void);
 void platform_quirks_init(void);
 void vtd_ops_preamble_quirk(struct iommu* iommu);
 void vtd_ops_postamble_quirk(struct iommu* iommu);
-void me_wifi_quirk(struct domain *domain, u8 bus, u8 devfn, int map);
+int __must_check me_wifi_quirk(struct domain *domain,
+                               u8 bus, u8 devfn, int map);
 void pci_vtd_quirk(const struct pci_dev *);
 bool_t platform_supports_intremap(void);
 bool_t platform_supports_x2apic(void);

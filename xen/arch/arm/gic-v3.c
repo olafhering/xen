@@ -471,16 +471,11 @@ static inline uint64_t gicv3_mpidr_to_affinity(int cpu)
              MPIDR_AFFINITY_LEVEL(mpidr, 0));
 }
 
-static void gicv3_set_irq_properties(struct irq_desc *desc,
-                                     const cpumask_t *cpu_mask,
-                                     unsigned int priority)
+static void gicv3_set_irq_type(struct irq_desc *desc, unsigned int type)
 {
     uint32_t cfg, actual, edgebit;
-    uint64_t affinity;
     void __iomem *base;
-    unsigned int cpu = gicv3_get_cpu_from_mask(cpu_mask);
     unsigned int irq = desc->irq;
-    unsigned int type = desc->arch.type;
 
     /* SGI's are always edge-triggered not need to call GICD_ICFGR0 */
     ASSERT(irq >= NR_GIC_SGI);
@@ -515,13 +510,15 @@ static void gicv3_set_irq_properties(struct irq_desc *desc,
             IRQ_TYPE_EDGE_RISING :
             IRQ_TYPE_LEVEL_HIGH;
     }
+    spin_unlock(&gicv3.lock);
+}
 
-    affinity = gicv3_mpidr_to_affinity(cpu);
-    /* Make sure we don't broadcast the interrupt */
-    affinity &= ~GICD_IROUTER_SPI_MODE_ANY;
+static void gicv3_set_irq_priority(struct irq_desc *desc,
+                                   unsigned int priority)
+{
+    unsigned int irq = desc->irq;
 
-    if ( irq >= NR_GIC_LOCAL_IRQS )
-        writeq_relaxed(affinity, (GICD + GICD_IROUTER + irq * 8));
+    spin_lock(&gicv3.lock);
 
     /* Set priority */
     if ( irq < NR_GIC_LOCAL_IRQS )
@@ -662,6 +659,10 @@ static int __init gicv3_populate_rdist(void)
                         smp_processor_id(), i, ptr);
                 return 0;
             }
+
+            if ( gicv3.rdist_regions[i].single_rdist )
+                break;
+
             if ( gicv3.rdist_stride )
                 ptr += gicv3.rdist_stride;
             else
@@ -1134,14 +1135,6 @@ static const hw_irq_controller gicv3_guest_irq_type = {
     .set_affinity = gicv3_irq_set_affinity,
 };
 
-static int __init cmp_rdist(const void *a, const void *b)
-{
-    const struct rdist_region *l = a, *r = a;
-
-    /* We assume that re-distributor regions can never overlap */
-    return ( l->base < r->base) ? -1 : 0;
-}
-
 static paddr_t __initdata dbase = INVALID_PADDR;
 static paddr_t __initdata vbase = INVALID_PADDR, vsize = 0;
 static paddr_t __initdata cbase = INVALID_PADDR, csize = 0;
@@ -1172,6 +1165,17 @@ static void __init gicv3_init_v2(void)
     vgic_v2_setup_hw(dbase, cbase, csize, vbase, 0);
 }
 
+static void __init gicv3_ioremap_distributor(paddr_t dist_paddr)
+{
+    if ( dist_paddr & ~PAGE_MASK )
+        panic("GICv3:  Found unaligned distributor address %"PRIpaddr"",
+              dbase);
+
+    gicv3.map_dbase = ioremap_nocache(dist_paddr, SZ_64K);
+    if ( !gicv3.map_dbase )
+        panic("GICv3: Failed to ioremap for GIC distributor\n");
+}
+
 static void __init gicv3_dt_init(void)
 {
     struct rdist_region *rdist_regs;
@@ -1182,17 +1186,11 @@ static void __init gicv3_dt_init(void)
     if ( res )
         panic("GICv3: Cannot find a valid distributor address");
 
-    if ( (dbase & ~PAGE_MASK) )
-        panic("GICv3:  Found unaligned distributor address %"PRIpaddr"",
-              dbase);
+    gicv3_ioremap_distributor(dbase);
 
     if ( !dt_property_read_u32(node, "#redistributor-regions",
                 &gicv3.rdist_count) )
         gicv3.rdist_count = 1;
-
-    if ( gicv3.rdist_count > MAX_RDIST_COUNT )
-        panic("GICv3: Number of redistributor regions is more than"
-              "%d (Increase MAX_RDIST_COUNT!!)\n", MAX_RDIST_COUNT);
 
     rdist_regs = xzalloc_array(struct rdist_region, gicv3.rdist_count);
     if ( !rdist_regs )
@@ -1209,9 +1207,6 @@ static void __init gicv3_dt_init(void)
         rdist_regs[i].base = rdist_base;
         rdist_regs[i].size = rdist_size;
     }
-
-    /* The vGIC code requires the region to be sorted */
-    sort(rdist_regs, gicv3.rdist_count, sizeof(*rdist_regs), cmp_rdist, NULL);
 
     if ( !dt_property_read_u32(node, "redistributor-stride", &gicv3.rdist_stride) )
         gicv3.rdist_stride = 0;
@@ -1276,6 +1271,21 @@ static int gicv3_iomem_deny_access(const struct domain *d)
 }
 
 #ifdef CONFIG_ACPI
+static void __init
+gic_acpi_add_rdist_region(paddr_t base, paddr_t size, bool single_rdist)
+{
+    unsigned int idx = gicv3.rdist_count++;
+
+    gicv3.rdist_regions[idx].single_rdist = single_rdist;
+    gicv3.rdist_regions[idx].base = base;
+    gicv3.rdist_regions[idx].size = size;
+}
+
+static inline bool gic_dist_supports_dvis(void)
+{
+    return !!(readl_relaxed(GICD + GICD_TYPER) & GICD_TYPER_DVIS);
+}
+
 static int gicv3_make_hwdom_madt(const struct domain *d, u32 offset)
 {
     struct acpi_subtable_header *header;
@@ -1381,6 +1391,52 @@ gic_acpi_parse_madt_distributor(struct acpi_subtable_header *header,
 
     return 0;
 }
+
+static int __init
+gic_acpi_parse_cpu_redistributor(struct acpi_subtable_header *header,
+                                 const unsigned long end)
+{
+    struct acpi_madt_generic_interrupt *processor;
+    u32 size;
+
+    processor = (struct acpi_madt_generic_interrupt *)header;
+    if ( !(processor->flags & ACPI_MADT_ENABLED) )
+        return 0;
+
+    size = gic_dist_supports_dvis() ? 4 * SZ_64K : 2 * SZ_64K;
+    gic_acpi_add_rdist_region(processor->gicr_base_address, size, true);
+
+    return 0;
+}
+
+static int __init
+gic_acpi_get_madt_cpu_num(struct acpi_subtable_header *header,
+                          const unsigned long end)
+{
+    struct acpi_madt_generic_interrupt *cpuif;
+
+    cpuif = (struct acpi_madt_generic_interrupt *)header;
+    if ( BAD_MADT_ENTRY(cpuif, end) || !cpuif->gicr_base_address )
+        return -EINVAL;
+
+    return 0;
+}
+
+static int __init
+gic_acpi_parse_madt_redistributor(struct acpi_subtable_header *header,
+                                  const unsigned long end)
+{
+    struct acpi_madt_generic_redistributor *rdist;
+
+    rdist = (struct acpi_madt_generic_redistributor *)header;
+    if ( BAD_MADT_ENTRY(rdist, end) )
+        return -EINVAL;
+
+    gic_acpi_add_rdist_region(rdist->base_address, rdist->length, false);
+
+    return 0;
+}
+
 static int __init
 gic_acpi_get_madt_redistributor_num(struct acpi_subtable_header *header,
                                     const unsigned long end)
@@ -1393,77 +1449,54 @@ gic_acpi_get_madt_redistributor_num(struct acpi_subtable_header *header,
 
 static void __init gicv3_acpi_init(void)
 {
-    struct acpi_table_header *table;
     struct rdist_region *rdist_regs;
-    acpi_status status;
-    int count, i;
-
-    status = acpi_get_table(ACPI_SIG_MADT, 0, &table);
-
-    if ( ACPI_FAILURE(status) )
-    {
-        const char *msg = acpi_format_exception(status);
-
-        panic("GICv3: Failed to get MADT table, %s", msg);
-    }
+    bool gicr_table = true;
+    int count;
 
     /*
      * Find distributor base address. We expect one distributor entry since
      * ACPI 5.0 spec neither support multi-GIC instances nor GIC cascade.
      */
-    count = acpi_parse_entries(ACPI_SIG_MADT, sizeof(struct acpi_table_madt),
-                               gic_acpi_parse_madt_distributor, table,
-                               ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR, 0);
-
+    count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR,
+                                  gic_acpi_parse_madt_distributor, 0);
     if ( count <= 0 )
         panic("GICv3: No valid GICD entries exists");
 
-    if ( (dbase & ~PAGE_MASK) )
-        panic("GICv3: Found unaligned distributor address %"PRIpaddr"",
-              dbase);
+    gicv3_ioremap_distributor(dbase);
 
     /* Get number of redistributor */
-    count = acpi_parse_entries(ACPI_SIG_MADT, sizeof(struct acpi_table_madt),
-                               gic_acpi_get_madt_redistributor_num, table,
-                               ACPI_MADT_TYPE_GENERIC_REDISTRIBUTOR, 0);
-    if ( count <= 0 )
-        panic("GICv3: No valid GICR entries exists");
+    count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_REDISTRIBUTOR,
+                                  gic_acpi_get_madt_redistributor_num, 0);
+    /* Count the total number of CPU interface entries */
+    if ( count <= 0 ) {
+        count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
+                                      gic_acpi_get_madt_cpu_num, 0);
+        if (count <= 0)
+            panic("GICv3: No valid GICR entries exists");
 
-    gicv3.rdist_count = count;
+        gicr_table = false;
+    }
 
-    if ( gicv3.rdist_count > MAX_RDIST_COUNT )
-        panic("GICv3: Number of redistributor regions is more than"
-              "%d (Increase MAX_RDIST_COUNT!!)\n", MAX_RDIST_COUNT);
-
-    rdist_regs = xzalloc_array(struct rdist_region, gicv3.rdist_count);
+    rdist_regs = xzalloc_array(struct rdist_region, count);
     if ( !rdist_regs )
         panic("GICv3: Failed to allocate memory for rdist regions\n");
 
-    for ( i = 0; i < gicv3.rdist_count; i++ )
-    {
-        struct acpi_subtable_header *header;
-        struct acpi_madt_generic_redistributor *gic_rdist;
+    gicv3.rdist_regions = rdist_regs;
 
-        header = acpi_table_get_entry_madt(ACPI_MADT_TYPE_GENERIC_REDISTRIBUTOR,
-                                           i);
-        if ( !header )
-            panic("GICv3: Can't get GICR entry");
-
-        gic_rdist =
-           container_of(header, struct acpi_madt_generic_redistributor, header);
-        rdist_regs[i].base = gic_rdist->base_address;
-        rdist_regs[i].size = gic_rdist->length;
-    }
-
-    /* The vGIC code requires the region to be sorted */
-    sort(rdist_regs, gicv3.rdist_count, sizeof(*rdist_regs), cmp_rdist, NULL);
-
-    gicv3.rdist_regions= rdist_regs;
+    if ( gicr_table )
+        /* Parse always-on power domain Re-distributor entries */
+        count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_REDISTRIBUTOR,
+                                      gic_acpi_parse_madt_redistributor, count);
+    else
+        /* Parse Re-distributor entries described in CPU interface table */
+        count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
+                                      gic_acpi_parse_cpu_redistributor, count);
+    if ( count <= 0 )
+        panic("GICv3: Can't get Redistributor entry");
 
     /* Collect CPU base addresses */
-    count = acpi_parse_entries(ACPI_SIG_MADT, sizeof(struct acpi_table_madt),
-                               gic_acpi_parse_madt_cpu, table,
-                               ACPI_MADT_TYPE_GENERIC_INTERRUPT, 0);
+    count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
+                                  gic_acpi_parse_madt_cpu, 0);
     if ( count <= 0 )
         panic("GICv3: No valid GICC entries exists");
 
@@ -1493,10 +1526,6 @@ static int __init gicv3_init(void)
         gicv3_dt_init();
     else
         gicv3_acpi_init();
-
-    gicv3.map_dbase = ioremap_nocache(dbase, SZ_64K);
-    if ( !gicv3.map_dbase )
-        panic("GICv3: Failed to ioremap for GIC distributor\n");
 
     reg = readl_relaxed(GICD + GICD_PIDR2) & GIC_PIDR2_ARCH_MASK;
     if ( reg != GIC_PIDR2_ARCH_GICv3 && reg != GIC_PIDR2_ARCH_GICv4 )
@@ -1557,7 +1586,8 @@ static const struct gic_hw_operations gicv3_ops = {
     .eoi_irq             = gicv3_eoi_irq,
     .deactivate_irq      = gicv3_dir_irq,
     .read_irq            = gicv3_read_irq,
-    .set_irq_properties  = gicv3_set_irq_properties,
+    .set_irq_type        = gicv3_set_irq_type,
+    .set_irq_priority    = gicv3_set_irq_priority,
     .send_SGI            = gicv3_send_sgi,
     .disable_interface   = gicv3_disable_interface,
     .update_lr           = gicv3_update_lr,
@@ -1606,6 +1636,11 @@ static int __init gicv3_acpi_preinit(const void *data)
 
 ACPI_DEVICE_START(agicv3, "GICv3", DEVICE_GIC)
         .class_type = ACPI_MADT_GIC_VERSION_V3,
+        .init = gicv3_acpi_preinit,
+ACPI_DEVICE_END
+
+ACPI_DEVICE_START(agicv4, "GICv4", DEVICE_GIC)
+        .class_type = ACPI_MADT_GIC_VERSION_V4,
         .init = gicv3_acpi_preinit,
 ACPI_DEVICE_END
 #endif

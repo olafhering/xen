@@ -291,8 +291,7 @@ extern l2_pgentry_t l2_xenmap[L2_PAGETABLE_ENTRIES],
     l2_bootmap[L2_PAGETABLE_ENTRIES];
 extern l3_pgentry_t l3_bootmap[L3_PAGETABLE_ENTRIES];
 extern l2_pgentry_t l2_identmap[4*L2_PAGETABLE_ENTRIES];
-extern l1_pgentry_t l1_identmap[L1_PAGETABLE_ENTRIES],
-    l1_fixmap[L1_PAGETABLE_ENTRIES];
+extern l1_pgentry_t l1_fixmap[L1_PAGETABLE_ENTRIES];
 void paging_init(void);
 void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
 #endif /* !defined(__ASSEMBLY__) */
@@ -313,6 +312,7 @@ void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
 #define _PAGE_AVAIL2   _AC(0x800,U)
 #define _PAGE_AVAIL    _AC(0xE00,U)
 #define _PAGE_PSE_PAT  _AC(0x1000,U)
+#define _PAGE_AVAIL_HIGH (_AC(0x7ff, U) << 12)
 #define _PAGE_NX       (cpu_has_nx ? _PAGE_NX_BIT : 0)
 /* non-architectural flags */
 #define _PAGE_PAGED   0x2000U

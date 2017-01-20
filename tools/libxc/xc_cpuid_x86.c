@@ -25,6 +25,7 @@
 #include "xc_private.h"
 #include "xc_bitops.h"
 #include <xen/hvm/params.h>
+#include <xen-tools/libs.h>
 
 enum {
 #define XEN_CPUFEATURE(name, value) X86_FEATURE_##name = value,
@@ -98,12 +99,12 @@ const uint32_t *xc_get_static_cpu_featuremask(
         hvm_hap[FEATURESET_NR_ENTRIES] = INIT_HVM_HAP_FEATURES,
         deep_features[FEATURESET_NR_ENTRIES] = INIT_DEEP_FEATURES;
 
-    XC_BUILD_BUG_ON(ARRAY_SIZE(known) != FEATURESET_NR_ENTRIES);
-    XC_BUILD_BUG_ON(ARRAY_SIZE(special) != FEATURESET_NR_ENTRIES);
-    XC_BUILD_BUG_ON(ARRAY_SIZE(pv) != FEATURESET_NR_ENTRIES);
-    XC_BUILD_BUG_ON(ARRAY_SIZE(hvm_shadow) != FEATURESET_NR_ENTRIES);
-    XC_BUILD_BUG_ON(ARRAY_SIZE(hvm_hap) != FEATURESET_NR_ENTRIES);
-    XC_BUILD_BUG_ON(ARRAY_SIZE(deep_features) != FEATURESET_NR_ENTRIES);
+    BUILD_BUG_ON(ARRAY_SIZE(known) != FEATURESET_NR_ENTRIES);
+    BUILD_BUG_ON(ARRAY_SIZE(special) != FEATURESET_NR_ENTRIES);
+    BUILD_BUG_ON(ARRAY_SIZE(pv) != FEATURESET_NR_ENTRIES);
+    BUILD_BUG_ON(ARRAY_SIZE(hvm_shadow) != FEATURESET_NR_ENTRIES);
+    BUILD_BUG_ON(ARRAY_SIZE(hvm_hap) != FEATURESET_NR_ENTRIES);
+    BUILD_BUG_ON(ARRAY_SIZE(deep_features) != FEATURESET_NR_ENTRIES);
 
     switch ( mask )
     {
@@ -139,7 +140,7 @@ const uint32_t *xc_get_feature_deep_deps(uint32_t feature)
 
     unsigned int start = 0, end = ARRAY_SIZE(deep_deps);
 
-    XC_BUILD_BUG_ON(ARRAY_SIZE(deep_deps) != NR_DEEP_DEPS);
+    BUILD_BUG_ON(ARRAY_SIZE(deep_deps) != NR_DEEP_DEPS);
 
     /* deep_deps[] is sorted.  Perform a binary search. */
     while ( start < end )
@@ -331,7 +332,8 @@ static void amd_xc_cpuid_policy(xc_interface *xch,
          * ECX[15:12] is ApicIdCoreSize: ECX[7:0] is NumberOfCores (minus one).
          * Update to reflect vLAPIC_ID = vCPU_ID * 2.
          */
-        regs[2] = ((regs[2] & 0xf000u) + 1) | ((regs[2] & 0xffu) << 1) | 1u;
+        regs[2] = ((regs[2] + (1u << 12)) & 0xf000u) |
+                  ((regs[2] & 0xffu) << 1) | 1u;
         break;
 
     case 0x8000000a: {
@@ -404,6 +406,9 @@ static void intel_xc_cpuid_policy(xc_interface *xch,
 #define X86_XCR0_AVX    (1ULL <<  2)
 #define X86_XCR0_BNDREG (1ULL <<  3)
 #define X86_XCR0_BNDCSR (1ULL <<  4)
+#define X86_XCR0_OPMASK (1ULL <<  5)
+#define X86_XCR0_ZMM    (1ULL <<  6)
+#define X86_XCR0_HI_ZMM (1ULL <<  7)
 #define X86_XCR0_PKRU   (1ULL <<  9)
 #define X86_XCR0_LWP    (1ULL << 62)
 
@@ -434,6 +439,9 @@ static void xc_cpuid_config_xsave(xc_interface *xch,
 
     if ( test_bit(X86_FEATURE_MPX, info->featureset) )
         guest_xfeature_mask |= X86_XCR0_BNDREG | X86_XCR0_BNDCSR;
+
+    if ( test_bit(X86_FEATURE_AVX512F, info->featureset) )
+        guest_xfeature_mask |= X86_XCR0_OPMASK | X86_XCR0_ZMM | X86_XCR0_HI_ZMM;
 
     if ( test_bit(X86_FEATURE_PKU, info->featureset) )
         guest_xfeature_mask |= X86_XCR0_PKRU;
@@ -609,6 +617,12 @@ static void xc_cpuid_pv_policy(xc_interface *xch,
     {
         /* Host topology exposed to PV guest.  Provide host value. */
         bool host_htt = regs[3] & bitmaskof(X86_FEATURE_HTT);
+
+        /*
+         * Don't pick host's Initial APIC ID which can change from run
+         * to run.
+         */
+        regs[1] &= 0x00ffffffu;
 
         regs[2] = info->featureset[featureword_of(X86_FEATURE_SSE3)];
         regs[3] = (info->featureset[featureword_of(X86_FEATURE_FPU)] &

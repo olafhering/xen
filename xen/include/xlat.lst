@@ -68,7 +68,7 @@
 !	memory_exchange			memory.h
 !	memory_map			memory.h
 !	memory_reservation		memory.h
-?	mem_access_op			memory.h
+!	mem_access_op			memory.h
 !	pod_target			memory.h
 !	remove_from_physmap		memory.h
 !	reserved_device_memory_map	memory.h
@@ -129,4 +129,3 @@
 ?	flask_setenforce		xsm/flask_op.h
 !	flask_sid_context		xsm/flask_op.h
 ?	flask_transition		xsm/flask_op.h
-!	flask_userlist			xsm/flask_op.h

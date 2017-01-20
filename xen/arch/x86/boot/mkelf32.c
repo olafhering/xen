@@ -260,7 +260,7 @@ int main(int argc, char **argv)
     u32        loadbase, dat_siz, mem_siz, note_base, note_sz, offset;
     char      *inimage, *outimage;
     int        infd, outfd;
-    char       buffer[1024];
+    char       buffer[1024] = {};
     int        bytes, todo, i = 1;
     int        num_phdrs = 1;
 
@@ -394,7 +394,7 @@ int main(int argc, char **argv)
         note_phdr.p_paddr   = note_base;
         note_phdr.p_filesz  = note_sz;
         note_phdr.p_memsz   = note_sz;
-        note_phdr.p_offset  = offset;
+        note_phdr.p_offset  = RAW_OFFSET + offset;
 
         /* Tack on the .note\0 */
         out_shdr[2].sh_size += sizeof(out_shstrtab_extra);

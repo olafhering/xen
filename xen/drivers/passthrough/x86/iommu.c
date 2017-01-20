@@ -61,7 +61,7 @@ int arch_iommu_populate_page_table(struct domain *d)
             unsigned long mfn = page_to_mfn(page);
             unsigned long gfn = mfn_to_gmfn(d, mfn);
 
-            if ( gfn != INVALID_MFN )
+            if ( gfn != gfn_x(INVALID_GFN) )
             {
                 ASSERT(!(gfn >> DEFAULT_DOMAIN_ADDRESS_WIDTH));
                 BUG_ON(SHARED_M2P(gfn));
@@ -104,8 +104,9 @@ int arch_iommu_populate_page_table(struct domain *d)
     this_cpu(iommu_dont_flush_iotlb) = 0;
 
     if ( !rc )
-        iommu_iotlb_flush_all(d);
-    else if ( rc != -ERESTART )
+        rc = iommu_iotlb_flush_all(d);
+
+    if ( rc && rc != -ERESTART )
         iommu_teardown(d);
 
     return rc;

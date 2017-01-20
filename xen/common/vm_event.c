@@ -26,7 +26,7 @@
 #include <xen/vm_event.h>
 #include <xen/mem_access.h>
 #include <asm/p2m.h>
-#include <asm/altp2m.h>
+#include <asm/monitor.h>
 #include <asm/vm_event.h>
 #include <xsm/xsm.h>
 
@@ -255,7 +255,7 @@ static inline void vm_event_release_slot(struct domain *d,
 
 /*
  * vm_event_mark_and_pause() tags vcpu and put it to sleep.
- * The vcpu will resume execution in vm_event_wake_waiters().
+ * The vcpu will resume execution in vm_event_wake_blocked().
  */
 void vm_event_mark_and_pause(struct vcpu *v, struct vm_event_domain *ved)
 {
@@ -388,43 +388,53 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
         v = d->vcpu[rsp.vcpu_id];
 
         /*
+         * Make sure the vCPU state has been synchronized for the custom
+         * handlers.
+         */
+        if ( atomic_read(&v->vm_event_pause_count) )
+            sync_vcpu_execstate(v);
+
+        /*
          * In some cases the response type needs extra handling, so here
          * we call the appropriate handlers.
          */
-        switch ( rsp.reason )
+
+        /* Check flags which apply only when the vCPU is paused */
+        if ( atomic_read(&v->vm_event_pause_count) )
         {
-        case VM_EVENT_REASON_MOV_TO_MSR:
-        case VM_EVENT_REASON_WRITE_CTRLREG:
-            vm_event_register_write_resume(v, &rsp);
-            break;
-
-#ifdef CONFIG_HAS_MEM_ACCESS
-        case VM_EVENT_REASON_MEM_ACCESS:
-            mem_access_resume(v, &rsp);
-            break;
-#endif
-
 #ifdef CONFIG_HAS_MEM_PAGING
-        case VM_EVENT_REASON_MEM_PAGING:
-            p2m_mem_paging_resume(d, &rsp);
-            break;
+            if ( rsp.reason == VM_EVENT_REASON_MEM_PAGING )
+                p2m_mem_paging_resume(d, &rsp);
 #endif
 
-        };
+            /*
+             * Check emulation flags in the arch-specific handler only, as it
+             * has to set arch-specific flags when supported, and to avoid
+             * bitmask overhead when it isn't supported.
+             */
+            vm_event_emulate_check(v, &rsp);
 
-        /* Check for altp2m switch */
-        if ( rsp.flags & VM_EVENT_FLAG_ALTERNATE_P2M )
-            p2m_altp2m_check(v, rsp.altp2m_idx);
+            /*
+             * Check in arch-specific handler to avoid bitmask overhead when
+             * not supported.
+             */
+            vm_event_register_write_resume(v, &rsp);
 
-        if ( rsp.flags & VM_EVENT_FLAG_VCPU_PAUSED )
-        {
+            /*
+             * Check in arch-specific handler to avoid bitmask overhead when
+             * not supported.
+             */
+            vm_event_toggle_singlestep(d, v, &rsp);
+
+            /* Check for altp2m switch */
+            if ( rsp.flags & VM_EVENT_FLAG_ALTERNATE_P2M )
+                p2m_altp2m_check(v, rsp.altp2m_idx);
+
             if ( rsp.flags & VM_EVENT_FLAG_SET_REGISTERS )
                 vm_event_set_registers(v, &rsp);
 
-            if ( rsp.flags & VM_EVENT_FLAG_TOGGLE_SINGLESTEP )
-                vm_event_toggle_singlestep(d, v);
-
-            vm_event_vcpu_unpause(v);
+            if ( rsp.flags & VM_EVENT_FLAG_VCPU_PAUSED )
+                vm_event_vcpu_unpause(v);
         }
     }
 }
@@ -665,6 +675,9 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
         {
         case XEN_VM_EVENT_ENABLE:
             /* domain_pause() not required here, see XSA-99 */
+            rc = arch_monitor_init_domain(d);
+            if ( rc )
+                break;
             rc = vm_event_enable(d, vec, ved, _VPF_mem_access,
                                  HVM_PARAM_MONITOR_RING_PFN,
                                  monitor_notification);
@@ -675,6 +688,7 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
             {
                 domain_pause(d);
                 rc = vm_event_disable(d, ved);
+                arch_monitor_cleanup_domain(d);
                 domain_unpause(d);
             }
             break;
@@ -761,8 +775,10 @@ void vm_event_vcpu_unpause(struct vcpu *v)
 {
     int old, new, prev = v->vm_event_pause_count.counter;
 
-    /* All unpause requests as a result of toolstack responses.  Prevent
-     * underflow of the vcpu pause count. */
+    /*
+     * All unpause requests as a result of toolstack responses.
+     * Prevent underflow of the vcpu pause count.
+     */
     do
     {
         old = prev;
@@ -779,65 +795,6 @@ void vm_event_vcpu_unpause(struct vcpu *v)
     } while ( prev != old );
 
     vcpu_unpause(v);
-}
-
-/*
- * Monitor vm-events
- */
-
-int vm_event_monitor_traps(struct vcpu *v, uint8_t sync,
-                           vm_event_request_t *req)
-{
-    int rc;
-    struct domain *d = v->domain;
-
-    rc = vm_event_claim_slot(d, &d->vm_event->monitor);
-    switch ( rc )
-    {
-    case 0:
-        break;
-    case -ENOSYS:
-        /*
-         * If there was no ring to handle the event, then
-         * simply continue executing normally.
-         */
-        return 1;
-    default:
-        return rc;
-    };
-
-    if ( sync )
-    {
-        req->flags |= VM_EVENT_FLAG_VCPU_PAUSED;
-        vm_event_vcpu_pause(v);
-    }
-
-    if ( altp2m_active(d) )
-    {
-        req->flags |= VM_EVENT_FLAG_ALTERNATE_P2M;
-        req->altp2m_idx = altp2m_vcpu_idx(v);
-    }
-
-    vm_event_fill_regs(req);
-    vm_event_put_request(d, &d->vm_event->monitor, req);
-
-    return 1;
-}
-
-void vm_event_monitor_guest_request(void)
-{
-    struct vcpu *curr = current;
-    struct domain *d = curr->domain;
-
-    if ( d->monitor.guest_request_enabled )
-    {
-        vm_event_request_t req = {
-            .reason = VM_EVENT_REASON_GUEST_REQUEST,
-            .vcpu_id = curr->vcpu_id,
-        };
-
-        vm_event_monitor_traps(curr, d->monitor.guest_request_sync, &req);
-    }
 }
 
 /*

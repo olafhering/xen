@@ -53,17 +53,22 @@ DEFINE_XEN_GUEST_HANDLE(uint64_t);
 DEFINE_XEN_GUEST_HANDLE(xen_pfn_t);
 DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
 
-/* Turn a plain number into a C unsigned (long) constant. */
+/* Turn a plain number into a C unsigned (long (long)) constant. */
 #define __xen_mk_uint(x)  x ## U
 #define __xen_mk_ulong(x) x ## UL
+#ifndef __xen_mk_ullong
+# define __xen_mk_ullong(x) x ## ULL
+#endif
 #define xen_mk_uint(x)    __xen_mk_uint(x)
 #define xen_mk_ulong(x)   __xen_mk_ulong(x)
+#define xen_mk_ullong(x)  __xen_mk_ullong(x)
 
 #else
 
 /* In assembly code we cannot use C numeric constant suffixes. */
-#define xen_mk_uint(x)  x
-#define xen_mk_ulong(x) x
+#define xen_mk_uint(x)   x
+#define xen_mk_ulong(x)  x
+#define xen_mk_ullong(x) x
 
 #endif
 
@@ -510,6 +515,13 @@ DEFINE_XEN_GUEST_HANDLE(mmuext_op_t);
 #define VMASST_TYPE_architectural_iopl   4
 
 /*
+ * All guests: activate update indicator in vcpu_runstate_info
+ * Enable setting the XEN_RUNSTATE_UPDATE flag in guest memory mapped
+ * vcpu_runstate_info during updates of the runstate information.
+ */
+#define VMASST_TYPE_runstate_update_flag 5
+
+/*
  * x86/64 guests: strictly hide M2P from user mode.
  * This allows the guest to control respective hypervisor behavior:
  * - when not set, L4 tables get created with the respective slot blank,
@@ -812,52 +824,6 @@ struct start_info {
     unsigned long nr_p2m_frames;/* # of pfns forming initial P->M table.  */
 };
 typedef struct start_info start_info_t;
-
-/*
- * Start of day structure passed to PVH guests in %ebx.
- *
- * NOTE: nothing will be loaded at physical address 0, so a 0 value in any
- * of the address fields should be treated as not present.
- *
- *  0 +----------------+
- *    | magic          | Contains the magic value XEN_HVM_START_MAGIC_VALUE
- *    |                | ("xEn3" with the 0x80 bit of the "E" set).
- *  4 +----------------+
- *    | version        | Version of this structure. Current version is 0. New
- *    |                | versions are guaranteed to be backwards-compatible.
- *  8 +----------------+
- *    | flags          | SIF_xxx flags.
- * 12 +----------------+
- *    | nr_modules     | Number of modules passed to the kernel.
- * 16 +----------------+
- *    | modlist_paddr  | Physical address of an array of modules
- *    |                | (layout of the structure below).
- * 24 +----------------+
- *    | cmdline_paddr  | Physical address of the command line,
- *    |                | a zero-terminated ASCII string.
- * 32 +----------------+
- *    | rsdp_paddr     | Physical address of the RSDP ACPI data structure.
- * 40 +----------------+
- *
- * The layout of each entry in the module structure is the following:
- *
- *  0 +----------------+
- *    | paddr          | Physical address of the module.
- *  8 +----------------+
- *    | size           | Size of the module in bytes.
- * 16 +----------------+
- *    | cmdline_paddr  | Physical address of the command line,
- *    |                | a zero-terminated ASCII string.
- * 24 +----------------+
- *    | reserved       |
- * 32 +----------------+
- *
- * The address and sizes are always a 64bit little endian unsigned integer.
- *
- * NB: Xen on x86 will always try to place all the data below the 4GiB
- * boundary.
- */
-#define XEN_HVM_START_MAGIC_VALUE 0x336ec578
 
 /* New console union for dom0 introduced in 0x00030203. */
 #if __XEN_INTERFACE_VERSION__ < 0x00030203

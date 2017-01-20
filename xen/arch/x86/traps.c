@@ -525,6 +525,25 @@ void vcpu_show_execution_state(struct vcpu *v)
     vcpu_unpause(v);
 }
 
+static cpumask_t show_state_mask;
+static bool_t opt_show_all;
+boolean_param("async-show-all", opt_show_all);
+
+static int nmi_show_execution_state(const struct cpu_user_regs *regs, int cpu)
+{
+    if ( !cpumask_test_cpu(cpu, &show_state_mask) )
+        return 0;
+
+    if ( opt_show_all )
+        show_execution_state(regs);
+    else
+        printk(XENLOG_ERR "CPU%d @ %04x:%08lx (%pS)\n", cpu, regs->cs, regs->rip,
+               guest_mode(regs) ? _p(regs->rip) : NULL);
+    cpumask_clear_cpu(cpu, &show_state_mask);
+
+    return 1;
+}
+
 static const char *trapstr(unsigned int trapnr)
 {
     static const char * const strings[] = {
@@ -544,7 +563,7 @@ static const char *trapstr(unsigned int trapnr)
  * are disabled). In such situations we can't do much that is safe. We try to
  * print out some tracing and then we just spin.
  */
-void fatal_trap(const struct cpu_user_regs *regs)
+void fatal_trap(const struct cpu_user_regs *regs, bool_t show_remote)
 {
     static DEFINE_PER_CPU(char, depth);
     unsigned int trapnr = regs->entry_vector;
@@ -570,6 +589,34 @@ void fatal_trap(const struct cpu_user_regs *regs)
             printk("Faulting linear address: %p\n", _p(cr2));
             show_page_walk(cr2);
         }
+
+        if ( show_remote )
+        {
+            unsigned int msecs, pending;
+
+            cpumask_andnot(&show_state_mask, &cpu_online_map,
+                           cpumask_of(smp_processor_id()));
+            set_nmi_callback(nmi_show_execution_state);
+            /* Ensure new callback is set before sending out the NMI. */
+            smp_wmb();
+            smp_send_nmi_allbutself();
+
+            /* Wait at most 10ms for some other CPU to respond. */
+            msecs = 10;
+            pending = cpumask_weight(&show_state_mask);
+            while ( pending && msecs-- )
+            {
+                unsigned int left;
+
+                mdelay(1);
+                left = cpumask_weight(&show_state_mask);
+                if ( left < pending )
+                {
+                    pending = left;
+                    msecs = 10;
+                }
+            }
+        }
     }
 
     panic("FATAL TRAP: vector = %d (%s)\n"
@@ -578,12 +625,14 @@ void fatal_trap(const struct cpu_user_regs *regs)
           (regs->eflags & X86_EFLAGS_IF) ? "" : ", IN INTERRUPT CONTEXT");
 }
 
-static void do_guest_trap(
-    int trapnr, const struct cpu_user_regs *regs, int use_error_code)
+static void do_guest_trap(unsigned int trapnr,
+                          const struct cpu_user_regs *regs)
 {
     struct vcpu *v = current;
     struct trap_bounce *tb;
     const struct trap_info *ti;
+    const bool use_error_code =
+        ((trapnr < 32) && (TRAP_HAVE_EC & (1u << trapnr)));
 
     trace_pv_trap(trapnr, regs->eip, use_error_code, regs->error_code);
 
@@ -619,7 +668,7 @@ static void instruction_done(
         current->arch.debugreg[6] |= bpmatch | DR_STATUS_RESERVED_ONE;
         if ( regs->eflags & X86_EFLAGS_TF )
             current->arch.debugreg[6] |= DR_STEP;
-        do_guest_trap(TRAP_debug, regs, 0);
+        do_guest_trap(TRAP_debug, regs);
     }
 }
 
@@ -667,7 +716,7 @@ int set_guest_machinecheck_trapbounce(void)
     struct vcpu *v = current;
     struct trap_bounce *tb = &v->arch.pv_vcpu.trap_bounce;
  
-    do_guest_trap(TRAP_machine_check, guest_cpu_user_regs(), 0);
+    do_guest_trap(TRAP_machine_check, guest_cpu_user_regs());
     tb->flags &= ~TBF_EXCEPTION; /* not needed for MCE delivery path */
     return !null_trap_bounce(v, tb);
 }
@@ -680,7 +729,7 @@ int set_guest_nmi_trapbounce(void)
 {
     struct vcpu *v = current;
     struct trap_bounce *tb = &v->arch.pv_vcpu.trap_bounce;
-    do_guest_trap(TRAP_nmi, guest_cpu_user_regs(), 0);
+    do_guest_trap(TRAP_nmi, guest_cpu_user_regs());
     tb->flags &= ~TBF_EXCEPTION; /* not needed for NMI delivery path */
     return !null_trap_bounce(v, tb);
 }
@@ -689,12 +738,14 @@ void do_reserved_trap(struct cpu_user_regs *regs)
 {
     unsigned int trapnr = regs->entry_vector;
 
-    DEBUGGER_trap_fatal(trapnr, regs);
+    if ( debugger_trap_fatal(trapnr, regs) )
+        return;
+
     show_execution_state(regs);
     panic("FATAL RESERVED TRAP %#x: %s", trapnr, trapstr(trapnr));
 }
 
-static void do_trap(struct cpu_user_regs *regs, int use_error_code)
+void do_trap(struct cpu_user_regs *regs)
 {
     struct vcpu *curr = current;
     unsigned int trapnr = regs->entry_vector;
@@ -703,11 +754,12 @@ static void do_trap(struct cpu_user_regs *regs, int use_error_code)
     if ( regs->error_code & X86_XEC_EXT )
         goto hardware_trap;
 
-    DEBUGGER_trap_entry(trapnr, regs);
+    if ( debugger_trap_entry(trapnr, regs) )
+        return;
 
     if ( guest_mode(regs) )
     {
-        do_guest_trap(trapnr, regs, use_error_code);
+        do_guest_trap(trapnr, regs);
         return;
     }
 
@@ -730,35 +782,14 @@ static void do_trap(struct cpu_user_regs *regs, int use_error_code)
     }
 
  hardware_trap:
-    DEBUGGER_trap_fatal(trapnr, regs);
+    if ( debugger_trap_fatal(trapnr, regs) )
+        return;
 
     show_execution_state(regs);
     panic("FATAL TRAP: vector = %d (%s)\n"
           "[error_code=%04x]",
           trapnr, trapstr(trapnr), regs->error_code);
 }
-
-#define DO_ERROR_NOCODE(name)                           \
-void do_##name(struct cpu_user_regs *regs)              \
-{                                                       \
-    do_trap(regs, 0);                                   \
-}
-
-#define DO_ERROR(name)                                  \
-void do_##name(struct cpu_user_regs *regs)              \
-{                                                       \
-    do_trap(regs, 1);                                   \
-}
-
-DO_ERROR_NOCODE(divide_error)
-DO_ERROR_NOCODE(overflow)
-DO_ERROR_NOCODE(bounds)
-DO_ERROR(       invalid_TSS)
-DO_ERROR(       segment_not_present)
-DO_ERROR(       stack_segment)
-DO_ERROR_NOCODE(coprocessor_error)
-DO_ERROR(       alignment_check)
-DO_ERROR_NOCODE(simd_coprocessor_error)
 
 /* Returns 0 if not handled, and non-0 for success. */
 int rdmsr_hypervisor_regs(uint32_t idx, uint64_t *val)
@@ -897,6 +928,11 @@ int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
         break;
 
     case 4:
+        if ( !has_hvm_container_domain(currd) )
+        {
+            *eax = *ebx = *ecx = *edx = 0;
+            break;
+        }
         hvm_hypervisor_cpuid_leaf(sub_idx, eax, ebx, ecx, edx);
         break;
 
@@ -921,6 +957,29 @@ void pv_cpuid(struct cpu_user_regs *regs)
     if ( cpuid_hypervisor_leaves(leaf, subleaf, &a, &b, &c, &d) )
         goto out;
 
+    if ( leaf & 0x7fffffff )
+    {
+        /*
+         * Requests outside the supported leaf ranges return zero on AMD
+         * and the highest basic leaf output on Intel. Uniformly follow
+         * the AMD model as the more sane one.
+         */
+        unsigned int limit = (leaf >> 16) != 0x8000 ? 0 : 0x80000000, dummy;
+
+        if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
+            domain_cpuid(currd, limit, 0, &limit, &dummy, &dummy, &dummy);
+        else
+            limit = cpuid_eax(limit);
+        if ( leaf > limit )
+        {
+            regs->eax = 0;
+            regs->ebx = 0;
+            regs->ecx = 0;
+            regs->edx = 0;
+            return;
+        }
+    }
+
     if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
         domain_cpuid(currd, leaf, subleaf, &a, &b, &c, &d);
     else
@@ -928,7 +987,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
 
     switch ( leaf )
     {
-        uint32_t tmp, _ecx;
+        uint32_t tmp, _ecx, _ebx;
 
     case 0x00000001:
         c &= pv_featureset[FEATURESET_1c];
@@ -972,6 +1031,8 @@ void pv_cpuid(struct cpu_user_regs *regs)
              *
              * Therefore, the leaking of Xen's OSXSAVE setting has become a
              * defacto part of the PV ABI and can't reasonably be corrected.
+             * It can however be restricted to only the enlightened CPUID
+             * view, as seen by the guest kernel.
              *
              * The following situations and logic now applies:
              *
@@ -985,14 +1046,18 @@ void pv_cpuid(struct cpu_user_regs *regs)
              *
              * - Enlightened CPUID or CPUID faulting available:
              *    Xen can fully control what is seen here.  Guest kernels need
-             *    to see the leaked OSXSAVE, but guest userspace is given
-             *    architectural behaviour, to reflect the guest kernels
-             *    intentions.
+             *    to see the leaked OSXSAVE via the enlightened path, but
+             *    guest userspace and the native is given architectural
+             *    behaviour.
+             *
+             *    Emulated vs Faulted CPUID is distinguised based on whether a
+             *    #UD or #GP is currently being serviced.
              */
             /* OSXSAVE cleared by pv_featureset.  Fast-forward CR4 back in. */
-            if ( (guest_kernel_mode(curr, regs) &&
-                  (read_cr4() & X86_CR4_OSXSAVE)) ||
-                 (curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE) )
+            if ( (curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE) ||
+                 (regs->entry_vector == TRAP_invalid_op &&
+                  guest_kernel_mode(curr, regs) &&
+                  (read_cr4() & X86_CR4_OSXSAVE)) )
                 c |= cpufeat_mask(X86_FEATURE_OSXSAVE);
 
             /*
@@ -1110,6 +1175,26 @@ void pv_cpuid(struct cpu_user_regs *regs)
                                xstate_sizes[_XSTATE_YMM]);
             }
 
+            if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
+                domain_cpuid(currd, 7, 0, &tmp, &_ebx, &tmp, &tmp);
+            else
+                cpuid_count(7, 0, &tmp, &_ebx, &tmp, &tmp);
+            _ebx &= pv_featureset[FEATURESET_7b0];
+
+            if ( _ebx & cpufeat_mask(X86_FEATURE_AVX512F) )
+            {
+                xfeature_mask |= XSTATE_OPMASK | XSTATE_ZMM | XSTATE_HI_ZMM;
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_OPMASK] +
+                                  xstate_sizes[_XSTATE_OPMASK]);
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_ZMM] +
+                                  xstate_sizes[_XSTATE_ZMM]);
+                xstate_size = max(xstate_size,
+                                  xstate_offsets[_XSTATE_HI_ZMM] +
+                                  xstate_sizes[_XSTATE_HI_ZMM]);
+            }
+
             a = (uint32_t)xfeature_mask;
             d = (uint32_t)(xfeature_mask >> 32);
             c = xstate_size;
@@ -1119,8 +1204,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
              * domain policy.  It varies with enabled xstate, and the correct
              * xcr0 is in context.
              */
-            if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
-                cpuid_count(leaf, subleaf, &tmp, &b, &tmp, &tmp);
+            cpuid_count(leaf, subleaf, &tmp, &b, &tmp, &tmp);
             break;
         }
 
@@ -1241,6 +1325,15 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
     }
     if ( memcmp(instr, "\xf\xa2", sizeof(instr)) )
         return 0;
+
+    /* If cpuid faulting is enabled and CPL>0 inject a #GP in place of #UD. */
+    if ( current->arch.cpuid_faulting && !guest_kernel_mode(current, regs) )
+    {
+        regs->eip = eip;
+        do_guest_trap(TRAP_gp_fault, regs);
+        return EXCRET_fault_fixed;
+    }
+
     eip += sizeof(instr);
 
     pv_cpuid(regs);
@@ -1261,13 +1354,14 @@ void do_invalid_op(struct cpu_user_regs *regs)
     int id = -1, lineno;
     const struct virtual_region *region;
 
-    DEBUGGER_trap_entry(TRAP_invalid_op, regs);
+    if ( debugger_trap_entry(TRAP_invalid_op, regs) )
+        return;
 
     if ( likely(guest_mode(regs)) )
     {
         if ( !emulate_invalid_rdtscp(regs) &&
              !emulate_forced_invalid_op(regs) )
-            do_guest_trap(TRAP_invalid_op, regs, 0);
+            do_guest_trap(TRAP_invalid_op, regs);
         return;
     }
 
@@ -1331,7 +1425,10 @@ void do_invalid_op(struct cpu_user_regs *regs)
 
     case BUGFRAME_bug:
         printk("Xen BUG at %s%s:%d\n", prefix, filename, lineno);
-        DEBUGGER_trap_fatal(TRAP_invalid_op, regs);
+
+        if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
+            return;
+
         show_execution_state(regs);
         panic("Xen BUG at %s%s:%d", prefix, filename, lineno);
 
@@ -1343,7 +1440,10 @@ void do_invalid_op(struct cpu_user_regs *regs)
 
         printk("Assertion '%s' failed at %s%s:%d\n",
                predicate, prefix, filename, lineno);
-        DEBUGGER_trap_fatal(TRAP_invalid_op, regs);
+
+        if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
+            return;
+
         show_execution_state(regs);
         panic("Assertion '%s' failed at %s%s:%d",
               predicate, prefix, filename, lineno);
@@ -1356,14 +1456,18 @@ void do_invalid_op(struct cpu_user_regs *regs)
         regs->eip = fixup;
         return;
     }
-    DEBUGGER_trap_fatal(TRAP_invalid_op, regs);
+
+    if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
+        return;
+
     show_execution_state(regs);
     panic("FATAL TRAP: vector = %d (invalid opcode)", TRAP_invalid_op);
 }
 
 void do_int3(struct cpu_user_regs *regs)
 {
-    DEBUGGER_trap_entry(TRAP_int3, regs);
+    if ( debugger_trap_entry(TRAP_int3, regs) )
+        return;
 
     if ( !guest_mode(regs) )
     {
@@ -1371,7 +1475,7 @@ void do_int3(struct cpu_user_regs *regs)
         return;
     } 
 
-    do_guest_trap(TRAP_int3, regs, 0);
+    do_guest_trap(TRAP_int3, regs);
 }
 
 static void reserved_bit_page_fault(
@@ -1698,7 +1802,8 @@ void do_page_fault(struct cpu_user_regs *regs)
     /* fixup_page_fault() might change regs->error_code, so cache it here. */
     error_code = regs->error_code;
 
-    DEBUGGER_trap_entry(TRAP_page_fault, regs);
+    if ( debugger_trap_entry(TRAP_page_fault, regs) )
+        return;
 
     perfc_incr(page_faults);
 
@@ -1712,7 +1817,7 @@ void do_page_fault(struct cpu_user_regs *regs)
         {
             console_start_sync();
             printk("Xen SM%cP violation\n", (pf_type == smep_fault) ? 'E' : 'A');
-            fatal_trap(regs);
+            fatal_trap(regs, 0);
         }
 
         if ( pf_type != real_fault )
@@ -1728,7 +1833,8 @@ void do_page_fault(struct cpu_user_regs *regs)
             return;
         }
 
-        DEBUGGER_trap_fatal(TRAP_page_fault, regs);
+        if ( debugger_trap_fatal(TRAP_page_fault, regs) )
+            return;
 
         show_execution_state(regs);
         show_page_walk(addr);
@@ -1783,7 +1889,7 @@ void __init do_early_page_fault(struct cpu_user_regs *regs)
         console_start_sync();
         printk("Early fatal page fault at %04x:%p (cr2=%p, ec=%04x)\n",
                regs->cs, _p(regs->eip), _p(cr2), regs->error_code);
-        fatal_trap(regs);
+        fatal_trap(regs, 0);
     }
 }
 
@@ -1808,7 +1914,6 @@ long do_fpu_taskswitch(int set)
 
 static int read_descriptor(unsigned int sel,
                            const struct vcpu *v,
-                           const struct cpu_user_regs * regs,
                            unsigned long *base,
                            unsigned long *limit,
                            unsigned int *ar,
@@ -2158,12 +2263,131 @@ void guest_io_write(unsigned int port, unsigned int bytes, uint32_t data,
 }
 
 /* I/O emulation support. Helper routines for, and type of, the stack stub.*/
-void host_to_guest_gpr_switch(struct cpu_user_regs *)
-    __attribute__((__regparm__(1)));
-unsigned long guest_to_host_gpr_switch(unsigned long)
-    __attribute__((__regparm__(1)));
+void host_to_guest_gpr_switch(struct cpu_user_regs *);
+unsigned long guest_to_host_gpr_switch(unsigned long);
 
 void (*pv_post_outb_hook)(unsigned int port, u8 value);
+
+static int priv_op_read_cr(unsigned int reg, unsigned long *val,
+                           struct x86_emulate_ctxt *ctxt)
+{
+    const struct vcpu *curr = current;
+
+    switch ( reg )
+    {
+    case 0: /* Read CR0 */
+        *val = (read_cr0() & ~X86_CR0_TS) | curr->arch.pv_vcpu.ctrlreg[0];
+        return X86EMUL_OKAY;
+
+    case 2: /* Read CR2 */
+    case 4: /* Read CR4 */
+        *val = curr->arch.pv_vcpu.ctrlreg[reg];
+        return X86EMUL_OKAY;
+
+    case 3: /* Read CR3 */
+    {
+        const struct domain *currd = curr->domain;
+        unsigned long mfn;
+
+        if ( !is_pv_32bit_domain(currd) )
+        {
+            mfn = pagetable_get_pfn(curr->arch.guest_table);
+            *val = xen_pfn_to_cr3(mfn_to_gmfn(currd, mfn));
+        }
+        else
+        {
+            l4_pgentry_t *pl4e =
+                map_domain_page(_mfn(pagetable_get_pfn(curr->arch.guest_table)));
+
+            mfn = l4e_get_pfn(*pl4e);
+            unmap_domain_page(pl4e);
+            *val = compat_pfn_to_cr3(mfn_to_gmfn(currd, mfn));
+        }
+        /* PTs should not be shared */
+        BUG_ON(page_get_owner(mfn_to_page(mfn)) == dom_cow);
+        return X86EMUL_OKAY;
+    }
+    }
+
+    return X86EMUL_UNHANDLEABLE;
+}
+
+static int priv_op_write_cr(unsigned int reg, unsigned long val,
+                            struct x86_emulate_ctxt *ctxt)
+{
+    struct vcpu *curr = current;
+
+    switch ( reg )
+    {
+    case 0: /* Write CR0 */
+        if ( (val ^ read_cr0()) & ~X86_CR0_TS )
+        {
+            gdprintk(XENLOG_WARNING,
+                    "Attempt to change unmodifiable CR0 flags\n");
+            break;
+        }
+        do_fpu_taskswitch(!!(val & X86_CR0_TS));
+        return X86EMUL_OKAY;
+
+    case 2: /* Write CR2 */
+        curr->arch.pv_vcpu.ctrlreg[2] = val;
+        arch_set_cr2(curr, val);
+        return X86EMUL_OKAY;
+
+    case 3: /* Write CR3 */
+    {
+        struct domain *currd = curr->domain;
+        unsigned long gfn;
+        struct page_info *page;
+        int rc;
+
+        gfn = !is_pv_32bit_domain(currd)
+              ? xen_cr3_to_pfn(val) : compat_cr3_to_pfn(val);
+        page = get_page_from_gfn(currd, gfn, NULL, P2M_ALLOC);
+        if ( !page )
+            break;
+        rc = new_guest_cr3(page_to_mfn(page));
+        put_page(page);
+
+        switch ( rc )
+        {
+        case 0:
+            return X86EMUL_OKAY;
+        case -ERESTART: /* retry after preemption */
+            return X86EMUL_RETRY;
+        }
+        break;
+    }
+
+    case 4: /* Write CR4 */
+        curr->arch.pv_vcpu.ctrlreg[4] = pv_guest_cr4_fixup(curr, val);
+        write_cr4(pv_guest_cr4_to_real_cr4(curr));
+        ctxt_switch_levelling(curr);
+        return X86EMUL_OKAY;
+    }
+
+    return X86EMUL_UNHANDLEABLE;
+}
+
+static int priv_op_read_dr(unsigned int reg, unsigned long *val,
+                           struct x86_emulate_ctxt *ctxt)
+{
+    unsigned long res = do_get_debugreg(reg);
+
+    if ( IS_ERR_VALUE(res) )
+        return X86EMUL_UNHANDLEABLE;
+
+    *val = res;
+
+    return X86EMUL_OKAY;
+}
+
+static int priv_op_write_dr(unsigned int reg, unsigned long val,
+                            struct x86_emulate_ctxt *ctxt)
+{
+    return do_set_debugreg(reg, val) == 0
+           ? X86EMUL_OKAY : X86EMUL_UNHANDLEABLE;
+}
 
 static inline uint64_t guest_misc_enable(uint64_t val)
 {
@@ -2173,6 +2397,385 @@ static inline uint64_t guest_misc_enable(uint64_t val)
            MSR_IA32_MISC_ENABLE_PEBS_UNAVAIL |
            MSR_IA32_MISC_ENABLE_XTPR_DISABLE;
     return val;
+}
+
+static inline bool is_cpufreq_controller(const struct domain *d)
+{
+    return ((cpufreq_controller == FREQCTL_dom0_kernel) &&
+            is_hardware_domain(d));
+}
+
+static int priv_op_read_msr(unsigned int reg, uint64_t *val,
+                            struct x86_emulate_ctxt *ctxt)
+{
+    const struct vcpu *curr = current;
+    const struct domain *currd = curr->domain;
+    bool vpmu_msr = false;
+
+    switch ( reg )
+    {
+        int rc;
+
+    case MSR_FS_BASE:
+        if ( is_pv_32bit_domain(currd) )
+            break;
+        *val = cpu_has_fsgsbase ? __rdfsbase() : curr->arch.pv_vcpu.fs_base;
+        return X86EMUL_OKAY;
+
+    case MSR_GS_BASE:
+        if ( is_pv_32bit_domain(currd) )
+            break;
+        *val = cpu_has_fsgsbase ? __rdgsbase()
+                                : curr->arch.pv_vcpu.gs_base_kernel;
+        return X86EMUL_OKAY;
+
+    case MSR_SHADOW_GS_BASE:
+        if ( is_pv_32bit_domain(currd) )
+            break;
+        *val = curr->arch.pv_vcpu.gs_base_user;
+        return X86EMUL_OKAY;
+
+    case MSR_K7_FID_VID_CTL:
+    case MSR_K7_FID_VID_STATUS:
+    case MSR_K8_PSTATE_LIMIT:
+    case MSR_K8_PSTATE_CTRL:
+    case MSR_K8_PSTATE_STATUS:
+    case MSR_K8_PSTATE0:
+    case MSR_K8_PSTATE1:
+    case MSR_K8_PSTATE2:
+    case MSR_K8_PSTATE3:
+    case MSR_K8_PSTATE4:
+    case MSR_K8_PSTATE5:
+    case MSR_K8_PSTATE6:
+    case MSR_K8_PSTATE7:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
+            break;
+        if ( unlikely(is_cpufreq_controller(currd)) )
+            goto normal;
+        *val = 0;
+        return X86EMUL_OKAY;
+
+    case MSR_IA32_UCODE_REV:
+        BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
+        if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+        {
+            if ( wrmsr_safe(MSR_IA32_UCODE_REV, 0) )
+                break;
+            sync_core();
+        }
+        goto normal;
+
+    case MSR_IA32_MISC_ENABLE:
+        if ( rdmsr_safe(reg, *val) )
+            break;
+        *val = guest_misc_enable(*val);
+        return X86EMUL_OKAY;
+
+    case MSR_AMD64_DR0_ADDRESS_MASK:
+        if ( !boot_cpu_has(X86_FEATURE_DBEXT) )
+            break;
+        *val = curr->arch.pv_vcpu.dr_mask[0];
+        return X86EMUL_OKAY;
+
+    case MSR_AMD64_DR1_ADDRESS_MASK ... MSR_AMD64_DR3_ADDRESS_MASK:
+        if ( !boot_cpu_has(X86_FEATURE_DBEXT) )
+            break;
+        *val = curr->arch.pv_vcpu.dr_mask[reg - MSR_AMD64_DR1_ADDRESS_MASK + 1];
+        return X86EMUL_OKAY;
+
+    case MSR_IA32_PERF_CAPABILITIES:
+        /* No extra capabilities are supported. */
+        *val = 0;
+        return X86EMUL_OKAY;
+
+    case MSR_INTEL_PLATFORM_INFO:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+             rdmsr_safe(MSR_INTEL_PLATFORM_INFO, *val) )
+            break;
+        *val = 0;
+        if ( this_cpu(cpuid_faulting_enabled) )
+            *val |= MSR_PLATFORM_INFO_CPUID_FAULTING;
+        return X86EMUL_OKAY;
+
+    case MSR_INTEL_MISC_FEATURES_ENABLES:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+             rdmsr_safe(MSR_INTEL_MISC_FEATURES_ENABLES, *val) )
+            break;
+        *val = 0;
+        if ( curr->arch.cpuid_faulting )
+            *val |= MSR_MISC_FEATURES_CPUID_FAULTING;
+        return X86EMUL_OKAY;
+
+    case MSR_P6_PERFCTR(0)...MSR_P6_PERFCTR(7):
+    case MSR_P6_EVNTSEL(0)...MSR_P6_EVNTSEL(3):
+    case MSR_CORE_PERF_FIXED_CTR0...MSR_CORE_PERF_FIXED_CTR2:
+    case MSR_CORE_PERF_FIXED_CTR_CTRL...MSR_CORE_PERF_GLOBAL_OVF_CTRL:
+        if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+        {
+            vpmu_msr = true;
+            /* fall through */
+    case MSR_AMD_FAM15H_EVNTSEL0...MSR_AMD_FAM15H_PERFCTR5:
+    case MSR_K7_EVNTSEL0...MSR_K7_PERFCTR3:
+            if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
+            {
+                /* Don't leak PMU MSRs to unprivileged domains. */
+                if ( (vpmu_mode & XENPMU_MODE_ALL) &&
+                     !is_hardware_domain(currd) )
+                    *val = 0;
+                else if ( vpmu_do_rdmsr(reg, val) )
+                    break;
+                return X86EMUL_OKAY;
+            }
+        }
+        /* fall through */
+    default:
+        if ( rdmsr_hypervisor_regs(reg, val) )
+            return X86EMUL_OKAY;
+
+        rc = vmce_rdmsr(reg, val);
+        if ( rc < 0 )
+            break;
+        if ( rc )
+            return X86EMUL_OKAY;
+        /* fall through */
+    case MSR_EFER:
+    normal:
+        /* Everyone can read the MSR space. */
+        /* gdprintk(XENLOG_WARNING, "Domain attempted RDMSR %08x\n", reg); */
+        if ( rdmsr_safe(reg, *val) )
+            break;
+        return X86EMUL_OKAY;
+    }
+
+    return X86EMUL_UNHANDLEABLE;
+}
+
+#include "x86_64/mmconfig.h"
+
+static int priv_op_write_msr(unsigned int reg, uint64_t val,
+                             struct x86_emulate_ctxt *ctxt)
+{
+    struct vcpu *curr = current;
+    const struct domain *currd = curr->domain;
+    bool vpmu_msr = false;
+
+    switch ( reg )
+    {
+        uint64_t temp;
+        int rc;
+
+    case MSR_FS_BASE:
+        if ( is_pv_32bit_domain(currd) || !is_canonical_address(val) )
+            break;
+        wrfsbase(val);
+        curr->arch.pv_vcpu.fs_base = val;
+        return X86EMUL_OKAY;
+
+    case MSR_GS_BASE:
+        if ( is_pv_32bit_domain(currd) || !is_canonical_address(val) )
+            break;
+        wrgsbase(val);
+        curr->arch.pv_vcpu.gs_base_kernel = val;
+        return X86EMUL_OKAY;
+
+    case MSR_SHADOW_GS_BASE:
+        if ( is_pv_32bit_domain(currd) || !is_canonical_address(val) ||
+             wrmsr_safe(MSR_SHADOW_GS_BASE, val) )
+            break;
+        curr->arch.pv_vcpu.gs_base_user = val;
+        return X86EMUL_OKAY;
+
+    case MSR_K7_FID_VID_STATUS:
+    case MSR_K7_FID_VID_CTL:
+    case MSR_K8_PSTATE_LIMIT:
+    case MSR_K8_PSTATE_CTRL:
+    case MSR_K8_PSTATE_STATUS:
+    case MSR_K8_PSTATE0:
+    case MSR_K8_PSTATE1:
+    case MSR_K8_PSTATE2:
+    case MSR_K8_PSTATE3:
+    case MSR_K8_PSTATE4:
+    case MSR_K8_PSTATE5:
+    case MSR_K8_PSTATE6:
+    case MSR_K8_PSTATE7:
+    case MSR_K8_HWCR:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
+            break;
+        if ( likely(!is_cpufreq_controller(currd)) ||
+             wrmsr_safe(reg, val) == 0 )
+            return X86EMUL_OKAY;
+        break;
+
+    case MSR_AMD64_NB_CFG:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
+             boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 > 0x17 )
+            break;
+        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) )
+            return X86EMUL_OKAY;
+        if ( (rdmsr_safe(MSR_AMD64_NB_CFG, temp) != 0) ||
+             ((val ^ temp) & ~(1ULL << AMD64_NB_CFG_CF8_EXT_ENABLE_BIT)) )
+            goto invalid;
+        if ( wrmsr_safe(MSR_AMD64_NB_CFG, val) == 0 )
+            return X86EMUL_OKAY;
+        break;
+
+    case MSR_FAM10H_MMIO_CONF_BASE:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
+             boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 > 0x17 )
+            break;
+        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) )
+            return X86EMUL_OKAY;
+        if ( rdmsr_safe(MSR_FAM10H_MMIO_CONF_BASE, temp) != 0 )
+            break;
+        if ( (pci_probe & PCI_PROBE_MASK) == PCI_PROBE_MMCONF ?
+             temp != val :
+             ((temp ^ val) &
+              ~(FAM10H_MMIO_CONF_ENABLE |
+                (FAM10H_MMIO_CONF_BUSRANGE_MASK <<
+                 FAM10H_MMIO_CONF_BUSRANGE_SHIFT) |
+                ((u64)FAM10H_MMIO_CONF_BASE_MASK <<
+                 FAM10H_MMIO_CONF_BASE_SHIFT))) )
+            goto invalid;
+        if ( wrmsr_safe(MSR_FAM10H_MMIO_CONF_BASE, val) == 0 )
+            return X86EMUL_OKAY;
+        break;
+
+    case MSR_IA32_UCODE_REV:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
+            break;
+        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) )
+            return X86EMUL_OKAY;
+        if ( rdmsr_safe(reg, temp) )
+            break;
+        if ( val )
+            goto invalid;
+        return X86EMUL_OKAY;
+
+    case MSR_IA32_MISC_ENABLE:
+        if ( rdmsr_safe(reg, temp) )
+            break;
+        if ( val != guest_misc_enable(temp) )
+            goto invalid;
+        return X86EMUL_OKAY;
+
+    case MSR_IA32_MPERF:
+    case MSR_IA32_APERF:
+        if ( (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL) &&
+             (boot_cpu_data.x86_vendor != X86_VENDOR_AMD) )
+            break;
+        if ( likely(!is_cpufreq_controller(currd)) ||
+             wrmsr_safe(reg, val) == 0 )
+            return X86EMUL_OKAY;
+        break;
+
+    case MSR_IA32_PERF_CTL:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
+            break;
+        if ( likely(!is_cpufreq_controller(currd)) ||
+             wrmsr_safe(reg, val) == 0 )
+            return X86EMUL_OKAY;
+        break;
+
+    case MSR_IA32_THERM_CONTROL:
+    case MSR_IA32_ENERGY_PERF_BIAS:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
+            break;
+        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) ||
+             wrmsr_safe(reg, val) == 0 )
+            return X86EMUL_OKAY;
+        break;
+
+    case MSR_AMD64_DR0_ADDRESS_MASK:
+        if ( !boot_cpu_has(X86_FEATURE_DBEXT) || (val >> 32) )
+            break;
+        curr->arch.pv_vcpu.dr_mask[0] = val;
+        if ( curr->arch.debugreg[7] & DR7_ACTIVE_MASK )
+            wrmsrl(MSR_AMD64_DR0_ADDRESS_MASK, val);
+        return X86EMUL_OKAY;
+
+    case MSR_AMD64_DR1_ADDRESS_MASK ... MSR_AMD64_DR3_ADDRESS_MASK:
+        if ( !boot_cpu_has(X86_FEATURE_DBEXT) || (val >> 32) )
+            break;
+        curr->arch.pv_vcpu.dr_mask[reg - MSR_AMD64_DR1_ADDRESS_MASK + 1] = val;
+        if ( curr->arch.debugreg[7] & DR7_ACTIVE_MASK )
+            wrmsrl(reg, val);
+        return X86EMUL_OKAY;
+
+    case MSR_INTEL_PLATFORM_INFO:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+             val || rdmsr_safe(MSR_INTEL_PLATFORM_INFO, val) )
+            break;
+        return X86EMUL_OKAY;
+
+    case MSR_INTEL_MISC_FEATURES_ENABLES:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+             (val & ~MSR_MISC_FEATURES_CPUID_FAULTING) ||
+             rdmsr_safe(MSR_INTEL_MISC_FEATURES_ENABLES, temp) )
+            break;
+        if ( (val & MSR_MISC_FEATURES_CPUID_FAULTING) &&
+             !this_cpu(cpuid_faulting_enabled) )
+            break;
+        curr->arch.cpuid_faulting = !!(val & MSR_MISC_FEATURES_CPUID_FAULTING);
+        return X86EMUL_OKAY;
+
+    case MSR_P6_PERFCTR(0)...MSR_P6_PERFCTR(7):
+    case MSR_P6_EVNTSEL(0)...MSR_P6_EVNTSEL(3):
+    case MSR_CORE_PERF_FIXED_CTR0...MSR_CORE_PERF_FIXED_CTR2:
+    case MSR_CORE_PERF_FIXED_CTR_CTRL...MSR_CORE_PERF_GLOBAL_OVF_CTRL:
+        if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+        {
+            vpmu_msr = true;
+    case MSR_AMD_FAM15H_EVNTSEL0...MSR_AMD_FAM15H_PERFCTR5:
+    case MSR_K7_EVNTSEL0...MSR_K7_PERFCTR3:
+            if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
+            {
+                if ( (vpmu_mode & XENPMU_MODE_ALL) &&
+                     !is_hardware_domain(currd) )
+                    return X86EMUL_OKAY;
+
+                if ( vpmu_do_wrmsr(reg, val, 0) )
+                    break;
+                return X86EMUL_OKAY;
+            }
+        }
+        /* fall through */
+    default:
+        if ( wrmsr_hypervisor_regs(reg, val) == 1 )
+            return X86EMUL_OKAY;
+
+        rc = vmce_wrmsr(reg, val);
+        if ( rc < 0 )
+            break;
+        if ( rc )
+            return X86EMUL_OKAY;
+
+        if ( (rdmsr_safe(reg, temp) != 0) || (val != temp) )
+    invalid:
+            gdprintk(XENLOG_WARNING,
+                     "Domain attempted WRMSR %08x from 0x%016"PRIx64" to 0x%016"PRIx64"\n",
+                     reg, temp, val);
+        return X86EMUL_OKAY;
+    }
+
+    return X86EMUL_UNHANDLEABLE;
+}
+
+int pv_emul_cpuid(unsigned int *eax, unsigned int *ebx, unsigned int *ecx,
+                  unsigned int *edx, struct x86_emulate_ctxt *ctxt)
+{
+    struct cpu_user_regs regs = *ctxt->regs;
+
+    regs._eax = *eax;
+    regs._ecx = *ecx;
+
+    pv_cpuid(&regs);
+
+    *eax = regs._eax;
+    *ebx = regs._ebx;
+    *ecx = regs._ecx;
+    *edx = regs._edx;
+
+    return X86EMUL_OKAY;
 }
 
 /* Instruction fetch with error handling. */
@@ -2189,14 +2792,6 @@ static inline uint64_t guest_misc_enable(uint64_t val)
         goto skip;                                                          \
     }                                                                       \
     (eip) += sizeof(_x); _x; })
-
-static int is_cpufreq_controller(struct domain *d)
-{
-    return ((cpufreq_controller == FREQCTL_dom0_kernel) &&
-            is_hardware_domain(d));
-}
-
-#include "x86_64/mmconfig.h"
 
 static int emulate_privileged_op(struct cpu_user_regs *regs)
 {
@@ -2220,12 +2815,10 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
                            : (*(u16 *)&regs->reg = (val)))
     unsigned long code_base, code_limit;
     char *io_emul_stub = NULL;
-    void (*io_emul)(struct cpu_user_regs *) __attribute__((__regparm__(1)));
+    void (*io_emul)(struct cpu_user_regs *);
     uint64_t val;
-    bool_t vpmu_msr;
 
-    if ( !read_descriptor(regs->cs, v, regs,
-                          &code_base, &code_limit, &ar, 1) )
+    if ( !read_descriptor(regs->cs, v, &code_base, &code_limit, &ar, 1) )
         goto fail;
     op_default = op_bytes = (ar & (_SEGMENT_L|_SEGMENT_DB)) ? 4 : 2;
     ad_default = ad_bytes = (ar & _SEGMENT_L) ? 8 : op_default;
@@ -2316,8 +2909,8 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
 
         if ( !(ar & _SEGMENT_L) )
         {
-            if ( !read_descriptor(data_sel, v, regs,
-                                  &data_base, &data_limit, &ar, 0) )
+            if ( !read_descriptor(data_sel, v, &data_base, &data_limit,
+                                  &ar, 0) )
                 goto fail;
             if ( !(ar & _SEGMENT_S) ||
                  !(ar & _SEGMENT_P) ||
@@ -2541,7 +3134,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
             if ( lock || rep_prefix || opsize_prefix
                  || !(v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE) )
             {
-                do_guest_trap(TRAP_invalid_op, regs, 0);
+                do_guest_trap(TRAP_invalid_op, regs);
                 goto skip;
             }
 
@@ -2578,61 +3171,20 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
             goto fail;
         modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
         modrm_rm  |= (opcode >> 0) & 7;
-        reg = decode_register(modrm_rm, regs, 0);
-        switch ( modrm_reg )
-        {
-        case 0: /* Read CR0 */
-            *reg = (read_cr0() & ~X86_CR0_TS) |
-                v->arch.pv_vcpu.ctrlreg[0];
-            break;
-
-        case 2: /* Read CR2 */
-            *reg = v->arch.pv_vcpu.ctrlreg[2];
-            break;
-            
-        case 3: /* Read CR3 */
-        {
-            unsigned long mfn;
-            
-            if ( !is_pv_32bit_domain(currd) )
-            {
-                mfn = pagetable_get_pfn(v->arch.guest_table);
-                *reg = xen_pfn_to_cr3(mfn_to_gmfn(currd, mfn));
-            }
-            else
-            {
-                l4_pgentry_t *pl4e =
-                    map_domain_page(_mfn(pagetable_get_pfn(v->arch.guest_table)));
-
-                mfn = l4e_get_pfn(*pl4e);
-                unmap_domain_page(pl4e);
-                *reg = compat_pfn_to_cr3(mfn_to_gmfn(currd, mfn));
-            }
-            /* PTs should not be shared */
-            BUG_ON(page_get_owner(mfn_to_page(mfn)) == dom_cow);
-        }
-        break;
-
-        case 4: /* Read CR4 */
-            *reg = v->arch.pv_vcpu.ctrlreg[4];
-            break;
-
-        default:
+        if ( priv_op_read_cr(modrm_reg, decode_register(modrm_rm, regs, 0),
+                             NULL) != X86EMUL_OKAY )
             goto fail;
-        }
         break;
 
     case 0x21: /* MOV DR?,<reg> */ {
-        unsigned long res;
         opcode = insn_fetch(u8, code_base, eip, code_limit);
         if ( opcode < 0xc0 )
             goto fail;
         modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
         modrm_rm  |= (opcode >> 0) & 7;
-        reg = decode_register(modrm_rm, regs, 0);
-        if ( (res = do_get_debugreg(modrm_reg)) > (unsigned long)-256 )
+        if ( priv_op_read_dr(modrm_reg, decode_register(modrm_rm, regs, 0),
+                             NULL) != X86EMUL_OKAY )
             goto fail;
-        *reg = res;
         break;
     }
 
@@ -2643,55 +3195,12 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
         modrm_rm  |= (opcode >> 0) & 7;
         reg = decode_register(modrm_rm, regs, 0);
-        switch ( modrm_reg )
+        switch ( priv_op_write_cr(modrm_reg, *reg, NULL) )
         {
-        case 0: /* Write CR0 */
-            if ( (*reg ^ read_cr0()) & ~X86_CR0_TS )
-            {
-                gdprintk(XENLOG_WARNING,
-                        "Attempt to change unmodifiable CR0 flags.\n");
-                goto fail;
-            }
-            (void)do_fpu_taskswitch(!!(*reg & X86_CR0_TS));
+        case X86EMUL_OKAY:
             break;
-
-        case 2: /* Write CR2 */
-            v->arch.pv_vcpu.ctrlreg[2] = *reg;
-            arch_set_cr2(v, *reg);
-            break;
-
-        case 3: {/* Write CR3 */
-            unsigned long gfn;
-            struct page_info *page;
-
-            gfn = !is_pv_32bit_domain(currd)
-                ? xen_cr3_to_pfn(*reg) : compat_cr3_to_pfn(*reg);
-            page = get_page_from_gfn(currd, gfn, NULL, P2M_ALLOC);
-            if ( page )
-            {
-                rc = new_guest_cr3(page_to_mfn(page));
-                put_page(page);
-            }
-            else
-                rc = -EINVAL;
-
-            switch ( rc )
-            {
-            case 0:
-                break;
-            case -ERESTART: /* retry after preemption */
-                goto skip;
-            default:      /* not okay */
-                goto fail;
-            }
-            break;
-        }
-
-        case 4: /* Write CR4 */
-            v->arch.pv_vcpu.ctrlreg[4] = pv_guest_cr4_fixup(v, *reg);
-            write_cr4(pv_guest_cr4_to_real_cr4(v));
-            break;
-
+        case X86EMUL_RETRY: /* retry after preemption */
+            goto skip;
         default:
             goto fail;
         }
@@ -2704,191 +3213,15 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
         modrm_rm  |= (opcode >> 0) & 7;
         reg = decode_register(modrm_rm, regs, 0);
-        if ( do_set_debugreg(modrm_reg, *reg) != 0 )
+        if ( priv_op_write_dr(modrm_reg, *reg, NULL) != X86EMUL_OKAY )
             goto fail;
         break;
 
-    case 0x30: /* WRMSR */ {
-        uint32_t eax = regs->eax;
-        uint32_t edx = regs->edx;
-        uint64_t msr_content = ((uint64_t)edx << 32) | eax;
-        vpmu_msr = 0;
-        switch ( regs->_ecx )
-        {
-        case MSR_FS_BASE:
-            if ( is_pv_32bit_domain(currd) )
-                goto fail;
-            wrfsbase(msr_content);
-            v->arch.pv_vcpu.fs_base = msr_content;
-            break;
-        case MSR_GS_BASE:
-            if ( is_pv_32bit_domain(currd) )
-                goto fail;
-            wrgsbase(msr_content);
-            v->arch.pv_vcpu.gs_base_kernel = msr_content;
-            break;
-        case MSR_SHADOW_GS_BASE:
-            if ( is_pv_32bit_domain(currd) )
-                goto fail;
-            if ( wrmsr_safe(MSR_SHADOW_GS_BASE, msr_content) )
-                goto fail;
-            v->arch.pv_vcpu.gs_base_user = msr_content;
-            break;
-        case MSR_K7_FID_VID_STATUS:
-        case MSR_K7_FID_VID_CTL:
-        case MSR_K8_PSTATE_LIMIT:
-        case MSR_K8_PSTATE_CTRL:
-        case MSR_K8_PSTATE_STATUS:
-        case MSR_K8_PSTATE0:
-        case MSR_K8_PSTATE1:
-        case MSR_K8_PSTATE2:
-        case MSR_K8_PSTATE3:
-        case MSR_K8_PSTATE4:
-        case MSR_K8_PSTATE5:
-        case MSR_K8_PSTATE6:
-        case MSR_K8_PSTATE7:
-        case MSR_K8_HWCR:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
-                goto fail;
-            if ( !is_cpufreq_controller(currd) )
-                break;
-            if ( wrmsr_safe(regs->ecx, msr_content) != 0 )
-                goto fail;
-            break;
-        case MSR_AMD64_NB_CFG:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
-                 boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 > 0x17 )
-                goto fail;
-            if ( !is_hardware_domain(currd) || !is_pinned_vcpu(v) )
-                break;
-            if ( (rdmsr_safe(MSR_AMD64_NB_CFG, val) != 0) ||
-                 (eax != (uint32_t)val) ||
-                 ((edx ^ (val >> 32)) & ~(1 << (AMD64_NB_CFG_CF8_EXT_ENABLE_BIT - 32))) )
-                goto invalid;
-            if ( wrmsr_safe(MSR_AMD64_NB_CFG, msr_content) != 0 )
-                goto fail;
-            break;
-        case MSR_FAM10H_MMIO_CONF_BASE:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
-                 boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 > 0x17 )
-                goto fail;
-            if ( !is_hardware_domain(currd) || !is_pinned_vcpu(v) )
-                break;
-            if ( (rdmsr_safe(MSR_FAM10H_MMIO_CONF_BASE, val) != 0) )
-                goto fail;
-            if (
-                 (pci_probe & PCI_PROBE_MASK) == PCI_PROBE_MMCONF ?
-                 val != msr_content :
-                 ((val ^ msr_content) &
-                  ~( FAM10H_MMIO_CONF_ENABLE |
-                    (FAM10H_MMIO_CONF_BUSRANGE_MASK <<
-                     FAM10H_MMIO_CONF_BUSRANGE_SHIFT) |
-                    ((u64)FAM10H_MMIO_CONF_BASE_MASK <<
-                     FAM10H_MMIO_CONF_BASE_SHIFT))) )
-                goto invalid;
-            if ( wrmsr_safe(MSR_FAM10H_MMIO_CONF_BASE, msr_content) != 0 )
-                goto fail;
-            break;
-        case MSR_IA32_UCODE_REV:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
-                goto fail;
-            if ( !is_hardware_domain(currd) || !is_pinned_vcpu(v) )
-                break;
-            if ( rdmsr_safe(regs->ecx, val) )
-                goto fail;
-            if ( msr_content )
-                goto invalid;
-            break;
-        case MSR_IA32_MISC_ENABLE:
-            if ( rdmsr_safe(regs->ecx, val) )
-                goto fail;
-            val = guest_misc_enable(val);
-            if ( msr_content != val )
-                goto invalid;
-            break;
-        case MSR_IA32_MPERF:
-        case MSR_IA32_APERF:
-            if (( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ) &&
-                ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ) )
-                goto fail;
-            if ( !is_cpufreq_controller(currd) )
-                break;
-            if ( wrmsr_safe(regs->ecx, msr_content ) != 0 )
-                goto fail;
-            break;
-        case MSR_IA32_PERF_CTL:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
-                goto fail;
-            if ( !is_cpufreq_controller(currd) )
-                break;
-            if ( wrmsr_safe(regs->ecx, msr_content) != 0 )
-                goto fail;
-            break;
-        case MSR_IA32_THERM_CONTROL:
-        case MSR_IA32_ENERGY_PERF_BIAS:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
-                goto fail;
-            if ( !is_hardware_domain(currd) || !is_pinned_vcpu(v) )
-                break;
-            if ( wrmsr_safe(regs->ecx, msr_content) != 0 )
-                goto fail;
-            break;
-
-        case MSR_AMD64_DR0_ADDRESS_MASK:
-            if ( !boot_cpu_has(X86_FEATURE_DBEXT) || (msr_content >> 32) )
-                goto fail;
-            v->arch.pv_vcpu.dr_mask[0] = msr_content;
-            if ( v->arch.debugreg[7] & DR7_ACTIVE_MASK )
-                wrmsrl(MSR_AMD64_DR0_ADDRESS_MASK, msr_content);
-            break;
-        case MSR_AMD64_DR1_ADDRESS_MASK ... MSR_AMD64_DR3_ADDRESS_MASK:
-            if ( !boot_cpu_has(X86_FEATURE_DBEXT) || (msr_content >> 32) )
-                goto fail;
-            v->arch.pv_vcpu.dr_mask
-                [regs->_ecx - MSR_AMD64_DR1_ADDRESS_MASK + 1] = msr_content;
-            if ( v->arch.debugreg[7] & DR7_ACTIVE_MASK )
-                wrmsrl(regs->_ecx, msr_content);
-            break;
-        case MSR_P6_PERFCTR(0)...MSR_P6_PERFCTR(7):
-        case MSR_P6_EVNTSEL(0)...MSR_P6_EVNTSEL(3):
-        case MSR_CORE_PERF_FIXED_CTR0...MSR_CORE_PERF_FIXED_CTR2:
-        case MSR_CORE_PERF_FIXED_CTR_CTRL...MSR_CORE_PERF_GLOBAL_OVF_CTRL:
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
-            {
-                vpmu_msr = 1;
-        case MSR_AMD_FAM15H_EVNTSEL0...MSR_AMD_FAM15H_PERFCTR5:
-                if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
-                {
-                    if ( (vpmu_mode & XENPMU_MODE_ALL) &&
-                         !is_hardware_domain(v->domain) )
-                        break;
-
-                    if ( vpmu_do_wrmsr(regs->ecx, msr_content, 0) )
-                        goto fail;
-                }
-                break;
-            }
-            /*FALLTHROUGH*/
-
-        default:
-            if ( wrmsr_hypervisor_regs(regs->ecx, msr_content) == 1 )
-                break;
-
-            rc = vmce_wrmsr(regs->ecx, msr_content);
-            if ( rc < 0 )
-                goto fail;
-            if ( rc )
-                break;
-
-            if ( (rdmsr_safe(regs->ecx, val) != 0) || (msr_content != val) )
-        invalid:
-                gdprintk(XENLOG_WARNING, "Domain attempted WRMSR %p from "
-                        "0x%016"PRIx64" to 0x%016"PRIx64".\n",
-                        _p(regs->ecx), val, msr_content);
-            break;
-        }
+    case 0x30: /* WRMSR */
+        if ( priv_op_write_msr(regs->_ecx, (regs->rdx << 32) | regs->_eax,
+                               NULL) != X86EMUL_OKAY )
+            goto fail;
         break;
-    }
 
     case 0x31: /* RDTSC */
         if ( (v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_TSD) &&
@@ -2904,132 +3237,18 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         break;
 
     case 0x32: /* RDMSR */
-        vpmu_msr = 0;
-        switch ( regs->_ecx )
-        {
-        case MSR_FS_BASE:
-            if ( is_pv_32bit_domain(currd) )
-                goto fail;
-            val = cpu_has_fsgsbase ? __rdfsbase() : v->arch.pv_vcpu.fs_base;
-            goto rdmsr_writeback;
-        case MSR_GS_BASE:
-            if ( is_pv_32bit_domain(currd) )
-                goto fail;
-            val = cpu_has_fsgsbase ? __rdgsbase()
-                                   : v->arch.pv_vcpu.gs_base_kernel;
-            goto rdmsr_writeback;
-        case MSR_SHADOW_GS_BASE:
-            if ( is_pv_32bit_domain(currd) )
-                goto fail;
-            val = v->arch.pv_vcpu.gs_base_user;
-            goto rdmsr_writeback;
-        case MSR_K7_FID_VID_CTL:
-        case MSR_K7_FID_VID_STATUS:
-        case MSR_K8_PSTATE_LIMIT:
-        case MSR_K8_PSTATE_CTRL:
-        case MSR_K8_PSTATE_STATUS:
-        case MSR_K8_PSTATE0:
-        case MSR_K8_PSTATE1:
-        case MSR_K8_PSTATE2:
-        case MSR_K8_PSTATE3:
-        case MSR_K8_PSTATE4:
-        case MSR_K8_PSTATE5:
-        case MSR_K8_PSTATE6:
-        case MSR_K8_PSTATE7:
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
-                goto fail;
-            if ( !is_cpufreq_controller(currd) )
-            {
-                regs->eax = regs->edx = 0;
-                break;
-            }
-            goto rdmsr_normal;
-        case MSR_IA32_UCODE_REV:
-            BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
-            {
-                if ( wrmsr_safe(MSR_IA32_UCODE_REV, 0) )
-                    goto fail;
-                sync_core();
-            }
-            goto rdmsr_normal;
-        case MSR_IA32_MISC_ENABLE:
-            if ( rdmsr_safe(regs->ecx, val) )
-                goto fail;
-            val = guest_misc_enable(val);
-            goto rdmsr_writeback;
-
-        case MSR_AMD64_DR0_ADDRESS_MASK:
-            if ( !boot_cpu_has(X86_FEATURE_DBEXT) )
-                goto fail;
-            regs->eax = v->arch.pv_vcpu.dr_mask[0];
-            regs->edx = 0;
-            break;
-        case MSR_AMD64_DR1_ADDRESS_MASK ... MSR_AMD64_DR3_ADDRESS_MASK:
-            if ( !boot_cpu_has(X86_FEATURE_DBEXT) )
-                goto fail;
-            regs->eax = v->arch.pv_vcpu.dr_mask
-                            [regs->_ecx - MSR_AMD64_DR1_ADDRESS_MASK + 1];
-            regs->edx = 0;
-            break;
-        case MSR_IA32_PERF_CAPABILITIES:
-            /* No extra capabilities are supported */
-            regs->eax = regs->edx = 0;
-            break;
-        case MSR_P6_PERFCTR(0)...MSR_P6_PERFCTR(7):
-        case MSR_P6_EVNTSEL(0)...MSR_P6_EVNTSEL(3):
-        case MSR_CORE_PERF_FIXED_CTR0...MSR_CORE_PERF_FIXED_CTR2:
-        case MSR_CORE_PERF_FIXED_CTR_CTRL...MSR_CORE_PERF_GLOBAL_OVF_CTRL:
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
-            {
-                vpmu_msr = 1;
-        case MSR_AMD_FAM15H_EVNTSEL0...MSR_AMD_FAM15H_PERFCTR5:
-                if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
-                {
-
-                    if ( (vpmu_mode & XENPMU_MODE_ALL) &&
-                         !is_hardware_domain(v->domain) )
-                    {
-                        /* Don't leak PMU MSRs to unprivileged domains */
-                        regs->eax = regs->edx = 0;
-                        break;
-                    }
-
-                    if ( vpmu_do_rdmsr(regs->ecx, &val) )
-                        goto fail;
-
-                    regs->eax = (uint32_t)val;
-                    regs->edx = (uint32_t)(val >> 32);
-                }
-                break;
-            }
-            /*FALLTHROUGH*/
-
-        default:
-            if ( rdmsr_hypervisor_regs(regs->ecx, &val) )
-                goto rdmsr_writeback;
-
-            rc = vmce_rdmsr(regs->ecx, &val);
-            if ( rc < 0 )
-                goto fail;
-            if ( rc )
-                goto rdmsr_writeback;
-
-        case MSR_EFER:
- rdmsr_normal:
-            /* Everyone can read the MSR space. */
-            /* gdprintk(XENLOG_WARNING,"Domain attempted RDMSR %p.\n",
-                        _p(regs->ecx));*/
-            if ( rdmsr_safe(regs->ecx, val) )
-                goto fail;
+        if ( priv_op_read_msr(regs->_ecx, &val, NULL) != X86EMUL_OKAY )
+            goto fail;
  rdmsr_writeback:
-            regs->eax = (uint32_t)val;
-            regs->edx = (uint32_t)(val >> 32);
-            break;
-        }
+        regs->eax = (uint32_t)val;
+        regs->edx = (uint32_t)(val >> 32);
         break;
 
     case 0xa2: /* CPUID */
+        /* If cpuid faulting is enabled and CPL>0 leave the #GP untouched. */
+        if ( v->arch.cpuid_faulting && !guest_kernel_mode(v, regs) )
+            goto fail;
+
         pv_cpuid(regs);
         break;
 
@@ -3073,12 +3292,12 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
          (((ar >> 13) & 3) < (regs->cs & 3)) ||
          ((ar & _SEGMENT_TYPE) != 0xc00) )
     {
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
         return;
     }
     if ( !(ar & _SEGMENT_P) )
     {
-        do_guest_trap(TRAP_no_segment, regs, 1);
+        do_guest_trap(TRAP_no_segment, regs);
         return;
     }
     dpl = (ar >> 13) & 3;
@@ -3088,12 +3307,12 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
      * Decode instruction (and perhaps operand) to determine RPL,
      * whether this is a jump or a call, and the call return offset.
      */
-    if ( !read_descriptor(regs->cs, v, regs, &base, &limit, &ar, 0) ||
+    if ( !read_descriptor(regs->cs, v, &base, &limit, &ar, 0) ||
          !(ar & _SEGMENT_S) ||
          !(ar & _SEGMENT_P) ||
          !(ar & _SEGMENT_CODE) )
     {
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
         return;
     }
 
@@ -3169,7 +3388,7 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
                             sib = insn_fetch(u8, base, eip, limit);
 
                             modrm = (modrm & ~7) | (sib & 7);
-                            if ( (sib >>= 3) != 4 )
+                            if ( ((sib >>= 3) & 7) != 4 )
                                 opnd_off = *(unsigned long *)
                                     decode_register(sib & 7, regs, 0);
                             opnd_off <<= sib >> 3;
@@ -3229,7 +3448,10 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
                         opnd_off += insn_fetch(s8, base, eip, limit);
                         break;
                     case 0x80:
-                        opnd_off += insn_fetch(s32, base, eip, limit);
+                        if ( ad_bytes > 2 )
+                            opnd_off += insn_fetch(s32, base, eip, limit);
+                        else
+                            opnd_off += insn_fetch(s16, base, eip, limit);
                         break;
                     }
                     if ( ad_bytes == 4 )
@@ -3247,18 +3469,18 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
     if ( jump < 0 )
     {
  fail:
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
  skip:
         return;
     }
 
     if ( (opnd_sel != regs->cs &&
-          !read_descriptor(opnd_sel, v, regs, &base, &limit, &ar, 0)) ||
+          !read_descriptor(opnd_sel, v, &base, &limit, &ar, 0)) ||
          !(ar & _SEGMENT_S) ||
          !(ar & _SEGMENT_P) ||
          ((ar & _SEGMENT_CODE) && !(ar & _SEGMENT_WR)) )
     {
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
         return;
     }
 
@@ -3266,14 +3488,13 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
 #define ad_default ad_bytes
     opnd_sel = insn_fetch(u16, base, opnd_off, limit);
 #undef ad_default
-    ASSERT((opnd_sel & ~3) == regs->error_code);
-    if ( dpl < (opnd_sel & 3) )
+    if ( (opnd_sel & ~3) != regs->error_code || dpl < (opnd_sel & 3) )
     {
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
         return;
     }
 
-    if ( !read_descriptor(sel, v, regs, &base, &limit, &ar, 0) ||
+    if ( !read_descriptor(sel, v, &base, &limit, &ar, 0) ||
          !(ar & _SEGMENT_S) ||
          !(ar & _SEGMENT_CODE) ||
          (!jump || (ar & _SEGMENT_EC) ?
@@ -3281,19 +3502,19 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
           ((ar >> 13) & 3) != (regs->cs & 3)) )
     {
         regs->error_code = sel;
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
         return;
     }
     if ( !(ar & _SEGMENT_P) )
     {
         regs->error_code = sel;
-        do_guest_trap(TRAP_no_segment, regs, 1);
+        do_guest_trap(TRAP_no_segment, regs);
         return;
     }
     if ( off > limit )
     {
         regs->error_code = 0;
-        do_guest_trap(TRAP_gp_fault, regs, 1);
+        do_guest_trap(TRAP_gp_fault, regs);
         return;
     }
 
@@ -3320,33 +3541,33 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
             /* Inner stack known only for kernel ring. */
             if ( (sel & 3) != GUEST_KERNEL_RPL(v->domain) )
             {
-                do_guest_trap(TRAP_gp_fault, regs, 1);
+                do_guest_trap(TRAP_gp_fault, regs);
                 return;
             }
             esp = v->arch.pv_vcpu.kernel_sp;
             ss = v->arch.pv_vcpu.kernel_ss;
             if ( (ss & 3) != (sel & 3) ||
-                 !read_descriptor(ss, v, regs, &base, &limit, &ar, 0) ||
+                 !read_descriptor(ss, v, &base, &limit, &ar, 0) ||
                  ((ar >> 13) & 3) != (sel & 3) ||
                  !(ar & _SEGMENT_S) ||
                  (ar & _SEGMENT_CODE) ||
                  !(ar & _SEGMENT_WR) )
             {
                 regs->error_code = ss & ~3;
-                do_guest_trap(TRAP_invalid_tss, regs, 1);
+                do_guest_trap(TRAP_invalid_tss, regs);
                 return;
             }
             if ( !(ar & _SEGMENT_P) ||
                  !check_stack_limit(ar, limit, esp, (4 + nparm) * 4) )
             {
                 regs->error_code = ss & ~3;
-                do_guest_trap(TRAP_stack_error, regs, 1);
+                do_guest_trap(TRAP_stack_error, regs);
                 return;
             }
             stkp = (unsigned int *)(unsigned long)((unsigned int)base + esp);
             if ( !compat_access_ok(stkp - 4 - nparm, (4 + nparm) * 4) )
             {
-                do_guest_trap(TRAP_gp_fault, regs, 1);
+                do_guest_trap(TRAP_gp_fault, regs);
                 return;
             }
             push(regs->ss);
@@ -3355,17 +3576,17 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
             {
                 const unsigned int *ustkp;
 
-                if ( !read_descriptor(regs->ss, v, regs, &base, &limit, &ar, 0) ||
+                if ( !read_descriptor(regs->ss, v, &base, &limit, &ar, 0) ||
                      ((ar >> 13) & 3) != (regs->cs & 3) ||
                      !(ar & _SEGMENT_S) ||
                      (ar & _SEGMENT_CODE) ||
                      !(ar & _SEGMENT_WR) ||
                      !check_stack_limit(ar, limit, esp + nparm * 4, nparm * 4) )
-                    return do_guest_trap(TRAP_gp_fault, regs, 1);
+                    return do_guest_trap(TRAP_gp_fault, regs);
                 ustkp = (unsigned int *)(unsigned long)((unsigned int)base + regs->_esp + nparm * 4);
                 if ( !compat_access_ok(ustkp - nparm, nparm * 4) )
                 {
-                    do_guest_trap(TRAP_gp_fault, regs, 1);
+                    do_guest_trap(TRAP_gp_fault, regs);
                     return;
                 }
                 do
@@ -3388,22 +3609,22 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
             sel |= (regs->cs & 3);
             esp = regs->esp;
             ss = regs->ss;
-            if ( !read_descriptor(ss, v, regs, &base, &limit, &ar, 0) ||
+            if ( !read_descriptor(ss, v, &base, &limit, &ar, 0) ||
                  ((ar >> 13) & 3) != (sel & 3) )
             {
-                do_guest_trap(TRAP_gp_fault, regs, 1);
+                do_guest_trap(TRAP_gp_fault, regs);
                 return;
             }
             if ( !check_stack_limit(ar, limit, esp, 2 * 4) )
             {
                 regs->error_code = 0;
-                do_guest_trap(TRAP_stack_error, regs, 1);
+                do_guest_trap(TRAP_stack_error, regs);
                 return;
             }
             stkp = (unsigned int *)(unsigned long)((unsigned int)base + esp);
             if ( !compat_access_ok(stkp - 2, 2 * 4) )
             {
-                do_guest_trap(TRAP_gp_fault, regs, 1);
+                do_guest_trap(TRAP_gp_fault, regs);
                 return;
             }
         }
@@ -3425,7 +3646,8 @@ void do_general_protection(struct cpu_user_regs *regs)
     struct vcpu *v = current;
     unsigned long fixup;
 
-    DEBUGGER_trap_entry(TRAP_gp_fault, regs);
+    if ( debugger_trap_entry(TRAP_gp_fault, regs) )
+        return;
 
     if ( regs->error_code & X86_XEC_EXT )
         goto hardware_gp;
@@ -3463,7 +3685,7 @@ void do_general_protection(struct cpu_user_regs *regs)
         if ( permit_softint(TI_GET_DPL(ti), v, regs) )
         {
             regs->eip += 2;
-            do_guest_trap(vector, regs, 0);
+            do_guest_trap(vector, regs);
             return;
         }
     }
@@ -3482,7 +3704,7 @@ void do_general_protection(struct cpu_user_regs *regs)
     }
 
     /* Pass on GPF as is. */
-    do_guest_trap(TRAP_gp_fault, regs, 1);
+    do_guest_trap(TRAP_gp_fault, regs);
     return;
 
  gp_in_kernel:
@@ -3497,7 +3719,8 @@ void do_general_protection(struct cpu_user_regs *regs)
     }
 
  hardware_gp:
-    DEBUGGER_trap_fatal(TRAP_gp_fault, regs);
+    if ( debugger_trap_fatal(TRAP_gp_fault, regs) )
+        return;
 
     show_execution_state(regs);
     panic("GENERAL PROTECTION FAULT\n[error_code=%04x]", regs->error_code);
@@ -3564,7 +3787,11 @@ void async_exception_cleanup(struct vcpu *curr)
             if ( (curr->async_exception_mask ^
                   curr->async_exception_state(trap).old_mask) == (1 << trap) )
                 break;
-    ASSERT(trap <= VCPU_TRAP_LAST);
+    if ( unlikely(trap > VCPU_TRAP_LAST) )
+    {
+        ASSERT_UNREACHABLE();
+        return;
+    }
 
     /* Restore previous asynchronous exception mask. */
     curr->async_exception_mask = curr->async_exception_state(trap).old_mask;
@@ -3599,7 +3826,7 @@ static void pci_serr_error(const struct cpu_user_regs *regs)
     default:  /* 'fatal' */
         console_force_unlock();
         printk("\n\nNMI - PCI system error (SERR)\n");
-        fatal_trap(regs);
+        fatal_trap(regs, 0);
     }
 }
 
@@ -3614,7 +3841,7 @@ static void io_check_error(const struct cpu_user_regs *regs)
     default:  /* 'fatal' */
         console_force_unlock();
         printk("\n\nNMI - I/O ERROR\n");
-        fatal_trap(regs);
+        fatal_trap(regs, 0);
     }
 
     outb((inb(0x61) & 0x0f) | 0x08, 0x61); /* clear-and-disable IOCK */
@@ -3634,7 +3861,7 @@ static void unknown_nmi_error(const struct cpu_user_regs *regs, unsigned char re
         console_force_unlock();
         printk("Uhhuh. NMI received for unknown reason %02x.\n", reason);
         printk("Do you have a strange power saving mode enabled?\n");
-        fatal_trap(regs);
+        fatal_trap(regs, 0);
     }
 }
 
@@ -3697,7 +3924,7 @@ void do_device_not_available(struct cpu_user_regs *regs)
 
     if ( curr->arch.pv_vcpu.ctrlreg[0] & X86_CR0_TS )
     {
-        do_guest_trap(TRAP_no_device, regs, 0);
+        do_guest_trap(TRAP_no_device, regs);
         curr->arch.pv_vcpu.ctrlreg[0] &= ~X86_CR0_TS;
     }
     else
@@ -3732,7 +3959,8 @@ void do_debug(struct cpu_user_regs *regs)
 {
     struct vcpu *v = current;
 
-    DEBUGGER_trap_entry(TRAP_debug, regs);
+    if ( debugger_trap_entry(TRAP_debug, regs) )
+        return;
 
     if ( !guest_mode(regs) )
     {
@@ -3769,7 +3997,7 @@ void do_debug(struct cpu_user_regs *regs)
     v->arch.debugreg[6] = read_debugreg(6);
 
     ler_enable();
-    do_guest_trap(TRAP_debug, regs, 0);
+    do_guest_trap(TRAP_debug, regs);
     return;
 
  out:

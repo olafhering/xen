@@ -102,9 +102,13 @@ void add_change_node(struct transaction *trans, const char *node, bool recurse)
 		return;
 	}
 
-	list_for_each_entry(i, &trans->changes, list)
-		if (streq(i->node, node))
+	list_for_each_entry(i, &trans->changes, list) {
+		if (streq(i->node, node)) {
+			if (recurse)
+				i->recurse = recurse;
 			return;
+		}
+	}
 
 	i = talloc(trans, struct changed_node);
 	i->node = talloc_strdup(i, node);
@@ -184,8 +188,9 @@ void do_transaction_start(struct connection *conn, struct buffered_data *in)
 	send_reply(conn, XS_TRANSACTION_START, id_str, strlen(id_str)+1);
 }
 
-void do_transaction_end(struct connection *conn, const char *arg)
+void do_transaction_end(struct connection *conn, struct buffered_data *in)
 {
+	const char *arg = onearg(in);
 	struct changed_node *i;
 	struct changed_domain *d;
 	struct transaction *trans;
@@ -226,7 +231,7 @@ void do_transaction_end(struct connection *conn, const char *arg)
 
 		/* Fire off the watches for everything that changed. */
 		list_for_each_entry(i, &trans->changes, list)
-			fire_watches(conn, i->node, i->recurse);
+			fire_watches(conn, in, i->node, i->recurse);
 		generation++;
 	}
 	send_ack(conn, XS_TRANSACTION_END);

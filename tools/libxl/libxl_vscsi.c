@@ -376,8 +376,7 @@ static int vscsictrl_reconfigure_rm(libxl__ao_device *aodev,
             if (rc) goto out;
         }
 
-        libxl__xs_writev(gc, t, be_path,
-                         libxl__xs_kvs_of_flexarray(gc, back, back->count));
+        libxl__xs_writev(gc, t, be_path, libxl__xs_kvs_of_flexarray(gc, back));
 
         rc = libxl__xs_transaction_commit(gc, &t);
         if (!rc) break;
@@ -618,10 +617,8 @@ static void vscsictrl_new_backend(libxl__egc *egc,
         }
 
         libxl__device_generic_add(gc, t, aodev->dev,
-                                  libxl__xs_kvs_of_flexarray(gc, back,
-                                                             back->count),
-                                  libxl__xs_kvs_of_flexarray(gc, front,
-                                                             front->count),
+                                  libxl__xs_kvs_of_flexarray(gc, back),
+                                  libxl__xs_kvs_of_flexarray(gc, front),
                                   NULL);
 
         rc = libxl__xs_transaction_commit(gc, &t);
@@ -728,8 +725,7 @@ static void vscsictrl_do_reconfigure_add(libxl__egc *egc,
             if (rc) goto out;
         }
 
-        libxl__xs_writev(gc, t, be_path,
-                         libxl__xs_kvs_of_flexarray(gc, back, back->count));
+        libxl__xs_writev(gc, t, be_path, libxl__xs_kvs_of_flexarray(gc, back));
 
         rc = libxl__xs_transaction_commit(gc, &t);
         if (!rc) break;
@@ -904,7 +900,7 @@ static int vscsictrl_reconfigure_add(libxl_ctx *ctx,
     return AO_INPROGRESS;
 }
 
-void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
+static void libxl__device_vscsictrl_add(libxl__egc *egc, uint32_t domid,
                                  libxl_device_vscsictrl *vscsictrl,
                                  libxl__ao_device *aodev)
 {
@@ -1159,6 +1155,17 @@ void libxl_device_vscsictrl_remove_vscsidev(libxl_ctx *ctx,
     ctrl->num_vscsidevs--;
     GC_FREE;
 }
+
+static int libxl_device_vscsictrl_compare(libxl_device_vscsictrl *d1,
+                                          libxl_device_vscsictrl *d2)
+{
+    return COMPARE_DEVID(d1, d2);
+}
+
+LIBXL_DEFINE_DEVICE_ADD(vscsictrl)
+static LIBXL_DEFINE_DEVICES_ADD(vscsictrl)
+//LIBXL_DEFINE_DEVICE_REMOVE(vscsictrl)
+DEFINE_DEVICE_TYPE_STRUCT(vscsictrl);
 
 /*
  * Local variables:

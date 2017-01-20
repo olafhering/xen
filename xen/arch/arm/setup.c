@@ -38,10 +38,12 @@
 #include <xen/vmap.h>
 #include <xen/libfdt/libfdt.h>
 #include <xen/acpi.h>
+#include <asm/alternative.h>
 #include <asm/page.h>
 #include <asm/current.h>
 #include <asm/setup.h>
 #include <asm/gic.h>
+#include <asm/cpuerrata.h>
 #include <asm/cpufeature.h>
 #include <asm/platform.h>
 #include <asm/procinfo.h>
@@ -170,6 +172,8 @@ static void __init processor_id(void)
     }
 
     processor_setup();
+
+    check_local_cpu_errata();
 }
 
 void dt_unreserved_regions(paddr_t s, paddr_t e,
@@ -185,7 +189,7 @@ void dt_unreserved_regions(paddr_t s, paddr_t e,
             /* If we can't read it, pretend it doesn't exist... */
             continue;
 
-        r_e += r_s; /* fdt_get_mem_rsc returns length */
+        r_e += r_s; /* fdt_get_mem_rsv returns length */
 
         if ( s < r_e && r_s < e )
         {
@@ -834,6 +838,12 @@ void __init start_xen(unsigned long boot_phys_offset,
     iommu_setup();
 
     do_initcalls();
+
+    /*
+     * It needs to be called after do_initcalls to be able to use
+     * stop_machine (tasklets initialized via an initcall).
+     */
+    apply_alternatives_all();
 
     /* Create initial domain 0. */
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */

@@ -104,6 +104,8 @@ struct amd_iommu {
     uint64_t exclusion_limit;
 
     int enabled;
+
+    struct list_head ats_devices;
 };
 
 struct ivrs_mappings {
@@ -126,6 +128,7 @@ struct ivrs_mappings {
 };
 
 extern unsigned int ivrs_bdf_entries;
+extern u8 ivhd_type;
 
 struct ivrs_mappings *get_ivrs_mappings(u16 seg);
 int iterate_ivrs_mappings(int (*)(u16 seg, struct ivrs_mappings *));

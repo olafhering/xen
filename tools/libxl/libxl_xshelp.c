@@ -17,11 +17,15 @@
 
 #include "libxl_internal.h"
 
-char **libxl__xs_kvs_of_flexarray(libxl__gc *gc, flexarray_t *array, int length)
+char **libxl__xs_kvs_of_flexarray(libxl__gc *gc, flexarray_t *array)
 {
     char **kvs;
-    int i;
+    int i, length;
 
+    if (!array)
+        return NULL;
+
+    length = array->count;
     if (!length)
         return NULL;
 

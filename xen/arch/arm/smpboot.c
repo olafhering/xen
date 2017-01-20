@@ -29,6 +29,7 @@
 #include <xen/timer.h>
 #include <xen/irq.h>
 #include <xen/console.h>
+#include <asm/cpuerrata.h>
 #include <asm/gic.h>
 #include <asm/psci.h>
 #include <asm/acpi.h>
@@ -287,7 +288,6 @@ void start_secondary(unsigned long boot_phys_offset,
 
     set_processor_id(cpuid);
 
-    current_cpu_data = boot_cpu_data;
     identify_cpu(&current_cpu_data);
 
     init_traps();
@@ -310,12 +310,13 @@ void start_secondary(unsigned long boot_phys_offset,
     smp_wmb();
 
     /* Now report this CPU is up */
-    smp_up_cpu = MPIDR_INVALID;
     cpumask_set_cpu(cpuid, &cpu_online_map);
     smp_wmb();
 
     local_irq_enable();
     local_abort_enable();
+
+    check_local_cpu_errata();
 
     printk(XENLOG_DEBUG "CPU %u booted.\n", smp_processor_id());
 

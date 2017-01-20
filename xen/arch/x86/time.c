@@ -47,10 +47,14 @@ unsigned long __read_mostly cpu_khz;  /* CPU clock frequency in kHz. */
 DEFINE_SPINLOCK(rtc_lock);
 unsigned long pit0_ticks;
 
+struct cpu_time_stamp {
+    u64 local_tsc;
+    s_time_t local_stime;
+    s_time_t master_stime;
+};
+
 struct cpu_time {
-    u64 local_tsc_stamp;
-    s_time_t stime_local_stamp;
-    s_time_t stime_master_stamp;
+    struct cpu_time_stamp stamp;
     struct time_scale tsc_scale;
 };
 
@@ -59,7 +63,7 @@ struct platform_timesource {
     char *name;
     u64 frequency;
     u64 (*read_counter)(void);
-    int (*init)(struct platform_timesource *);
+    s64 (*init)(struct platform_timesource *);
     void (*resume)(struct platform_timesource *);
     int counter_bits;
 };
@@ -118,7 +122,7 @@ static inline u32 mul_frac(u32 multiplicand, u32 multiplier)
  * Scale a 64-bit delta by scaling and multiplying by a 32-bit fraction,
  * yielding a 64-bit result.
  */
-u64 scale_delta(u64 delta, struct time_scale *scale)
+u64 scale_delta(u64 delta, const struct time_scale *scale)
 {
     u64 product;
 
@@ -224,49 +228,18 @@ static struct irqaction __read_mostly irq0 = {
     timer_interrupt, "timer", NULL
 };
 
-/* ------ Calibrate the TSC ------- 
- * Return processor ticks per second / CALIBRATE_FRAC.
- */
-
 #define CLOCK_TICK_RATE 1193182 /* system crystal frequency (Hz) */
 #define CALIBRATE_FRAC  20      /* calibrate over 50ms */
-#define CALIBRATE_LATCH ((CLOCK_TICK_RATE+(CALIBRATE_FRAC/2))/CALIBRATE_FRAC)
+#define CALIBRATE_VALUE(freq) (((freq) + CALIBRATE_FRAC / 2) / CALIBRATE_FRAC)
 
-static u64 init_pit_and_calibrate_tsc(void)
+static void preinit_pit(void)
 {
-    u64 start, end;
-    unsigned long count;
-
     /* Set PIT channel 0 to HZ Hz. */
 #define LATCH (((CLOCK_TICK_RATE)+(HZ/2))/HZ)
     outb_p(0x34, PIT_MODE);        /* binary, mode 2, LSB/MSB, ch 0 */
     outb_p(LATCH & 0xff, PIT_CH0); /* LSB */
     outb(LATCH >> 8, PIT_CH0);     /* MSB */
-
-    /* Set the Gate high, disable speaker */
-    outb((inb(0x61) & ~0x02) | 0x01, 0x61);
-
-    /*
-     * Now let's take care of CTC channel 2
-     *
-     * Set the Gate high, program CTC channel 2 for mode 0, (interrupt on
-     * terminal count mode), binary count, load 5 * LATCH count, (LSB and MSB)
-     * to begin countdown.
-     */
-    outb(0xb0, PIT_MODE);           /* binary, mode 0, LSB/MSB, Ch 2 */
-    outb(CALIBRATE_LATCH & 0xff, PIT_CH2); /* LSB of count */
-    outb(CALIBRATE_LATCH >> 8, PIT_CH2);   /* MSB of count */
-
-    start = rdtsc();
-    for ( count = 0; (inb(0x61) & 0x20) == 0; count++ )
-        continue;
-    end = rdtsc();
-
-    /* Error if the CTC doesn't behave itself. */
-    if ( count == 0 )
-        return 0;
-
-    return ((end - start) * (u64)CALIBRATE_FRAC);
+#undef LATCH
 }
 
 void set_time_scale(struct time_scale *ts, u64 ticks_per_sec)
@@ -327,10 +300,49 @@ static u64 read_pit_count(void)
     return count32;
 }
 
-static int __init init_pit(struct platform_timesource *pts)
+static s64 __init init_pit(struct platform_timesource *pts)
 {
+    u8 portb = inb(0x61);
+    u64 start, end;
+    unsigned long count;
+
     using_pit = 1;
-    return 1;
+
+    /* Set the Gate high, disable speaker. */
+    outb((portb & ~0x02) | 0x01, 0x61);
+
+    /*
+     * Now let's take care of CTC channel 2: mode 0, (interrupt on
+     * terminal count mode), binary count, load CALIBRATE_LATCH count,
+     * (LSB and MSB) to begin countdown.
+     */
+#define CALIBRATE_LATCH CALIBRATE_VALUE(CLOCK_TICK_RATE)
+    outb(0xb0, PIT_MODE);                  /* binary, mode 0, LSB/MSB, Ch 2 */
+    outb(CALIBRATE_LATCH & 0xff, PIT_CH2); /* LSB of count */
+    outb(CALIBRATE_LATCH >> 8, PIT_CH2);   /* MSB of count */
+#undef CALIBRATE_LATCH
+
+    start = rdtsc_ordered();
+    for ( count = 0; !(inb(0x61) & 0x20); ++count )
+        continue;
+    end = rdtsc_ordered();
+
+    /* Set the Gate low, disable speaker. */
+    outb(portb & ~0x03, 0x61);
+
+    /* Error if the CTC doesn't behave itself. */
+    if ( count == 0 )
+        return 0;
+
+    return (end - start) * CALIBRATE_FRAC;
+}
+
+static void resume_pit(struct platform_timesource *pts)
+{
+    /* Set CTC channel 2 to mode 0 again; initial value does not matter. */
+    outb(0xb0, PIT_MODE); /* binary, mode 0, LSB/MSB, Ch 2 */
+    outb(0, PIT_CH2);     /* LSB of count */
+    outb(0, PIT_CH2);     /* MSB of count */
 }
 
 static struct platform_timesource __initdata plt_pit =
@@ -340,7 +352,8 @@ static struct platform_timesource __initdata plt_pit =
     .frequency = CLOCK_TICK_RATE,
     .read_counter = read_pit_count,
     .counter_bits = 32,
-    .init = init_pit
+    .init = init_pit,
+    .resume = resume_pit,
 };
 
 /************************************************************
@@ -352,15 +365,26 @@ static u64 read_hpet_count(void)
     return hpet_read32(HPET_COUNTER);
 }
 
-static int __init init_hpet(struct platform_timesource *pts)
+static s64 __init init_hpet(struct platform_timesource *pts)
 {
-    u64 hpet_rate = hpet_setup();
+    u64 hpet_rate = hpet_setup(), start;
+    u32 count, target;
 
     if ( hpet_rate == 0 )
         return 0;
 
     pts->frequency = hpet_rate;
-    return 1;
+
+    count = hpet_read32(HPET_COUNTER);
+    start = rdtsc_ordered();
+    target = count + CALIBRATE_VALUE(hpet_rate);
+    if ( target < count )
+        while ( hpet_read32(HPET_COUNTER) >= count )
+            continue;
+    while ( hpet_read32(HPET_COUNTER) < target )
+        continue;
+
+    return (rdtsc_ordered() - start) * CALIBRATE_FRAC;
 }
 
 static void resume_hpet(struct platform_timesource *pts)
@@ -383,6 +407,7 @@ static struct platform_timesource __initdata plt_hpet =
  */
 
 u32 __read_mostly pmtmr_ioport;
+unsigned int __initdata pmtmr_width;
 
 /* ACPI PM timer ticks at 3.579545 MHz. */
 #define ACPI_PM_FREQUENCY 3579545
@@ -392,12 +417,30 @@ static u64 read_pmtimer_count(void)
     return inl(pmtmr_ioport);
 }
 
-static int __init init_pmtimer(struct platform_timesource *pts)
+static s64 __init init_pmtimer(struct platform_timesource *pts)
 {
-    if ( pmtmr_ioport == 0 )
+    u64 start;
+    u32 count, target, mask = 0xffffff;
+
+    if ( !pmtmr_ioport || !pmtmr_width )
         return 0;
 
-    return 1;
+    if ( pmtmr_width == 32 )
+    {
+        pts->counter_bits = 32;
+        mask = 0xffffffff;
+    }
+
+    count = inl(pmtmr_ioport) & mask;
+    start = rdtsc_ordered();
+    target = count + CALIBRATE_VALUE(ACPI_PM_FREQUENCY);
+    if ( target < count )
+        while ( (inl(pmtmr_ioport) & mask) >= count )
+            continue;
+    while ( (inl(pmtmr_ioport) & mask) < target )
+        continue;
+
+    return (rdtsc_ordered() - start) * CALIBRATE_FRAC;
 }
 
 static struct platform_timesource __initdata plt_pmtimer =
@@ -430,6 +473,59 @@ uint64_t ns_to_acpi_pm_tick(uint64_t ns)
 {
     return scale_delta(ns, &pmt_scale_r);
 }
+
+/************************************************************
+ * PLATFORM TIMER 4: TSC
+ */
+static unsigned int __initdata tsc_flags;
+
+/* TSC is reliable across sockets */
+#define TSC_RELIABLE_SOCKET (1 << 0)
+
+/*
+ * Called in verify_tsc_reliability() under reliable TSC conditions
+ * thus reusing all the checks already performed there.
+ */
+static s64 __init init_tsc(struct platform_timesource *pts)
+{
+    u64 ret = pts->frequency;
+
+    if ( nr_cpu_ids != num_present_cpus() )
+    {
+        printk(XENLOG_WARNING "TSC: CPU Hotplug intended\n");
+        ret = 0;
+    }
+
+    if ( nr_sockets > 1 && !(tsc_flags & TSC_RELIABLE_SOCKET) )
+    {
+        printk(XENLOG_WARNING "TSC: Not invariant across sockets\n");
+        ret = 0;
+    }
+
+    if ( !ret )
+        printk(XENLOG_DEBUG "TSC: Not setting it as clocksource\n");
+
+    return ret;
+}
+
+static u64 read_tsc(void)
+{
+    return rdtsc_ordered();
+}
+
+static struct platform_timesource __initdata plt_tsc =
+{
+    .id = "tsc",
+    .name = "TSC",
+    .read_counter = read_tsc,
+    /*
+     * Calculations for platform timer overflow assume u64 boundary.
+     * Hence we set to less than 64, such that the TSC wraparound is
+     * correctly checked and handled.
+     */
+    .counter_bits = 63,
+    .init = init_tsc,
+};
 
 /************************************************************
  * GENERIC PLATFORM TIMER INFRASTRUCTURE
@@ -494,17 +590,21 @@ static void plt_overflow(void *unused)
     set_timer(&plt_overflow_timer, NOW() + plt_overflow_period);
 }
 
-static s_time_t read_platform_stime(void)
+static s_time_t read_platform_stime(u64 *stamp)
 {
-    u64 count;
+    u64 plt_counter, count;
     s_time_t stime;
 
     ASSERT(!local_irq_is_enabled());
 
     spin_lock(&platform_timer_lock);
-    count = plt_stamp64 + ((plt_src.read_counter() - plt_stamp) & plt_mask);
+    plt_counter = plt_src.read_counter();
+    count = plt_stamp64 + ((plt_counter - plt_stamp) & plt_mask);
     stime = __read_platform_stime(count);
     spin_unlock(&platform_timer_lock);
+
+    if ( unlikely(stamp) )
+        *stamp = plt_counter;
 
     return stime;
 }
@@ -533,23 +633,62 @@ static void resume_platform_timer(void)
     plt_stamp = plt_src.read_counter();
 }
 
-static void __init init_platform_timer(void)
+static void __init reset_platform_timer(void)
+{
+    /* Deactivate any timers running */
+    kill_timer(&plt_overflow_timer);
+    kill_timer(&calibration_timer);
+
+    /* Reset counters and stamps */
+    spin_lock_irq(&platform_timer_lock);
+    plt_stamp = 0;
+    plt_stamp64 = 0;
+    platform_timer_stamp = 0;
+    stime_platform_stamp = 0;
+    spin_unlock_irq(&platform_timer_lock);
+}
+
+static s64 __init try_platform_timer(struct platform_timesource *pts)
+{
+    s64 rc = pts->init(pts);
+
+    if ( rc <= 0 )
+        return rc;
+
+    /* We have a platform timesource already so reset it */
+    if ( plt_src.counter_bits != 0 )
+        reset_platform_timer();
+
+    plt_mask = (u64)~0ull >> (64 - pts->counter_bits);
+
+    set_time_scale(&plt_scale, pts->frequency);
+
+    plt_overflow_period = scale_delta(
+        1ull << (pts->counter_bits - 1), &plt_scale);
+    plt_src = *pts;
+
+    return rc;
+}
+
+static u64 __init init_platform_timer(void)
 {
     static struct platform_timesource * __initdata plt_timers[] = {
         &plt_hpet, &plt_pmtimer, &plt_pit
     };
 
     struct platform_timesource *pts = NULL;
-    int i, rc = -1;
+    unsigned int i;
+    s64 rc = -1;
 
-    if ( opt_clocksource[0] != '\0' )
+    /* clocksource=tsc is initialized via __initcalls (when CPUs are up). */
+    if ( (opt_clocksource[0] != '\0') && strcmp(opt_clocksource, "tsc") )
     {
         for ( i = 0; i < ARRAY_SIZE(plt_timers); i++ )
         {
             pts = plt_timers[i];
             if ( !strcmp(opt_clocksource, pts->id) )
             {
-                rc = pts->init(pts);
+                rc = try_platform_timer(pts);
                 break;
             }
         }
@@ -565,28 +704,17 @@ static void __init init_platform_timer(void)
         for ( i = 0; i < ARRAY_SIZE(plt_timers); i++ )
         {
             pts = plt_timers[i];
-            if ( (rc = pts->init(pts)) > 0 )
+            if ( (rc = try_platform_timer(pts)) > 0 )
                 break;
         }
     }
 
     BUG_ON(rc <= 0);
 
-    plt_mask = (u64)~0ull >> (64 - pts->counter_bits);
-
-    set_time_scale(&plt_scale, pts->frequency);
-
-    plt_overflow_period = scale_delta(
-        1ull << (pts->counter_bits-1), &plt_scale);
-    init_timer(&plt_overflow_timer, plt_overflow, NULL, 0);
-    plt_src = *pts;
-    plt_overflow(NULL);
-
-    platform_timer_stamp = plt_stamp64;
-    stime_platform_stamp = NOW();
-
     printk("Platform timer is %s %s\n",
            freq_string(pts->frequency), pts->name);
+
+    return rc;
 }
 
 u64 stime2tsc(s_time_t stime)
@@ -598,11 +726,11 @@ u64 stime2tsc(s_time_t stime)
     t = &this_cpu(cpu_time);
     sys_to_tsc = scale_reciprocal(t->tsc_scale);
 
-    stime_delta = stime - t->stime_local_stamp;
+    stime_delta = stime - t->stamp.local_stime;
     if ( stime_delta < 0 )
         stime_delta = 0;
 
-    return t->local_tsc_stamp + scale_delta(stime_delta, &sys_to_tsc);
+    return t->stamp.local_tsc + scale_delta(stime_delta, &sys_to_tsc);
 }
 
 void cstate_restore_tsc(void)
@@ -610,7 +738,7 @@ void cstate_restore_tsc(void)
     if ( boot_cpu_has(X86_FEATURE_NONSTOP_TSC) )
         return;
 
-    write_tsc(stime2tsc(read_platform_stime()));
+    write_tsc(stime2tsc(read_platform_stime(NULL)));
 }
 
 /***************************************************************************
@@ -753,16 +881,16 @@ static unsigned long get_cmos_time(void)
 
 s_time_t get_s_time_fixed(u64 at_tsc)
 {
-    struct cpu_time *t = &this_cpu(cpu_time);
+    const struct cpu_time *t = &this_cpu(cpu_time);
     u64 tsc, delta;
     s_time_t now;
 
     if ( at_tsc )
         tsc = at_tsc;
     else
-        tsc = rdtsc();
-    delta = tsc - t->local_tsc_stamp;
-    now = t->stime_local_stamp + scale_delta(delta, &t->tsc_scale);
+        tsc = rdtsc_ordered();
+    delta = tsc - t->stamp.local_tsc;
+    now = t->stamp.local_stime + scale_delta(delta, &t->tsc_scale);
 
     return now;
 }
@@ -781,7 +909,7 @@ uint64_t tsc_ticks2ns(uint64_t ticks)
 
 static void __update_vcpu_system_time(struct vcpu *v, int force)
 {
-    struct cpu_time       *t;
+    const struct cpu_time *t;
     struct vcpu_time_info *u, _u = {};
     struct domain *d = v->domain;
     s_time_t tsc_stamp;
@@ -794,7 +922,7 @@ static void __update_vcpu_system_time(struct vcpu *v, int force)
 
     if ( d->arch.vtsc )
     {
-        s_time_t stime = t->stime_local_stamp;
+        s_time_t stime = t->stamp.local_stime;
 
         if ( is_hvm_domain(d) )
         {
@@ -816,20 +944,28 @@ static void __update_vcpu_system_time(struct vcpu *v, int force)
     {
         if ( has_hvm_container_domain(d) && hvm_tsc_scaling_supported )
         {
-            tsc_stamp            = hvm_scale_tsc(d, t->local_tsc_stamp);
+            tsc_stamp            = hvm_scale_tsc(d, t->stamp.local_tsc);
             _u.tsc_to_system_mul = d->arch.vtsc_to_ns.mul_frac;
             _u.tsc_shift         = d->arch.vtsc_to_ns.shift;
         }
         else
         {
-            tsc_stamp            = t->local_tsc_stamp;
+            tsc_stamp            = t->stamp.local_tsc;
             _u.tsc_to_system_mul = t->tsc_scale.mul_frac;
             _u.tsc_shift         = t->tsc_scale.shift;
         }
     }
 
     _u.tsc_timestamp = tsc_stamp;
-    _u.system_time   = t->stime_local_stamp;
+    _u.system_time   = t->stamp.local_stime;
+
+    /*
+     * It's expected that domains cope with this bit changing on every
+     * pvclock read to check whether they can resort solely on this tuple
+     * or if it further requires monotonicity checks with other vcpus.
+     */
+    if ( clocksource_is_tsc() )
+        _u.flags |= XEN_PVCLOCK_TSC_STABLE_BIT;
 
     if ( is_hvm_domain(d) )
         _u.tsc_timestamp += v->arch.hvm_vcpu.cache_tsc_offset;
@@ -929,12 +1065,12 @@ int cpu_frequency_change(u64 freq)
 
     local_irq_disable();
     /* Platform time /first/, as we may be delayed by platform_timer_lock. */
-    t->stime_master_stamp = read_platform_stime();
+    t->stamp.master_stime = read_platform_stime(NULL);
+    curr_tsc = rdtsc_ordered();
     /* TSC-extrapolated time may be bogus after frequency change. */
-    /*t->stime_local_stamp = get_s_time();*/
-    t->stime_local_stamp = t->stime_master_stamp;
-    curr_tsc = rdtsc();
-    t->local_tsc_stamp = curr_tsc;
+    /*t->stamp.local_stime = get_s_time_fixed(curr_tsc);*/
+    t->stamp.local_stime = t->stamp.master_stime;
+    t->stamp.local_tsc = curr_tsc;
     set_time_scale(&t->tsc_scale, freq);
     local_irq_enable();
 
@@ -951,28 +1087,19 @@ int cpu_frequency_change(u64 freq)
 }
 
 /* Per-CPU communication between rendezvous IRQ and softirq handler. */
-struct cpu_calibration {
-    u64 local_tsc_stamp;
-    s_time_t stime_local_stamp;
-    s_time_t stime_master_stamp;
-};
-static DEFINE_PER_CPU(struct cpu_calibration, cpu_calibration);
+static DEFINE_PER_CPU(struct cpu_time_stamp, cpu_calibration);
 
 /* Softirq handler for per-CPU time calibration. */
 static void local_time_calibration(void)
 {
     struct cpu_time *t = &this_cpu(cpu_time);
-    struct cpu_calibration *c = &this_cpu(cpu_calibration);
+    const struct cpu_time_stamp *c = &this_cpu(cpu_calibration);
 
     /*
-     * System timestamps, extrapolated from local and master oscillators,
-     * taken during this calibration and the previous calibration.
+     * System (extrapolated from local and master oscillators) and TSC
+     * timestamps, taken during this calibration and the previous one.
      */
-    s_time_t prev_local_stime, curr_local_stime;
-    s_time_t prev_master_stime, curr_master_stime;
-
-    /* TSC timestamps taken during this calibration and prev calibration. */
-    u64 prev_tsc, curr_tsc;
+    struct cpu_time_stamp prev, curr;
 
     /*
      * System time and TSC ticks elapsed during the previous calibration
@@ -980,9 +1107,6 @@ static void local_time_calibration(void)
      */
     u64 stime_elapsed64, tsc_elapsed64;
     u32 stime_elapsed32, tsc_elapsed32;
-
-    /* The accumulated error in the local estimate. */
-    u64 local_stime_err;
 
     /* Error correction to slow down a fast local clock. */
     u32 error_factor = 0;
@@ -997,40 +1121,34 @@ static void local_time_calibration(void)
     {
         /* Atomically read cpu_calibration struct and write cpu_time struct. */
         local_irq_disable();
-        t->local_tsc_stamp    = c->local_tsc_stamp;
-        t->stime_local_stamp  = c->stime_master_stamp;
-        t->stime_master_stamp = c->stime_master_stamp;
+        t->stamp = *c;
         local_irq_enable();
         update_vcpu_system_time(current);
         goto out;
     }
 
-    prev_tsc          = t->local_tsc_stamp;
-    prev_local_stime  = t->stime_local_stamp;
-    prev_master_stime = t->stime_master_stamp;
+    prev = t->stamp;
 
     /* Disabling IRQs ensures we atomically read cpu_calibration struct. */
     local_irq_disable();
-    curr_tsc          = c->local_tsc_stamp;
-    curr_local_stime  = c->stime_local_stamp;
-    curr_master_stime = c->stime_master_stamp;
+    curr = *c;
     local_irq_enable();
 
 #if 0
     printk("PRE%d: tsc=%"PRIu64" stime=%"PRIu64" master=%"PRIu64"\n",
-           smp_processor_id(), prev_tsc, prev_local_stime, prev_master_stime);
+           smp_processor_id(), prev.local_tsc, prev.local_stime, prev.master_stime);
     printk("CUR%d: tsc=%"PRIu64" stime=%"PRIu64" master=%"PRIu64
            " -> %"PRId64"\n",
-           smp_processor_id(), curr_tsc, curr_local_stime, curr_master_stime,
-           curr_master_stime - curr_local_stime);
+           smp_processor_id(), curr.local_tsc, curr.local_stime, curr.master_stime,
+           curr.master_stime - curr.local_stime);
 #endif
 
     /* Local time warps forward if it lags behind master time. */
-    if ( curr_local_stime < curr_master_stime )
-        curr_local_stime = curr_master_stime;
+    if ( curr.local_stime < curr.master_stime )
+        curr.local_stime = curr.master_stime;
 
-    stime_elapsed64 = curr_master_stime - prev_master_stime;
-    tsc_elapsed64   = curr_tsc - prev_tsc;
+    stime_elapsed64 = curr.master_stime - prev.master_stime;
+    tsc_elapsed64   = curr.local_tsc - prev.local_tsc;
 
     /*
      * Weirdness can happen if we lose sync with the platform timer.
@@ -1044,9 +1162,10 @@ static void local_time_calibration(void)
      * clock (slow clocks are warped forwards). The scale factor is clamped
      * to >= 0.5.
      */
-    if ( curr_local_stime != curr_master_stime )
+    if ( curr.local_stime != curr.master_stime )
     {
-        local_stime_err = curr_local_stime - curr_master_stime;
+        u64 local_stime_err = curr.local_stime - curr.master_stime;
+
         if ( local_stime_err > EPOCH )
             local_stime_err = EPOCH;
         error_factor = div_frac(EPOCH, EPOCH + (u32)local_stime_err);
@@ -1099,9 +1218,7 @@ static void local_time_calibration(void)
     local_irq_disable();
     t->tsc_scale.mul_frac = calibration_mul_frac;
     t->tsc_scale.shift    = tsc_shift;
-    t->local_tsc_stamp    = curr_tsc;
-    t->stime_local_stamp  = curr_local_stime;
-    t->stime_master_stamp = curr_master_stime;
+    t->stamp              = curr;
     local_irq_enable();
 
     update_vcpu_system_time(current);
@@ -1124,16 +1241,13 @@ static void local_time_calibration(void)
  */
 static void check_tsc_warp(unsigned long tsc_khz, unsigned long *max_warp)
 {
-#define rdtsc_barrier() mb()
     static DEFINE_SPINLOCK(sync_lock);
     static cycles_t last_tsc;
 
     cycles_t start, now, prev, end;
     int i;
 
-    rdtsc_barrier();
-    start = get_cycles();
-    rdtsc_barrier();
+    start = rdtsc_ordered();
 
     /* The measurement runs for 20 msecs: */
     end = start + tsc_khz * 20ULL;
@@ -1148,9 +1262,7 @@ static void check_tsc_warp(unsigned long tsc_khz, unsigned long *max_warp)
          */
         spin_lock(&sync_lock);
         prev = last_tsc;
-        rdtsc_barrier();
-        now = get_cycles();
-        rdtsc_barrier();
+        now = rdtsc_ordered();
         last_tsc = now;
         spin_unlock(&sync_lock);
 
@@ -1189,7 +1301,7 @@ static void tsc_check_slave(void *unused)
     unsigned int cpu = smp_processor_id();
     local_irq_disable();
     while ( !cpumask_test_cpu(cpu, &tsc_check_cpumask) )
-        mb();
+        cpu_relax();
     check_tsc_warp(cpu_khz, &tsc_max_warp);
     cpumask_clear_cpu(cpu, &tsc_check_cpumask);
     local_irq_enable();
@@ -1226,6 +1338,18 @@ struct calibration_rendezvous {
     u64 master_tsc_stamp;
 };
 
+static void
+time_calibration_rendezvous_tail(const struct calibration_rendezvous *r)
+{
+    struct cpu_time_stamp *c = &this_cpu(cpu_calibration);
+
+    c->local_tsc    = rdtsc_ordered();
+    c->local_stime  = get_s_time_fixed(c->local_tsc);
+    c->master_stime = r->master_stime;
+
+    raise_softirq(TIME_CALIBRATE_SOFTIRQ);
+}
+
 /*
  * Keep TSCs in sync when they run at the same rate, but may stop in
  * deep-sleep C states.
@@ -1233,7 +1357,6 @@ struct calibration_rendezvous {
 static void time_calibration_tsc_rendezvous(void *_r)
 {
     int i;
-    struct cpu_calibration *c = &this_cpu(cpu_calibration);
     struct calibration_rendezvous *r = _r;
     unsigned int total_cpus = cpumask_weight(&r->cpu_calibration_map);
 
@@ -1243,12 +1366,12 @@ static void time_calibration_tsc_rendezvous(void *_r)
         if ( smp_processor_id() == 0 )
         {
             while ( atomic_read(&r->semaphore) != (total_cpus - 1) )
-                mb();
+                cpu_relax();
 
             if ( r->master_stime == 0 )
             {
-                r->master_stime = read_platform_stime();
-                r->master_tsc_stamp = rdtsc();
+                r->master_stime = read_platform_stime(NULL);
+                r->master_tsc_stamp = rdtsc_ordered();
             }
             atomic_inc(&r->semaphore);
 
@@ -1256,35 +1379,30 @@ static void time_calibration_tsc_rendezvous(void *_r)
                 write_tsc(r->master_tsc_stamp);
 
             while ( atomic_read(&r->semaphore) != (2*total_cpus - 1) )
-                mb();
+                cpu_relax();
             atomic_set(&r->semaphore, 0);
         }
         else
         {
             atomic_inc(&r->semaphore);
             while ( atomic_read(&r->semaphore) < total_cpus )
-                mb();
+                cpu_relax();
 
             if ( i == 0 )
                 write_tsc(r->master_tsc_stamp);
 
             atomic_inc(&r->semaphore);
             while ( atomic_read(&r->semaphore) > total_cpus )
-                mb();
+                cpu_relax();
         }
     }
 
-    c->local_tsc_stamp = rdtsc();
-    c->stime_local_stamp = get_s_time();
-    c->stime_master_stamp = r->master_stime;
-
-    raise_softirq(TIME_CALIBRATE_SOFTIRQ);
+    time_calibration_rendezvous_tail(r);
 }
 
 /* Ordinary rendezvous function which does not modify TSC values. */
 static void time_calibration_std_rendezvous(void *_r)
 {
-    struct cpu_calibration *c = &this_cpu(cpu_calibration);
     struct calibration_rendezvous *r = _r;
     unsigned int total_cpus = cpumask_weight(&r->cpu_calibration_map);
 
@@ -1292,8 +1410,8 @@ static void time_calibration_std_rendezvous(void *_r)
     {
         while ( atomic_read(&r->semaphore) != (total_cpus - 1) )
             cpu_relax();
-        r->master_stime = read_platform_stime();
-        mb(); /* write r->master_stime /then/ signal */
+        r->master_stime = read_platform_stime(NULL);
+        smp_wmb(); /* write r->master_stime /then/ signal */
         atomic_inc(&r->semaphore);
     }
     else
@@ -1301,12 +1419,24 @@ static void time_calibration_std_rendezvous(void *_r)
         atomic_inc(&r->semaphore);
         while ( atomic_read(&r->semaphore) != total_cpus )
             cpu_relax();
-        mb(); /* receive signal /then/ read r->master_stime */
+        smp_rmb(); /* receive signal /then/ read r->master_stime */
     }
 
-    c->local_tsc_stamp = rdtsc();
-    c->stime_local_stamp = get_s_time();
-    c->stime_master_stamp = r->master_stime;
+    time_calibration_rendezvous_tail(r);
+}
+
+/*
+ * Rendezvous function used when clocksource is TSC and
+ * no CPU hotplug will be performed.
+ */
+static void time_calibration_nop_rendezvous(void *rv)
+{
+    const struct calibration_rendezvous *r = rv;
+    struct cpu_time_stamp *c = &this_cpu(cpu_calibration);
+
+    c->local_tsc    = r->master_tsc_stamp;
+    c->local_stime  = r->master_stime;
+    c->master_stime = r->master_stime;
 
     raise_softirq(TIME_CALIBRATE_SOFTIRQ);
 }
@@ -1320,6 +1450,13 @@ static void time_calibration(void *unused)
         .semaphore = ATOMIC_INIT(0)
     };
 
+    if ( clocksource_is_tsc() )
+    {
+        local_irq_disable();
+        r.master_stime = read_platform_stime(&r.master_tsc_stamp);
+        local_irq_enable();
+    }
+
     cpumask_copy(&r.cpu_calibration_map, &cpu_online_map);
 
     /* @wait=1 because we must wait for all cpus before freeing @r. */
@@ -1328,22 +1465,50 @@ static void time_calibration(void *unused)
                      &r, 1);
 }
 
+static struct cpu_time_stamp ap_bringup_ref;
+
+void time_latch_stamps(void)
+{
+    unsigned long flags;
+
+    local_irq_save(flags);
+    ap_bringup_ref.master_stime = read_platform_stime(NULL);
+    ap_bringup_ref.local_tsc = rdtsc_ordered();
+    local_irq_restore(flags);
+
+    ap_bringup_ref.local_stime = get_s_time_fixed(ap_bringup_ref.local_tsc);
+}
+
 void init_percpu_time(void)
 {
     struct cpu_time *t = &this_cpu(cpu_time);
     unsigned long flags;
+    u64 tsc;
     s_time_t now;
 
     /* Initial estimate for TSC rate. */
     t->tsc_scale = per_cpu(cpu_time, 0).tsc_scale;
 
     local_irq_save(flags);
-    t->local_tsc_stamp = rdtsc();
-    now = read_platform_stime();
+    now = read_platform_stime(NULL);
+    tsc = rdtsc_ordered();
     local_irq_restore(flags);
 
-    t->stime_master_stamp = now;
-    t->stime_local_stamp  = now;
+    t->stamp.master_stime = now;
+    /*
+     * To avoid a discontinuity (TSC and platform clock can't be expected
+     * to be in perfect sync), initialization here needs to match up with
+     * local_time_calibration()'s decision whether to use its fast path.
+     */
+    if ( boot_cpu_has(X86_FEATURE_CONSTANT_TSC) )
+    {
+        if ( system_state < SYS_STATE_smp_boot )
+            now = get_s_time_fixed(tsc);
+        else
+            now += ap_bringup_ref.local_stime - ap_bringup_ref.master_stime;
+    }
+    t->stamp.local_tsc   = tsc;
+    t->stamp.local_stime = now;
 }
 
 /*
@@ -1406,6 +1571,31 @@ static void __init tsc_check_writability(void)
     disable_tsc_sync = 1;
 }
 
+static void __init reset_percpu_time(void *unused)
+{
+    struct cpu_time *t = &this_cpu(cpu_time);
+
+    t->stamp.local_tsc = boot_tsc_stamp;
+    t->stamp.local_stime = 0;
+    t->stamp.local_stime = get_s_time_fixed(boot_tsc_stamp);
+    t->stamp.master_stime = t->stamp.local_stime;
+}
+
+static void __init try_platform_timer_tail(bool late)
+{
+    init_timer(&plt_overflow_timer, plt_overflow, NULL, 0);
+    plt_overflow(NULL);
+
+    platform_timer_stamp = plt_stamp64;
+    stime_platform_stamp = NOW();
+
+    if ( !late )
+        init_percpu_time();
+
+    init_timer(&calibration_timer, time_calibration, NULL, 0);
+    set_timer(&calibration_timer, NOW() + EPOCH);
+}
+
 /* Late init function, after all cpus have booted */
 static int __init verify_tsc_reliability(void)
 {
@@ -1420,9 +1610,34 @@ static int __init verify_tsc_reliability(void)
         tsc_check_reliability();
         if ( tsc_max_warp )
         {
-            printk("%s: TSC warp detected, disabling TSC_RELIABLE\n",
-                   __func__);
+            printk("TSC warp detected, disabling TSC_RELIABLE\n");
             setup_clear_cpu_cap(X86_FEATURE_TSC_RELIABLE);
+        }
+        else if ( !strcmp(opt_clocksource, "tsc") &&
+                  (try_platform_timer(&plt_tsc) > 0) )
+        {
+            /*
+             * Platform timer has changed and CPU time will only be updated
+             * after we set again the calibration timer, which means we need to
+             * seed again each local CPU time. At this stage TSC is known to be
+             * reliable i.e. monotonically increasing across all CPUs so this
+             * lets us remove the skew between platform timer and TSC, since
+             * these are now effectively the same.
+             */
+            on_selected_cpus(&cpu_online_map, reset_percpu_time, NULL, 1);
+
+            /*
+             * We won't do CPU Hotplug and TSC clocksource is being used which
+             * means we have a reliable TSC, plus we don't sync with any other
+             * clocksource so no need for rendezvous.
+             */
+            time_calibration_rendezvous_fn = time_calibration_nop_rendezvous;
+
+            /* Finish platform timer switch. */
+            try_platform_timer_tail(true);
+
+            printk("Switched to Platform timer %s TSC\n",
+                   freq_string(plt_src.frequency));
         }
     }
 
@@ -1448,12 +1663,8 @@ int __init init_xen_time(void)
     /* NB. get_cmos_time() can take over one second to execute. */
     do_settime(get_cmos_time(), 0, NOW());
 
-    init_platform_timer();
-
-    init_percpu_time();
-
-    init_timer(&calibration_timer, time_calibration, NULL, 0);
-    set_timer(&calibration_timer, NOW() + EPOCH);
+    /* Finish platform timer initialization. */
+    try_platform_timer_tail(false);
 
     return 0;
 }
@@ -1463,10 +1674,14 @@ int __init init_xen_time(void)
 void __init early_time_init(void)
 {
     struct cpu_time *t = &this_cpu(cpu_time);
-    u64 tmp = init_pit_and_calibrate_tsc();
+    u64 tmp;
+
+    preinit_pit();
+    tmp = init_platform_timer();
+    plt_tsc.frequency = tmp;
 
     set_time_scale(&t->tsc_scale, tmp);
-    t->local_tsc_stamp = boot_tsc_stamp;
+    t->stamp.local_tsc = boot_tsc_stamp;
 
     do_div(tmp, 1000);
     cpu_khz = (unsigned long)tmp;
@@ -1572,7 +1787,7 @@ int time_suspend(void)
 
 int time_resume(void)
 {
-    init_pit_and_calibrate_tsc();
+    preinit_pit();
 
     resume_platform_timer();
 
@@ -1644,6 +1859,7 @@ int hwdom_pit_access(struct ioreq *ioreq)
 /*
  * tsc=unstable: Override all tests; assume TSC is unreliable.
  * tsc=skewed: Assume TSCs are individually reliable, but skewed across CPUs.
+ * tsc=stable:socket: Assume TSCs are reliable across sockets.
  */
 static void __init tsc_parse(const char *s)
 {
@@ -1654,9 +1870,9 @@ static void __init tsc_parse(const char *s)
         setup_clear_cpu_cap(X86_FEATURE_TSC_RELIABLE);
     }
     else if ( !strcmp(s, "skewed") )
-    {
         setup_clear_cpu_cap(X86_FEATURE_TSC_RELIABLE);
-    }
+    else if ( !strcmp(s, "stable:socket") )
+        tsc_flags |= TSC_RELIABLE_SOCKET;
 }
 custom_param("tsc", tsc_parse);
 
@@ -1688,7 +1904,7 @@ void pv_soft_rdtsc(struct vcpu *v, struct cpu_user_regs *regs, int rdtscp)
 
     spin_lock(&d->arch.vtsc_lock);
 
-#if !defined(NDEBUG) || defined(PERF_COUNTERS)
+#if !defined(NDEBUG) || defined(CONFIG_PERF_COUNTERS)
     if ( guest_kernel_mode(v, regs) )
         d->arch.vtsc_kerncount++;
     else
@@ -1710,6 +1926,11 @@ void pv_soft_rdtsc(struct vcpu *v, struct cpu_user_regs *regs, int rdtscp)
     if ( rdtscp )
          regs->ecx =
              (d->arch.tsc_mode == TSC_MODE_PVRDTSCP) ? d->arch.incarnation : 0;
+}
+
+bool clocksource_is_tsc(void)
+{
+    return plt_src.read_counter == read_tsc;
 }
 
 int host_tsc_is_safe(void)
@@ -1959,7 +2180,7 @@ static void dump_softtsc(unsigned char key)
             printk(",khz=%"PRIu32, d->arch.tsc_khz);
         if ( d->arch.incarnation )
             printk(",inc=%"PRIu32, d->arch.incarnation);
-#if !defined(NDEBUG) || defined(PERF_COUNTERS)
+#if !defined(NDEBUG) || defined(CONFIG_PERF_COUNTERS)
         if ( !(d->arch.vtsc_kerncount | d->arch.vtsc_usercount) )
             printk("\n");
         else

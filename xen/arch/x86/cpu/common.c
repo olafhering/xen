@@ -90,11 +90,11 @@ static const struct cpu_dev default_cpu = {
 };
 static const struct cpu_dev *this_cpu = &default_cpu;
 
-static void default_ctxt_switch_levelling(const struct domain *nextd)
+static void default_ctxt_switch_levelling(const struct vcpu *next)
 {
 	/* Nop */
 }
-void (* __read_mostly ctxt_switch_levelling)(const struct domain *nextd) =
+void (* __read_mostly ctxt_switch_levelling)(const struct vcpu *next) =
 	default_ctxt_switch_levelling;
 
 bool_t opt_cpu_info;
@@ -166,8 +166,7 @@ int get_cpu_vendor(const char v[], enum get_cpu_vendor mode)
 			if (!strcmp(v,cpu_devs[i]->c_ident[0]) ||
 			    (cpu_devs[i]->c_ident[1] && 
 			     !strcmp(v,cpu_devs[i]->c_ident[1]))) {
-				if (mode == gcv_host_late)
-					this_cpu = cpu_devs[i];
+				this_cpu = cpu_devs[i];
 				return i;
 			}
 		}
@@ -220,7 +219,7 @@ static void __init early_cpu_detect(void)
 	      (int *)&c->x86_vendor_id[8],
 	      (int *)&c->x86_vendor_id[4]);
 
-	c->x86_vendor = get_cpu_vendor(c->x86_vendor_id, gcv_host_early);
+	c->x86_vendor = get_cpu_vendor(c->x86_vendor_id, gcv_host);
 
 	cpuid(0x00000001, &eax, &ebx, &ecx, &edx);
 	c->x86 = (eax >> 8) & 15;
@@ -237,6 +236,11 @@ static void __init early_cpu_detect(void)
 	/* Leaf 0x1 capabilities filled in early for Xen. */
 	c->x86_capability[cpufeat_word(X86_FEATURE_FPU)] = edx;
 	c->x86_capability[cpufeat_word(X86_FEATURE_SSE3)] = ecx;
+
+	printk(XENLOG_INFO
+	       "CPU Vendor: %s, Family %u (%#x), Model %u (%#x), Stepping %u (raw %08x)\n",
+	       this_cpu->c_vendor, c->x86, c->x86,
+	       c->x86_model, c->x86_model, c->x86_mask, eax);
 
 	eax = cpuid_eax(0x80000000);
 	if ((eax >> 16) == 0x8000 && eax >= 0x80000008) {
@@ -263,7 +267,7 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	      (int *)&c->x86_vendor_id[8],
 	      (int *)&c->x86_vendor_id[4]);
 
-	c->x86_vendor = get_cpu_vendor(c->x86_vendor_id, gcv_host_late);
+	c->x86_vendor = get_cpu_vendor(c->x86_vendor_id, gcv_host);
 	/* Initialize the standard set of capabilities */
 	/* Note that the vendor-specific code below might override */
 
@@ -473,7 +477,7 @@ void detect_extended_topology(struct cpuinfo_x86 *c)
 		sub_index++;
 	} while ( LEAFB_SUBTYPE(ecx) != INVALID_TYPE );
 
-	core_select_mask = (~(-1 << core_plus_mask_width)) >> ht_mask_width;
+	core_select_mask = (~(~0u << core_plus_mask_width)) >> ht_mask_width;
 
 	c->cpu_core_id = phys_pkg_id(initial_apicid, ht_mask_width)
 		& core_select_mask;
@@ -663,6 +667,15 @@ void load_system_tables(void)
 	asm volatile ("lidt %0"  : : "m"  (idtr) );
 	asm volatile ("ltr  %w0" : : "rm" (TSS_ENTRY << 3) );
 	asm volatile ("lldt %w0" : : "rm" (0) );
+
+	/*
+	 * Bottom-of-stack must be 16-byte aligned!
+	 *
+	 * Defer checks until exception support is sufficiently set up.
+	 */
+	BUILD_BUG_ON((sizeof(struct cpu_info) -
+		      offsetof(struct cpu_info, guest_cpu_user_regs.es)) & 0xf);
+	BUG_ON(system_state != SYS_STATE_early_boot && (stack_bottom & 0xf));
 }
 
 /*

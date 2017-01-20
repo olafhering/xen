@@ -117,7 +117,7 @@ static void vcpu_info_reset(struct vcpu *v)
     v->vcpu_info = ((v->vcpu_id < XEN_LEGACY_MAX_VCPUS)
                     ? (vcpu_info_t *)&shared_info(d, vcpu_info[v->vcpu_id])
                     : &dummy_vcpu_info);
-    v->vcpu_info_mfn = INVALID_MFN;
+    v->vcpu_info_mfn = mfn_x(INVALID_MFN);
 }
 
 struct vcpu *alloc_vcpu(
@@ -293,7 +293,7 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
     d->auto_node_affinity = 1;
 
     spin_lock_init(&d->shutdown_lock);
-    d->shutdown_code = -1;
+    d->shutdown_code = SHUTDOWN_CODE_INVALID;
 
     spin_lock_init(&d->pbuf_lock);
 
@@ -379,10 +379,7 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
         goto fail;
     init_status |= INIT_arch;
 
-    if ( (err = cpupool_add_domain(d, poolid)) != 0 )
-        goto fail;
-
-    if ( (err = sched_init_domain(d)) != 0 )
+    if ( (err = sched_init_domain(d, poolid)) != 0 )
         goto fail;
 
     if ( (err = late_hwdom_init(d)) != 0 )
@@ -698,7 +695,7 @@ void domain_shutdown(struct domain *d, u8 reason)
 
     spin_lock(&d->shutdown_lock);
 
-    if ( d->shutdown_code == -1 )
+    if ( d->shutdown_code == SHUTDOWN_CODE_INVALID )
         d->shutdown_code = reason;
     reason = d->shutdown_code;
 
@@ -745,7 +742,7 @@ void domain_resume(struct domain *d)
     spin_lock(&d->shutdown_lock);
 
     d->is_shutting_down = d->is_shut_down = 0;
-    d->shutdown_code = -1;
+    d->shutdown_code = SHUTDOWN_CODE_INVALID;
 
     for_each_vcpu ( d, v )
     {
@@ -867,8 +864,6 @@ void domain_destroy(struct domain *d)
         return;
 
     TRACE_1D(TRC_DOM0_DOM_REM, d->domain_id);
-
-    cpupool_rm_domain(d);
 
     /* Delete from task list and task hashtable. */
     spin_lock(&domlist_update_lock);
@@ -1009,6 +1004,13 @@ int domain_unpause_by_systemcontroller(struct domain *d)
 {
     int old, new, prev = d->controller_pause_count;
 
+    /*
+     * We record this information here for populate_physmap to figure out
+     * that the domain has finished being created. In fact, we're only
+     * allowed to set the MEMF_no_tlbflush flag during VM creation.
+     */
+    d->creation_finished = true;
+
     do
     {
         old = prev;
@@ -1141,7 +1143,7 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
     if ( offset > (PAGE_SIZE - sizeof(vcpu_info_t)) )
         return -EINVAL;
 
-    if ( v->vcpu_info_mfn != INVALID_MFN )
+    if ( v->vcpu_info_mfn != mfn_x(INVALID_MFN) )
         return -EINVAL;
 
     /* Run this command on yourself or on other offline VCPUS. */
@@ -1205,7 +1207,7 @@ void unmap_vcpu_info(struct vcpu *v)
 {
     unsigned long mfn;
 
-    if ( v->vcpu_info_mfn == INVALID_MFN )
+    if ( v->vcpu_info_mfn == mfn_x(INVALID_MFN) )
         return;
 
     mfn = v->vcpu_info_mfn;

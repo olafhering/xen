@@ -114,15 +114,21 @@ int libxl__device_generic_add(libxl__gc *gc, xs_transaction_t t,
         libxl__device *device, char **bents, char **fents, char **ro_fents)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    char *frontend_path, *backend_path, *libxl_path;
+    char *frontend_path = NULL, *backend_path = NULL, *libxl_path;
     struct xs_permissions frontend_perms[2];
     struct xs_permissions ro_frontend_perms[2];
     struct xs_permissions backend_perms[2];
     int create_transaction = t == XBT_NULL;
+    int libxl_only = device->backend_kind == LIBXL__DEVICE_KIND_NONE;
     int rc;
 
-    frontend_path = libxl__device_frontend_path(gc, device);
-    backend_path = libxl__device_backend_path(gc, device);
+    if (libxl_only) {
+        /* bents should be set as this is used to setup libxl_path content. */
+        assert(!fents && !ro_fents);
+    } else {
+        frontend_path = libxl__device_frontend_path(gc, device);
+        backend_path = libxl__device_backend_path(gc, device);
+    }
     libxl_path = libxl__device_libxl_path(gc, device);
 
     frontend_perms[0].id = device->domid;
@@ -144,13 +150,15 @@ retry_transaction:
     rc = libxl__xs_rm_checked(gc, t, libxl_path);
     if (rc) goto out;
 
-    rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/frontend",libxl_path),
-                                 frontend_path);
-    if (rc) goto out;
+    if (!libxl_only) {
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/frontend",libxl_path),
+                                     frontend_path);
+        if (rc) goto out;
 
-    rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/backend",libxl_path),
-                                 backend_path);
-    if (rc) goto out;
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/backend",libxl_path),
+                                     backend_path);
+        if (rc) goto out;
+    }
 
     /* xxx much of this function lacks error checks! */
 
@@ -179,12 +187,15 @@ retry_transaction:
     }
 
     if (bents) {
-        xs_rm(ctx->xsh, t, backend_path);
-        xs_mkdir(ctx->xsh, t, backend_path);
-        xs_set_permissions(ctx->xsh, t, backend_path, backend_perms, ARRAY_SIZE(backend_perms));
-        xs_write(ctx->xsh, t, GCSPRINTF("%s/frontend", backend_path),
-                 frontend_path, strlen(frontend_path));
-        libxl__xs_writev(gc, t, backend_path, bents);
+        if (!libxl_only) {
+            xs_rm(ctx->xsh, t, backend_path);
+            xs_mkdir(ctx->xsh, t, backend_path);
+            xs_set_permissions(ctx->xsh, t, backend_path, backend_perms,
+                               ARRAY_SIZE(backend_perms));
+            xs_write(ctx->xsh, t, GCSPRINTF("%s/frontend", backend_path),
+                     frontend_path, strlen(frontend_path));
+            libxl__xs_writev(gc, t, backend_path, bents);
+        }
 
         /*
          * We make a copy of everything for the backend in the libxl
@@ -193,6 +204,9 @@ retry_transaction:
          * would use the information from the json configuration
          * instead.  But there are still places in libxl that try to
          * reconstruct a config from xenstore.
+         *
+         * For devices without PV backend (e.g. USB devices emulated via qemu)
+         * only the libxl path is written.
          *
          * This duplication will typically produces duplicate keys
          * which will go out of date, but that's OK because nothing
@@ -677,54 +691,23 @@ void libxl__multidev_prepared(libxl__egc *egc,
 
 /******************************************************************************/
 
-/* Macro for defining the functions that will add a bunch of disks when
- * inside an async op with multidev.
- * This macro is added to prevent repetition of code.
- *
- * The following functions are defined:
- * libxl__add_disks
- * libxl__add_nics
- * libxl__add_vscsictrls
- * libxl__add_vtpms
- * libxl__add_usbctrls
- * libxl__add_usbs
- */
-
-#define DEFINE_DEVICES_ADD(type)                                        \
-    void libxl__add_##type##s(libxl__egc *egc, libxl__ao *ao, uint32_t domid, \
-                              libxl_domain_config *d_config,            \
-                              libxl__multidev *multidev)                \
-    {                                                                   \
-        AO_GC;                                                          \
-        int i;                                                          \
-        for (i = 0; i < d_config->num_##type##s; i++) {                 \
-            libxl__ao_device *aodev = libxl__multidev_prepare(multidev);  \
-            libxl__device_##type##_add(egc, domid, &d_config->type##s[i], \
-                                       aodev);                          \
-        }                                                               \
-    }
-
-DEFINE_DEVICES_ADD(disk)
-DEFINE_DEVICES_ADD(nic)
-DEFINE_DEVICES_ADD(vscsictrl)
-DEFINE_DEVICES_ADD(vtpm)
-DEFINE_DEVICES_ADD(usbctrl)
-DEFINE_DEVICES_ADD(usbdev)
-
-#undef DEFINE_DEVICES_ADD
-
-/******************************************************************************/
-
 int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
 {
-    const char *be_path = libxl__device_backend_path(gc, dev);
-    const char *fe_path = libxl__device_frontend_path(gc, dev);
+    const char *be_path = NULL;
+    const char *fe_path = NULL;
     const char *libxl_path = libxl__device_libxl_path(gc, dev);
-    const char *tapdisk_path = GCSPRINTF("%s/%s", be_path, "tapdisk-params");
-    const char *tapdisk_params;
+    const char *tapdisk_path = NULL;
+    const char *tapdisk_params = NULL;
     xs_transaction_t t = 0;
     int rc;
     uint32_t domid;
+    int libxl_only = dev->backend_kind == LIBXL__DEVICE_KIND_NONE;
+
+    if (!libxl_only) {
+        be_path = libxl__device_backend_path(gc, dev);
+        fe_path = libxl__device_frontend_path(gc, dev);
+        tapdisk_path = GCSPRINTF("%s/%s", be_path, "tapdisk-params");
+    }
 
     rc = libxl__get_domid(gc, &domid);
     if (rc) goto out;
@@ -734,18 +717,21 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
         if (rc) goto out;
 
         /* May not exist if this is not a tap device */
-        rc = libxl__xs_read_checked(gc, t, tapdisk_path, &tapdisk_params);
-        if (rc) goto out;
+        if (tapdisk_path) {
+            rc = libxl__xs_read_checked(gc, t, tapdisk_path, &tapdisk_params);
+            if (rc) goto out;
+        }
 
         if (domid == LIBXL_TOOLSTACK_DOMID) {
             /*
              * The toolstack domain is in charge of removing the
              * frontend and libxl paths.
              */
-            libxl__xs_path_cleanup(gc, t, fe_path);
+            if (!libxl_only)
+                libxl__xs_path_cleanup(gc, t, fe_path);
             libxl__xs_path_cleanup(gc, t, libxl_path);
         }
-        if (dev->backend_domid == domid) {
+        if (dev->backend_domid == domid && !libxl_only) {
             /*
              * The driver domain is in charge of removing what it can
              * from the backend path.
@@ -825,8 +811,7 @@ void libxl__devices_destroy(libxl__egc *egc, libxl__devices_remove_state *drs)
                 aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
                 aodev->dev = dev;
                 aodev->force = drs->force;
-                if (dev->backend_kind == LIBXL__DEVICE_KIND_VUSB ||
-                    dev->backend_kind == LIBXL__DEVICE_KIND_QUSB)
+                if (dev->kind == LIBXL__DEVICE_KIND_VUSB)
                     libxl__initiate_device_usbctrl_remove(egc, aodev);
                 else
                     libxl__initiate_device_generic_remove(egc, aodev);
@@ -1168,7 +1153,26 @@ static void device_hotplug(libxl__egc *egc, libxl__ao_device *aodev)
         goto out;
     }
 
+    assert(args != NULL);
     LOG(DEBUG, "calling hotplug script: %s %s", args[0], args[1]);
+    LOG(DEBUG, "extra args:");
+    {
+        const char *arg;
+        unsigned int x;
+
+        for (x = 2; (arg = args[x]); x++)
+            LOG(DEBUG, "\t%s", arg);
+    }
+    LOG(DEBUG, "env:");
+    if (env != NULL) {
+        const char *k, *v;
+        unsigned int x;
+
+        for (x = 0; (k = env[x]); x += 2) {
+            v = env[x+1];
+            LOG(DEBUG, "\t%s: %s", k, v);
+        }
+    }
 
     nullfd = open("/dev/null", O_RDONLY);
     if (nullfd < 0) {

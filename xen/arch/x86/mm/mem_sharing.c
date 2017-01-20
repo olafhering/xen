@@ -33,6 +33,7 @@
 #include <asm/page.h>
 #include <asm/string.h>
 #include <asm/p2m.h>
+#include <asm/altp2m.h>
 #include <asm/atomic.h>
 #include <asm/event.h>
 #include <xsm/xsm.h>
@@ -752,75 +753,25 @@ int mem_sharing_debug_gfn(struct domain *d, unsigned long gfn)
     return num_refs;
 }
 
-#define SHGNT_PER_PAGE_V1 (PAGE_SIZE / sizeof(grant_entry_v1_t))
-#define shared_entry_v1(t, e) \
-    ((t)->shared_v1[(e)/SHGNT_PER_PAGE_V1][(e)%SHGNT_PER_PAGE_V1])
-#define SHGNT_PER_PAGE_V2 (PAGE_SIZE / sizeof(grant_entry_v2_t))
-#define shared_entry_v2(t, e) \
-    ((t)->shared_v2[(e)/SHGNT_PER_PAGE_V2][(e)%SHGNT_PER_PAGE_V2])
-#define STGNT_PER_PAGE (PAGE_SIZE / sizeof(grant_status_t))
-#define status_entry(t, e) \
-    ((t)->status[(e)/STGNT_PER_PAGE][(e)%STGNT_PER_PAGE])
-
-static grant_entry_header_t *
-shared_entry_header(struct grant_table *t, grant_ref_t ref)
-{
-    ASSERT (t->gt_version != 0);
-    if ( t->gt_version == 1 )
-        return (grant_entry_header_t*)&shared_entry_v1(t, ref);
-    else
-        return &shared_entry_v2(t, ref).hdr;
-}
-
-static int mem_sharing_gref_to_gfn(struct domain *d, 
-                                   grant_ref_t ref, 
-                                   unsigned long *gfn)
-{
-    if ( d->grant_table->gt_version < 1 )
-        return -1;
-
-    if ( d->grant_table->gt_version == 1 ) 
-    {
-        grant_entry_v1_t *sha1;
-        sha1 = &shared_entry_v1(d->grant_table, ref);
-        *gfn = sha1->frame;
-    } 
-    else 
-    {
-        grant_entry_v2_t *sha2;
-        sha2 = &shared_entry_v2(d->grant_table, ref);
-        *gfn = sha2->full_page.frame;
-    }
- 
-    return 0;
-}
-
-
 int mem_sharing_debug_gref(struct domain *d, grant_ref_t ref)
 {
-    grant_entry_header_t *shah;
+    int rc;
     uint16_t status;
-    unsigned long gfn;
+    gfn_t gfn;
 
-    if ( d->grant_table->gt_version < 1 )
+    rc = mem_sharing_gref_to_gfn(d->grant_table, ref, &gfn, &status);
+    if ( rc )
     {
-        MEM_SHARING_DEBUG( 
-                "Asked to debug [dom=%d,gref=%d], but not yet inited.\n",
-                d->domain_id, ref);
-        return -EINVAL;
+        MEM_SHARING_DEBUG("Asked to debug [dom=%d,gref=%u]: error %d.\n",
+                          d->domain_id, ref, rc);
+        return rc;
     }
-    (void)mem_sharing_gref_to_gfn(d, ref, &gfn); 
-    shah = shared_entry_header(d->grant_table, ref);
-    if ( d->grant_table->gt_version == 1 ) 
-        status = shah->flags;
-    else 
-        status = status_entry(d->grant_table, ref);
     
     MEM_SHARING_DEBUG(
             "==> Grant [dom=%d,ref=%d], status=%x. ", 
             d->domain_id, ref, status);
 
-    return mem_sharing_debug_gfn(d, gfn); 
+    return mem_sharing_debug_gfn(d, gfn_x(gfn));
 }
 
 int mem_sharing_nominate_page(struct domain *d,
@@ -828,14 +779,16 @@ int mem_sharing_nominate_page(struct domain *d,
                               int expected_refcnt,
                               shr_handle_t *phandle)
 {
+    struct p2m_domain *hp2m = p2m_get_hostp2m(d);
     p2m_type_t p2mt;
+    p2m_access_t p2ma;
     mfn_t mfn;
     struct page_info *page = NULL; /* gcc... */
     int ret;
 
     *phandle = 0UL;
 
-    mfn = get_gfn(d, gfn, &p2mt);
+    mfn = get_gfn_type_access(hp2m, gfn, &p2mt, &p2ma, 0, NULL);
 
     /* Check if mfn is valid */
     ret = -EINVAL;
@@ -860,6 +813,34 @@ int mem_sharing_nominate_page(struct domain *d,
     /* Check p2m type */
     if ( !p2m_is_sharable(p2mt) )
         goto out;
+
+    /* Check if there are mem_access/remapped altp2m entries for this page */
+    if ( altp2m_active(d) )
+    {
+        unsigned int i;
+        struct p2m_domain *ap2m;
+        mfn_t amfn;
+        p2m_type_t ap2mt;
+        p2m_access_t ap2ma;
+
+        altp2m_list_lock(d);
+
+        for ( i = 0; i < MAX_ALTP2M; i++ )
+        {
+            ap2m = d->arch.altp2m_p2m[i];
+            if ( !ap2m )
+                continue;
+
+            amfn = get_gfn_type_access(ap2m, gfn, &ap2mt, &ap2ma, 0, NULL);
+            if ( mfn_valid(amfn) && (mfn_x(amfn) != mfn_x(mfn) || ap2ma != p2ma) )
+            {
+                altp2m_list_unlock(d);
+                goto out;
+            }
+        }
+
+        altp2m_list_unlock(d);
+    }
 
     /* Try to convert the mfn to the sharable type */
     page = mfn_to_page(mfn);
@@ -1294,6 +1275,58 @@ int relinquish_shared_pages(struct domain *d)
     return rc;
 }
 
+static int range_share(struct domain *d, struct domain *cd,
+                       struct mem_sharing_op_range *range)
+{
+    int rc = 0;
+    shr_handle_t sh, ch;
+    unsigned long start = range->opaque ?: range->first_gfn;
+
+    while ( range->last_gfn >= start )
+    {
+        /*
+         * We only break out if we run out of memory as individual pages may
+         * legitimately be unsharable and we just want to skip over those.
+         */
+        rc = mem_sharing_nominate_page(d, start, 0, &sh);
+        if ( rc == -ENOMEM )
+            break;
+
+        if ( !rc )
+        {
+            rc = mem_sharing_nominate_page(cd, start, 0, &ch);
+            if ( rc == -ENOMEM )
+                break;
+
+            if ( !rc )
+            {
+                /* If we get here this should be guaranteed to succeed. */
+                rc = mem_sharing_share_pages(d, start, sh,
+                                             cd, start, ch);
+                ASSERT(!rc);
+            }
+        }
+
+        /* Check for continuation if it's not the last iteration. */
+        if ( range->last_gfn >= ++start && hypercall_preempt_check() )
+        {
+            rc = 1;
+            break;
+        }
+    }
+
+    range->opaque = start;
+
+    /*
+     * The last page may fail with -EINVAL, and for range sharing we don't
+     * care about that.
+     */
+    if ( range->last_gfn < start && rc == -EINVAL )
+        rc = 0;
+
+    return rc;
+}
+
 int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
 {
     int rc;
@@ -1339,23 +1372,24 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
         case XENMEM_sharing_op_nominate_gref:
         {
             grant_ref_t gref = mso.u.nominate.u.grant_ref;
-            unsigned long gfn;
+            gfn_t gfn;
             shr_handle_t handle;
 
             rc = -EINVAL;
             if ( !mem_sharing_enabled(d) )
                 goto out;
-            if ( mem_sharing_gref_to_gfn(d, gref, &gfn) < 0 )
+            rc = mem_sharing_gref_to_gfn(d->grant_table, gref, &gfn, NULL);
+            if ( rc < 0 )
                 goto out;
 
-            rc = mem_sharing_nominate_page(d, gfn, 3, &handle);
+            rc = mem_sharing_nominate_page(d, gfn_x(gfn), 3, &handle);
             mso.u.nominate.handle = handle;
         }
         break;
 
         case XENMEM_sharing_op_share:
         {
-            unsigned long sgfn, cgfn;
+            gfn_t sgfn, cgfn;
             struct domain *cd;
             shr_handle_t sh, ch;
 
@@ -1387,35 +1421,38 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
                 grant_ref_t gref = (grant_ref_t) 
                                     (XENMEM_SHARING_OP_FIELD_GET_GREF(
                                         mso.u.share.source_gfn));
-                if ( mem_sharing_gref_to_gfn(d, gref, &sgfn) < 0 )
+                rc = mem_sharing_gref_to_gfn(d->grant_table, gref, &sgfn,
+                                             NULL);
+                if ( rc < 0 )
                 {
                     rcu_unlock_domain(cd);
-                    rc = -EINVAL;
                     goto out;
                 }
-            } else {
-                sgfn  = mso.u.share.source_gfn;
             }
+            else
+                sgfn = _gfn(mso.u.share.source_gfn);
 
             if ( XENMEM_SHARING_OP_FIELD_IS_GREF(mso.u.share.client_gfn) )
             {
                 grant_ref_t gref = (grant_ref_t) 
                                     (XENMEM_SHARING_OP_FIELD_GET_GREF(
                                         mso.u.share.client_gfn));
-                if ( mem_sharing_gref_to_gfn(cd, gref, &cgfn) < 0 )
+                rc = mem_sharing_gref_to_gfn(cd->grant_table, gref, &cgfn,
+                                             NULL);
+                if ( rc < 0 )
                 {
                     rcu_unlock_domain(cd);
-                    rc = -EINVAL;
                     goto out;
                 }
-            } else {
-                cgfn  = mso.u.share.client_gfn;
             }
+            else
+                cgfn = _gfn(mso.u.share.client_gfn);
 
             sh = mso.u.share.source_handle;
             ch = mso.u.share.client_handle;
 
-            rc = mem_sharing_share_pages(d, sgfn, sh, cd, cgfn, ch); 
+            rc = mem_sharing_share_pages(d, gfn_x(sgfn), sh,
+                                         cd, gfn_x(cgfn), ch);
 
             rcu_unlock_domain(cd);
         }
@@ -1465,6 +1502,96 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
             rc = mem_sharing_add_to_physmap(d, sgfn, sh, cd, cgfn); 
 
             rcu_unlock_domain(cd);
+        }
+        break;
+
+        case XENMEM_sharing_op_range_share:
+        {
+            unsigned long max_sgfn, max_cgfn;
+            struct domain *cd;
+
+            rc = -EINVAL;
+            if ( mso.u.range._pad[0] || mso.u.range._pad[1] ||
+                 mso.u.range._pad[2] )
+                 goto out;
+
+            /*
+             * We use opaque for the hypercall continuation value.
+             * Ideally the user sets this to 0 in the beginning but
+             * there is no good way of enforcing that here, so we just check
+             * that it's at least in range.
+             */
+            if ( mso.u.range.opaque &&
+                 (mso.u.range.opaque < mso.u.range.first_gfn ||
+                  mso.u.range.opaque > mso.u.range.last_gfn) )
+                goto out;
+
+            if ( !mem_sharing_enabled(d) )
+                goto out;
+
+            rc = rcu_lock_live_remote_domain_by_id(mso.u.range.client_domain,
+                                                   &cd);
+            if ( rc )
+                goto out;
+
+            /*
+             * We reuse XENMEM_sharing_op_share XSM check here as this is
+             * essentially the same concept repeated over multiple pages.
+             */
+            rc = xsm_mem_sharing_op(XSM_DM_PRIV, d, cd,
+                                    XENMEM_sharing_op_share);
+            if ( rc )
+            {
+                rcu_unlock_domain(cd);
+                goto out;
+            }
+
+            if ( !mem_sharing_enabled(cd) )
+            {
+                rcu_unlock_domain(cd);
+                rc = -EINVAL;
+                goto out;
+            }
+
+            /*
+             * Sanity check only, the client should keep the domains paused for
+             * the duration of this op.
+             */
+            if ( !atomic_read(&d->pause_count) ||
+                 !atomic_read(&cd->pause_count) )
+            {
+                rcu_unlock_domain(cd);
+                rc = -EINVAL;
+                goto out;
+            }
+
+            max_sgfn = domain_get_maximum_gpfn(d);
+            max_cgfn = domain_get_maximum_gpfn(cd);
+
+            if ( max_sgfn < mso.u.range.first_gfn ||
+                 max_sgfn < mso.u.range.last_gfn ||
+                 max_cgfn < mso.u.range.first_gfn ||
+                 max_cgfn < mso.u.range.last_gfn )
+            {
+                rcu_unlock_domain(cd);
+                rc = -EINVAL;
+                goto out;
+            }
+
+            rc = range_share(d, cd, &mso.u.range);
+            rcu_unlock_domain(cd);
+
+            if ( rc > 0 )
+            {
+                if ( __copy_to_guest(arg, &mso, 1) )
+                    rc = -EFAULT;
+                else
+                    rc = hypercall_create_continuation(__HYPERVISOR_memory_op,
+                                                       "lh", XENMEM_sharing_op,
+                                                       arg);
+            }
+            else
+                mso.u.range.opaque = 0;
         }
         break;
 

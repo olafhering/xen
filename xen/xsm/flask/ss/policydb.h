@@ -158,8 +158,8 @@ struct ocontext {
                 u64 high_iomem;
         } iomem;
     } u;
-    struct context context[2];    /* security context(s) */
-    u32 sid[2];    /* SID(s) */
+    struct context context;
+    u32 sid;
     struct ocontext *next;
 };
 
@@ -246,6 +246,8 @@ struct policydb {
 
     unsigned int policyvers;
 
+    unsigned int allow_unknown : 1;
+
     u16 target_type;
 };
 
@@ -261,6 +263,10 @@ extern int policydb_read(struct policydb *p, void *fp);
 
 #define POLICYDB_CONFIG_MLS    1
 
+/* the config flags related to unknown classes/perms are bits 2 and 3 */
+#define REJECT_UNKNOWN 0x00000002
+#define ALLOW_UNKNOWN  0x00000004
+
 #define OBJECT_R "object_r"
 #define OBJECT_R_VAL 1
 
@@ -271,7 +277,7 @@ extern int policydb_read(struct policydb *p, void *fp);
 #define TARGET_XEN_OLD 0
 
 struct policy_file {
-    char *data;
+    const char *data;
     size_t len;
 };
 

@@ -168,15 +168,11 @@ static void __init calculate_hvm_featureset(void)
      */
     if ( cpu_has_vmx )
     {
-        if ( !(vmx_vmexit_control & VM_EXIT_CLEAR_BNDCFGS) ||
-             !(vmx_vmentry_control & VM_ENTRY_LOAD_BNDCFGS) )
+        if ( !cpu_has_vmx_mpx )
             __clear_bit(X86_FEATURE_MPX, hvm_featureset);
 
         if ( !cpu_has_vmx_xsaves )
             __clear_bit(X86_FEATURE_XSAVES, hvm_featureset);
-
-        if ( !cpu_has_vmx_pcommit )
-            __clear_bit(X86_FEATURE_PCOMMIT, hvm_featureset);
     }
 
     sanitise_featureset(hvm_featureset);

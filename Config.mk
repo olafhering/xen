@@ -16,12 +16,10 @@ or       = $(if $(strip $(1)),$(1),$(if $(strip $(2)),$(2),$(if $(strip $(3)),$(
 
 -include $(XEN_ROOT)/.config
 
-# A debug build of Xen and tools?
-debug ?= y
+# A debug build of tools?
+# Hypervisor debug build is controlled by Kconfig.
+debug ?= n
 debug_symbols ?= $(debug)
-
-# Test coverage support
-coverage ?= n
 
 XEN_COMPILE_ARCH    ?= $(shell uname -m | sed -e s/i.86/x86_32/ \
                          -e s/i86pc/x86_32/ -e s/amd64/x86_64/ \
@@ -147,6 +145,12 @@ export XEN_HAS_BUILD_ID=y
 build_id_linker := --build-id=sha1
 endif
 
+ifndef XEN_HAS_CHECKPOLICY
+    CHECKPOLICY ?= checkpolicy
+    XEN_HAS_CHECKPOLICY := $(shell $(CHECKPOLICY) -h 2>&1 | grep -q xen && echo y || echo n)
+    export XEN_HAS_CHECKPOLICY
+endif
+
 # as-insn: Check whether assembler supports an instruction.
 # Usage: cflags-y += $(call as-insn "insn",option-yes,option-no)
 as-insn = $(if $(shell echo 'void _(void) { asm volatile ( $(2) ); }' \
@@ -181,7 +185,8 @@ endef
 
 BUILD_MAKE_VARS := sbindir bindir LIBEXEC LIBEXEC_BIN libdir SHAREDIR \
                    XENFIRMWAREDIR XEN_CONFIG_DIR XEN_SCRIPT_DIR XEN_LOCK_DIR \
-                   XEN_RUN_DIR XEN_PAGING_DIR XEN_DUMP_DIR
+                   XEN_RUN_DIR XEN_PAGING_DIR XEN_DUMP_DIR XEN_LOG_DIR \
+                   XEN_LIB_DIR XEN_RUN_STORED
 
 buildmakevars2file = $(eval $(call buildmakevars2file-closure,$(1)))
 define buildmakevars2file-closure
@@ -271,22 +276,20 @@ QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= 52a99493cce88a9d4ec8a02d7f1bd1a1001ce60d
-QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= 1a3ee6eeca136525aa2e6917ae500e7cf731c09d
-# Fri May 13 15:21:10 2016 +0100
-# lib/sys.c: enclose file_types in define guards
+OVMF_UPSTREAM_REVISION ?= bc54e50e0fe03c570014f363b547426913e92449
+QEMU_UPSTREAM_REVISION ?= qemu-xen-4.8.0-rc7
+MINIOS_UPSTREAM_REVISION ?= xen-4.8.0-rc1
+# Wed Sep 28 11:50:04 2016 +0200
+# minios: fix build issue with xen_*mb defines
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.9.2
-# Tue, 1 Mar 2016 15:06:45 +0100 (16:06 +0200)
-# fw/pci: add Q35 S3 support
+SEABIOS_UPSTREAM_REVISION ?= rel-1.10.0
+# Wed Jun 22 14:53:24 2016 +0800
+# fw/msr_feature_control: add support to set MSR_IA32_FEATURE_CONTROL
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= df553c056104e3dd8a2bd2e72539a57c4c085bae
-# Thu May 5 11:14:44 2016 +0100
-# Fix build with newer version of GNUTLS
+QEMU_TRADITIONAL_REVISION ?= xen-4.8.0-rc7
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

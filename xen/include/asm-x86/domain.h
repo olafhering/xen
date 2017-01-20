@@ -377,7 +377,7 @@ struct arch_domain
                                      hardware TSC scaling cases */
     uint32_t incarnation;    /* incremented every restore or live migrate
                                 (possibly other cases in the future */
-#if !defined(NDEBUG) || defined(PERF_COUNTERS)
+#if !defined(NDEBUG) || defined(CONFIG_PERF_COUNTERS)
     uint64_t vtsc_kerncount;
     uint64_t vtsc_usercount;
 #endif
@@ -401,10 +401,12 @@ struct arch_domain
         unsigned int write_ctrlreg_enabled       : 4;
         unsigned int write_ctrlreg_sync          : 4;
         unsigned int write_ctrlreg_onchangeonly  : 4;
-        unsigned int mov_to_msr_enabled          : 1;
-        unsigned int mov_to_msr_extended         : 1;
         unsigned int singlestep_enabled          : 1;
         unsigned int software_breakpoint_enabled : 1;
+        unsigned int debug_exception_enabled     : 1;
+        unsigned int debug_exception_sync        : 1;
+        unsigned int cpuid_enabled               : 1;
+        struct monitor_msr_bitmap *msr_bitmap;
     } monitor;
 
     /* Mem_access emulation control */
@@ -554,6 +556,9 @@ struct arch_vcpu
     /* This variable determines whether nonlazy extended state has been used,
      * and thus should be saved/restored. */
     bool_t nonlazy_xstate_used;
+
+    /* Has the guest enabled CPUID faulting? */
+    bool cpuid_faulting;
 
     /*
      * The SMAP check policy when updating runstate_guest(v) and the

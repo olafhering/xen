@@ -25,6 +25,8 @@
 #include <xen/hvm/hvm_xs_strings.h>
 #include <xen/hvm/e820.h>
 
+#include "_paths.h"
+
 libxl_domain_type libxl__domain_type(libxl__gc *gc, uint32_t domid)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
@@ -121,7 +123,7 @@ static int numa_place_domain(libxl__gc *gc, uint32_t domid,
     libxl_bitmap cpupool_nodemap;
     libxl_cpupoolinfo cpupool_info;
     int i, cpupool, rc = 0;
-    uint32_t memkb;
+    uint64_t memkb;
 
     libxl__numa_candidate_init(&candidate);
     libxl_bitmap_init(&cpupool_nodemap);
@@ -176,7 +178,7 @@ static int numa_place_domain(libxl__gc *gc, uint32_t domid,
     }
 
     LOG(DETAIL, "NUMA placement candidate with %d nodes, %d cpus and "
-                "%"PRIu32" KB free selected", candidate.nr_nodes,
+                "%"PRIu64" KB free selected", candidate.nr_nodes,
                 candidate.nr_cpus, candidate.free_memkb / 1024);
 
  out:
@@ -300,6 +302,7 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
     libxl_ctx *ctx = libxl__gc_owner(gc);
     char *xs_domid, *con_domid;
     int rc;
+    uint64_t size;
 
     if (xc_domain_max_vcpus(ctx->xch, domid, info->max_vcpus) != 0) {
         LOG(ERROR, "Couldn't set max vcpu count");
@@ -406,8 +409,14 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
         }
     }
 
-    if (xc_domain_setmaxmem(ctx->xch, domid, info->target_memkb +
-        LIBXL_MAXMEM_CONSTANT) < 0) {
+
+    rc = libxl__arch_extra_memory(gc, info, &size);
+    if (rc < 0) {
+        LOGE(ERROR, "Couldn't get arch extra constant memory size");
+        return ERROR_FAIL;
+    }
+
+    if (xc_domain_setmaxmem(ctx->xch, domid, info->target_memkb + size) < 0) {
         LOGE(ERROR, "Couldn't set max memory");
         return ERROR_FAIL;
     }
@@ -816,7 +825,8 @@ static int hvm_build_set_params(xc_interface *handle, uint32_t domid,
 
 static int hvm_build_set_xs_values(libxl__gc *gc,
                                    uint32_t domid,
-                                   struct xc_dom_image *dom)
+                                   struct xc_dom_image *dom,
+                                   const libxl_domain_build_info *info)
 {
     char *path = NULL;
     int ret = 0;
@@ -837,18 +847,20 @@ static int hvm_build_set_xs_values(libxl__gc *gc,
             goto err;
     }
 
-    if (dom->acpi_module.guest_addr_out) {
+    /* Only one module can be passed. PVHv2 guests do not support this. */
+    if (dom->acpi_modules[0].guest_addr_out && 
+        info->device_model_version !=LIBXL_DEVICE_MODEL_VERSION_NONE) {
         path = GCSPRINTF("/local/domain/%d/"HVM_XS_ACPI_PT_ADDRESS, domid);
 
         ret = libxl__xs_printf(gc, XBT_NULL, path, "0x%"PRIx64,
-                               dom->acpi_module.guest_addr_out);
+                               dom->acpi_modules[0].guest_addr_out);
         if (ret)
             goto err;
 
         path = GCSPRINTF("/local/domain/%d/"HVM_XS_ACPI_PT_LENGTH, domid);
 
         ret = libxl__xs_printf(gc, XBT_NULL, path, "0x%x",
-                               dom->acpi_module.length);
+                               dom->acpi_modules[0].length);
         if (ret)
             goto err;
     }
@@ -860,6 +872,42 @@ err:
     return ret;
 }
 
+static int libxl__load_hvm_firmware_module(libxl__gc *gc,
+                                           const char *filename,
+                                           const char *what,
+                                           struct xc_hvm_firmware_module *m)
+{
+    int datalen = 0;
+    void *data = NULL;
+    int r, rc;
+
+    LOG(DEBUG, "Loading %s: %s", what, filename);
+    r = libxl_read_file_contents(CTX, filename, &data, &datalen);
+    if (r) {
+        /*
+         * Print a message only on ENOENT, other errors are logged by the
+         * function libxl_read_file_contents().
+         */
+        if (r == ENOENT)
+            LOGEV(ERROR, r, "failed to read %s file", what);
+        rc =  ERROR_FAIL;
+        goto out;
+    }
+    libxl__ptr_add(gc, data);
+    if (datalen) {
+        /* Only accept non-empty files */
+        m->data = data;
+        m->length = datalen;
+    } else {
+        LOG(ERROR, "file %s for %s is empty", filename, what);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+    rc = 0;
+out:
+    return rc;
+}
+
 static int libxl__domain_firmware(libxl__gc *gc,
                                   libxl_domain_build_info *info,
                                   struct xc_dom_image *dom)
@@ -869,6 +917,7 @@ static int libxl__domain_firmware(libxl__gc *gc,
     int e, rc;
     int datalen = 0;
     void *data;
+    const char *bios_filename = NULL;
 
     if (info->u.hvm.firmware)
         firmware = info->u.hvm.firmware;
@@ -912,6 +961,30 @@ static int libxl__domain_firmware(libxl__gc *gc,
         goto out;
     }
 
+    if (info->device_model_version == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
+        if (info->u.hvm.system_firmware) {
+            bios_filename = info->u.hvm.system_firmware;
+        } else {
+            switch (info->u.hvm.bios) {
+            case LIBXL_BIOS_TYPE_SEABIOS:
+                bios_filename = libxl__seabios_path();
+                break;
+            case LIBXL_BIOS_TYPE_OVMF:
+                bios_filename = libxl__ovmf_path();
+                break;
+            case LIBXL_BIOS_TYPE_ROMBIOS:
+            default:
+                abort();
+            }
+        }
+    }
+
+    if (bios_filename) {
+        rc = libxl__load_hvm_firmware_module(gc, bios_filename, "BIOS",
+                                             &dom->system_firmware_module);
+        if (rc) goto out;
+    }
+
     if (info->u.hvm.smbios_firmware) {
         data = NULL;
         e = libxl_read_file_contents(ctx, info->u.hvm.smbios_firmware,
@@ -931,6 +1004,13 @@ static int libxl__domain_firmware(libxl__gc *gc,
     }
 
     if (info->u.hvm.acpi_firmware) {
+
+        if (info->device_model_version == LIBXL_DEVICE_MODEL_VERSION_NONE) {
+            LOGE(ERROR, "PVH guests do not allow loading ACPI modules");
+            rc = ERROR_FAIL;
+            goto out;
+        }
+
         data = NULL;
         e = libxl_read_file_contents(ctx, info->u.hvm.acpi_firmware,
                                      &data, &datalen);
@@ -942,9 +1022,9 @@ static int libxl__domain_firmware(libxl__gc *gc,
         }
         libxl__ptr_add(gc, data);
         if (datalen) {
-            /* Only accept non-empty files */
-            dom->acpi_module.data = data;
-            dom->acpi_module.length = (uint32_t)datalen;
+            /* Only accept a non-empty file */
+            dom->acpi_modules[0].data = data;
+            dom->acpi_modules[0].length = (uint32_t)datalen;
         }
     }
 
@@ -1004,10 +1084,21 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
         dom->target_pages = mem_size >> XC_PAGE_SHIFT;
     if (dom->mmio_size == 0 && device_model)
         dom->mmio_size = HVM_BELOW_4G_MMIO_LENGTH;
-    else if (dom->mmio_size == 0 && !device_model)
-        dom->mmio_size = GB(4) -
-                    ((X86_HVM_END_SPECIAL_REGION - X86_HVM_NR_SPECIAL_PAGES)
-                    << XC_PAGE_SHIFT);
+    else if (dom->mmio_size == 0 && !device_model) {
+#if defined(__i386__) || defined(__x86_64__)
+        if (libxl_defbool_val(info->u.hvm.apic)) {
+            /* Make sure LAPIC_BASE_ADDRESS is below special pages */
+            assert(((((X86_HVM_END_SPECIAL_REGION - X86_HVM_NR_SPECIAL_PAGES)
+                      << XC_PAGE_SHIFT) - LAPIC_BASE_ADDRESS)) >= XC_PAGE_SIZE);
+            dom->mmio_size = GB(4) - LAPIC_BASE_ADDRESS;
+        } else
+            dom->mmio_size = GB(4) -
+                ((X86_HVM_END_SPECIAL_REGION - X86_HVM_NR_SPECIAL_PAGES)
+                 << XC_PAGE_SHIFT);
+#else
+        assert(1);
+#endif
+    }
     lowmem_end = mem_size;
     highmem_end = 0;
     mmio_start = (1ull << 32) - dom->mmio_size;
@@ -1061,15 +1152,15 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
             dom->vnode_to_pnode[i] = info->vnuma_nodes[i].pnode;
     }
 
+    rc = libxl__build_dom(gc, domid, info, state, dom);
+    if (rc != 0)
+        goto out;
+
     rc = libxl__arch_domain_construct_memmap(gc, d_config, domid, dom);
     if (rc != 0) {
         LOG(ERROR, "setting domain memory map failed");
         goto out;
     }
-
-    rc = libxl__build_dom(gc, domid, info, state, dom);
-    if (rc != 0)
-        goto out;
 
     rc = hvm_build_set_params(ctx->xch, domid, info, state->store_port,
                                &state->store_mfn, state->console_port,
@@ -1080,7 +1171,7 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
         goto out;
     }
 
-    rc = hvm_build_set_xs_values(gc, domid, dom);
+    rc = hvm_build_set_xs_values(gc, domid, dom, info);
     if (rc != 0) {
         LOG(ERROR, "hvm build set xenstore values failed");
         goto out;
@@ -1129,7 +1220,7 @@ const char *libxl__userdata_path(libxl__gc *gc, uint32_t domid,
         goto out;
     }
     uuid_string = GCSPRINTF(LIBXL_UUID_FMT, LIBXL_UUID_BYTES(info.uuid));
-    path = GCSPRINTF("/var/lib/xen/userdata-%s.%u.%s.%s",
+    path = GCSPRINTF(XEN_LIB_DIR "/userdata-%s.%u.%s.%s",
                      wh, domid, uuid_string, userdata_userid);
 
  out:

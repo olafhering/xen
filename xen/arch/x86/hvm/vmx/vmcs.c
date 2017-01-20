@@ -37,6 +37,7 @@
 #include <asm/hvm/vmx/vvmx.h>
 #include <asm/hvm/vmx/vmcs.h>
 #include <asm/flushtlb.h>
+#include <asm/monitor.h>
 #include <asm/shadow.h>
 #include <asm/tboot.h>
 #include <asm/apic.h>
@@ -107,18 +108,6 @@ u32 vmx_vmentry_control __read_mostly;
 u64 vmx_ept_vpid_cap __read_mostly;
 u64 vmx_vmfunc __read_mostly;
 bool_t vmx_virt_exception __read_mostly;
-
-const u32 vmx_introspection_force_enabled_msrs[] = {
-    MSR_IA32_SYSENTER_EIP,
-    MSR_IA32_SYSENTER_ESP,
-    MSR_IA32_SYSENTER_CS,
-    MSR_IA32_MC0_CTL,
-    MSR_STAR,
-    MSR_LSTAR
-};
-
-const unsigned int vmx_introspection_force_enabled_msrs_size =
-    ARRAY_SIZE(vmx_introspection_force_enabled_msrs);
 
 static DEFINE_PER_CPU_READ_MOSTLY(paddr_t, vmxon_region);
 static DEFINE_PER_CPU(paddr_t, current_vmcs);
@@ -244,7 +233,6 @@ static int vmx_init_vmcs_config(void)
                SECONDARY_EXEC_ENABLE_VM_FUNCTIONS |
                SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS |
                SECONDARY_EXEC_XSAVES |
-               SECONDARY_EXEC_PCOMMIT |
                SECONDARY_EXEC_TSC_SCALING);
         rdmsrl(MSR_IA32_VMX_MISC, _vmx_misc_cap);
         if ( _vmx_misc_cap & VMX_MISC_VMWRITE_ALL )
@@ -616,14 +604,14 @@ int vmx_cpu_up(void)
         return -EINVAL;
     }
 
-    rdmsr(IA32_FEATURE_CONTROL_MSR, eax, edx);
+    rdmsr(MSR_IA32_FEATURE_CONTROL, eax, edx);
 
-    bios_locked = !!(eax & IA32_FEATURE_CONTROL_MSR_LOCK);
+    bios_locked = !!(eax & IA32_FEATURE_CONTROL_LOCK);
     if ( bios_locked )
     {
         if ( !(eax & (tboot_in_measured_env()
-                      ? IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_INSIDE_SMX
-                      : IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX)) )
+                      ? IA32_FEATURE_CONTROL_ENABLE_VMXON_INSIDE_SMX
+                      : IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX)) )
         {
             printk("CPU%d: VMX disabled by BIOS.\n", cpu);
             return -EINVAL;
@@ -631,11 +619,11 @@ int vmx_cpu_up(void)
     }
     else
     {
-        eax  = IA32_FEATURE_CONTROL_MSR_LOCK;
-        eax |= IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX;
+        eax  = IA32_FEATURE_CONTROL_LOCK;
+        eax |= IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX;
         if ( test_bit(X86_FEATURE_SMX, &boot_cpu_data.x86_capability) )
-            eax |= IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_INSIDE_SMX;
-        wrmsr(IA32_FEATURE_CONTROL_MSR, eax, 0);
+            eax |= IA32_FEATURE_CONTROL_ENABLE_VMXON_INSIDE_SMX;
+        wrmsr(MSR_IA32_FEATURE_CONTROL, eax, 0);
     }
 
     if ( (rc = vmx_init_vmcs_config()) != 0 )
@@ -651,8 +639,8 @@ int vmx_cpu_up(void)
     case -2: /* #UD or #GP */
         if ( bios_locked &&
              test_bit(X86_FEATURE_SMX, &boot_cpu_data.x86_capability) &&
-             (!(eax & IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX) ||
-              !(eax & IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_INSIDE_SMX)) )
+             (!(eax & IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX) ||
+              !(eax & IA32_FEATURE_CONTROL_ENABLE_VMXON_INSIDE_SMX)) )
         {
             printk("CPU%d: VMXON failed: perhaps because of TXT settings "
                    "in your BIOS configuration?\n", cpu);
@@ -810,17 +798,8 @@ void vmx_disable_intercept_for_msr(struct vcpu *v, u32 msr, int type)
     if ( msr_bitmap == NULL )
         return;
 
-    if ( unlikely(d->arch.monitor.mov_to_msr_enabled &&
-                  d->arch.monitor.mov_to_msr_extended) &&
-         vm_event_check_ring(&d->vm_event->monitor) )
-    {
-        unsigned int i;
-
-        /* Filter out MSR-s needed for memory introspection */
-        for ( i = 0; i < vmx_introspection_force_enabled_msrs_size; i++ )
-            if ( msr == vmx_introspection_force_enabled_msrs[i] )
-                return;
-    }
+    if ( unlikely(monitored_msr(d, msr)) )
+        return;
 
     /*
      * See Intel PRM Vol. 3, 20.6.9 (MSR-Bitmap Address). Early manuals
@@ -1079,12 +1058,6 @@ static int construct_vmcs(struct vcpu *v)
         __vmwrite(PLE_WINDOW, ple_window);
     }
 
-    /*
-     * We do not intercept pcommit for L1 guest and allow L1 hypervisor to
-     * intercept pcommit for L2 guest (see nvmx_n2_vmexit_handler()).
-     */
-    v->arch.hvm_vmx.secondary_exec_control &= ~SECONDARY_EXEC_PCOMMIT;
-
     if ( cpu_has_vmx_secondary_exec_control )
         __vmwrite(SECONDARY_VM_EXEC_CONTROL,
                   v->arch.hvm_vmx.secondary_exec_control);
@@ -1288,6 +1261,8 @@ static int construct_vmcs(struct vcpu *v)
         __vmwrite(HOST_PAT, host_pat);
         __vmwrite(GUEST_PAT, guest_pat);
     }
+    if ( cpu_has_vmx_mpx )
+        __vmwrite(GUEST_BNDCFGS, 0);
     if ( cpu_has_vmx_xsaves )
         __vmwrite(XSS_EXIT_BITMAP, 0);
 
@@ -1664,6 +1639,11 @@ void vmx_vmentry_failure(void)
     __vmread(VM_INSTRUCTION_ERROR, &error);
     gprintk(XENLOG_ERR, "VM%s error: %#lx\n",
             curr->arch.hvm_vmx.launched ? "RESUME" : "LAUNCH", error);
+
+    if ( error == VMX_INSN_INVALID_CONTROL_STATE ||
+         error == VMX_INSN_INVALID_HOST_STATE )
+        vmcs_dump_vcpu(curr);
+
     domain_crash_synchronous();
 }
 

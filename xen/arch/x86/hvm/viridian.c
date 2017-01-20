@@ -195,8 +195,8 @@ static void enable_hypercall_page(struct domain *d)
     {
         if ( page )
             put_page(page);
-        gdprintk(XENLOG_WARNING, "Bad GMFN %lx (MFN %lx)\n", gmfn,
-                 page ? page_to_mfn(page) : INVALID_MFN);
+        gdprintk(XENLOG_WARNING, "Bad GMFN %#"PRI_gfn" (MFN %#"PRI_mfn")\n",
+                 gmfn, page ? page_to_mfn(page) : mfn_x(INVALID_MFN));
         return;
     }
 
@@ -268,8 +268,8 @@ static void initialize_apic_assist(struct vcpu *v)
     return;
 
  fail:
-    gdprintk(XENLOG_WARNING, "Bad GMFN %lx (MFN %lx)\n", gmfn,
-             page ? page_to_mfn(page) : INVALID_MFN);
+    gdprintk(XENLOG_WARNING, "Bad GMFN %#"PRI_gfn" (MFN %#"PRI_mfn")\n", gmfn,
+             page ? page_to_mfn(page) : mfn_x(INVALID_MFN));
 }
 
 static void teardown_apic_assist(struct vcpu *v)
@@ -348,8 +348,8 @@ static void update_reference_tsc(struct domain *d, bool_t initialize)
     {
         if ( page )
             put_page(page);
-        gdprintk(XENLOG_WARNING, "Bad GMFN %lx (MFN %lx)\n", gmfn,
-                 page ? page_to_mfn(page) : INVALID_MFN);
+        gdprintk(XENLOG_WARNING, "Bad GMFN %#"PRI_gfn" (MFN %#"PRI_mfn")\n",
+                 gmfn, page ? page_to_mfn(page) : mfn_x(INVALID_MFN));
         return;
     }
 
@@ -667,9 +667,9 @@ int viridian_hypercall(struct cpu_user_regs *regs)
         output_params_gpa = regs->r8;
         break;
     case 4:
-        input.raw = ((uint64_t)regs->edx << 32) | regs->eax;
-        input_params_gpa = ((uint64_t)regs->ebx << 32) | regs->ecx;
-        output_params_gpa = ((uint64_t)regs->edi << 32) | regs->esi;
+        input.raw = (regs->rdx << 32) | regs->_eax;
+        input_params_gpa = (regs->rbx << 32) | regs->_ecx;
+        output_params_gpa = (regs->rdi << 32) | regs->_esi;
         break;
     default:
         goto out;
@@ -770,8 +770,8 @@ out:
         regs->rax = output.raw;
         break;
     default:
-        regs->edx = output.raw >> 32;
-        regs->eax = output.raw;
+        regs->rdx = output.raw >> 32;
+        regs->rax = (uint32_t)output.raw;
         break;
     }
 

@@ -3,6 +3,8 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/alternative.h>
+
 /* Write a pagetable entry */
 static inline void write_pte(lpae_t *p, lpae_t pte)
 {
@@ -18,11 +20,22 @@ static inline void write_pte(lpae_t *p, lpae_t pte)
 #define __invalidate_dcache_one(R) "dc ivac, %" #R ";"
 
 /* Inline ASM to flush dcache on register R (may be an inline asm operand) */
-#define __clean_dcache_one(R) "dc cvac, %" #R ";"
+#define __clean_dcache_one(R)                   \
+    ALTERNATIVE("dc cvac, %" #R ";",            \
+                "dc civac, %" #R ";",           \
+                ARM64_WORKAROUND_CLEAN_CACHE)   \
 
 /* Inline ASM to clean and invalidate dcache on register R (may be an
  * inline asm operand) */
 #define __clean_and_invalidate_dcache_one(R) "dc  civac, %" #R ";"
+
+/* Invalidate all instruction caches in Inner Shareable domain to PoU */
+static inline void invalidate_icache(void)
+{
+    asm volatile ("ic ialluis");
+    dsb(ish);               /* Ensure completion of the flush I-cache */
+    isb();
+}
 
 /*
  * Flush all hypervisor mappings from the TLB of the local processor.

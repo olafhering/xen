@@ -96,24 +96,29 @@ void gic_restore_state(struct vcpu *v)
     gic_restore_pending_irqs(v);
 }
 
-/*
- * needs to be called with a valid cpu_mask, ie each cpu in the mask has
- * already called gic_cpu_init
- * - desc.lock must be held
- * - arch.type must be valid (i.e != IRQ_TYPE_INVALID)
- */
-static void gic_set_irq_properties(struct irq_desc *desc,
-                                   const cpumask_t *cpu_mask,
-                                   unsigned int priority)
+/* desc->irq needs to be disabled before calling this function */
+void gic_set_irq_type(struct irq_desc *desc, unsigned int type)
 {
-   gic_hw_ops->set_irq_properties(desc, cpu_mask, priority);
+    /*
+     * IRQ must be disabled before configuring it (see 4.3.13 in ARM IHI
+     * 0048B.b). We rely on the caller to do it.
+     */
+    ASSERT(test_bit(_IRQ_DISABLED, &desc->status));
+    ASSERT(spin_is_locked(&desc->lock));
+    ASSERT(type != IRQ_TYPE_INVALID);
+
+    gic_hw_ops->set_irq_type(desc, type);
+}
+
+static void gic_set_irq_priority(struct irq_desc *desc, unsigned int priority)
+{
+    gic_hw_ops->set_irq_priority(desc, priority);
 }
 
 /* Program the GIC to route an interrupt to the host (i.e. Xen)
  * - needs to be called with desc.lock held
  */
-void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
-                          unsigned int priority)
+void gic_route_irq_to_xen(struct irq_desc *desc, unsigned int priority)
 {
     ASSERT(priority <= 0xff);     /* Only 8 bits of priority */
     ASSERT(desc->irq < gic_number_lines());/* Can't route interrupts that don't exist */
@@ -122,7 +127,8 @@ void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
 
     desc->handler = gic_hw_ops->gic_host_irq_type;
 
-    gic_set_irq_properties(desc, cpu_mask, priority);
+    gic_set_irq_type(desc, desc->arch.type);
+    gic_set_irq_priority(desc, priority);
 }
 
 /* Program the GIC to route an interrupt to a guest
@@ -154,7 +160,9 @@ int gic_route_irq_to_guest(struct domain *d, unsigned int virq,
     desc->handler = gic_hw_ops->gic_guest_irq_type;
     set_bit(_IRQ_GUEST, &desc->status);
 
-    gic_set_irq_properties(desc, cpumask_of(v_target->processor), priority);
+    if ( !irq_type_set_by_domain(d) )
+        gic_set_irq_type(desc, desc->arch.type);
+    gic_set_irq_priority(desc, priority);
 
     p->desc = desc;
     res = 0;
@@ -226,6 +234,15 @@ int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
 
     if ( out_type )
         *out_type = intspec[2] & IRQ_TYPE_SENSE_MASK;
+
+    return 0;
+}
+
+/* Map extra GIC MMIO, irqs and other hw stuffs to the hardware domain. */
+int gic_map_hwdom_extra_mappings(struct domain *d)
+{
+    if ( gic_hw_ops->map_hwdom_extra_mappings )
+        return gic_hw_ops->map_hwdom_extra_mappings(d);
 
     return 0;
 }

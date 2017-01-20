@@ -36,28 +36,24 @@ static inline int verify(struct xsm_operations *ops)
     return 0;
 }
 
-static void __init do_xsm_initcalls(void)
+static int __init xsm_core_init(const void *policy_buffer, size_t policy_size)
 {
-    xsm_initcall_t *call;
-    call = __xsm_initcall_start;
-    while ( call < __xsm_initcall_end )
+#ifdef CONFIG_XSM_POLICY
+    if ( policy_size == 0 )
     {
-        (*call) ();
-        call++;
+        policy_buffer = xsm_init_policy;
+        policy_size = xsm_init_policy_size;
     }
-}
+#endif
 
-static int __init xsm_core_init(void)
-{
     if ( verify(&dummy_xsm_ops) )
     {
-        printk("%s could not verify "
-               "dummy_xsm_ops structure.\n", __FUNCTION__);
+        printk(XENLOG_ERR "Could not verify dummy_xsm_ops structure\n");
         return -EIO;
     }
 
     xsm_ops = &dummy_xsm_ops;
-    do_xsm_initcalls();
+    flask_init(policy_buffer, policy_size);
 
     return 0;
 }
@@ -68,21 +64,24 @@ int __init xsm_multiboot_init(unsigned long *module_map,
                               void *(*bootstrap_map)(const module_t *))
 {
     int ret = 0;
+    void *policy_buffer = NULL;
+    size_t policy_size = 0;
 
     printk("XSM Framework v" XSM_FRAMEWORK_VERSION " initialized\n");
 
     if ( XSM_MAGIC )
     {
-        ret = xsm_multiboot_policy_init(module_map, mbi, bootstrap_map);
+        ret = xsm_multiboot_policy_init(module_map, mbi, bootstrap_map,
+                                        &policy_buffer, &policy_size);
         if ( ret )
         {
             bootstrap_map(NULL);
-            printk("%s: Error initializing policy.\n", __FUNCTION__);
+            printk(XENLOG_ERR "Error %d initializing XSM policy\n", ret);
             return -EINVAL;
         }
     }
 
-    ret = xsm_core_init();
+    ret = xsm_core_init(policy_buffer, policy_size);
     bootstrap_map(NULL);
 
     return 0;
@@ -93,21 +92,22 @@ int __init xsm_multiboot_init(unsigned long *module_map,
 int __init xsm_dt_init(void)
 {
     int ret = 0;
+    void *policy_buffer = NULL;
+    size_t policy_size = 0;
 
     printk("XSM Framework v" XSM_FRAMEWORK_VERSION " initialized\n");
 
     if ( XSM_MAGIC )
     {
-        ret = xsm_dt_policy_init();
+        ret = xsm_dt_policy_init(&policy_buffer, &policy_size);
         if ( ret )
         {
-            printk("%s: Error initializing policy (rc = %d).\n",
-                   __FUNCTION__, ret);
+            printk(XENLOG_ERR "Error %d initializing XSM policy\n", ret);
             return -EINVAL;
         }
     }
 
-    ret = xsm_core_init();
+    ret = xsm_core_init(policy_buffer, policy_size);
 
     xfree(policy_buffer);
 
@@ -138,12 +138,11 @@ bool __init has_xsm_magic(paddr_t start)
 }
 #endif
 
-int register_xsm(struct xsm_operations *ops)
+int __init register_xsm(struct xsm_operations *ops)
 {
     if ( verify(ops) )
     {
-        printk("%s could not verify "
-               "security_operations structure.\n", __FUNCTION__);
+        printk(XENLOG_ERR "Could not verify xsm_operations structure\n");
         return -EINVAL;
     }
 
@@ -151,22 +150,6 @@ int register_xsm(struct xsm_operations *ops)
         return -EAGAIN;
 
     xsm_ops = ops;
-
-    return 0;
-}
-
-
-int unregister_xsm(struct xsm_operations *ops)
-{
-    if ( ops != xsm_ops )
-    {
-        printk("%s: trying to unregister "
-               "a security_opts structure that is not "
-               "registered, failing.\n", __FUNCTION__);
-        return -EINVAL;
-    }
-
-    xsm_ops = &dummy_xsm_ops;
 
     return 0;
 }

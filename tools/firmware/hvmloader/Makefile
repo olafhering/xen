@@ -20,9 +20,7 @@
 XEN_ROOT = $(CURDIR)/../../..
 include $(XEN_ROOT)/tools/firmware/Rules.mk
 
-SUBDIRS := acpi
 
-# The HVM loader is started in 32-bit mode at the address below:
 LOADADDR = 0x100000
 
 # SMBIOS spec requires format mm/dd/yyyy
@@ -37,15 +35,14 @@ OBJS  = hvmloader.o mp_tables.o util.o smbios.o
 OBJS += smp.o cacheattr.o xenbus.o vnuma.o
 OBJS += e820.o pci.o pir.o ctype.o
 OBJS += hvm_param.o
+OBJS += ovmf.o seabios.o
 ifeq ($(debug),y)
 OBJS += tests.o
 endif
 
 CIRRUSVGA_DEBUG ?= n
 
-OVMF_DIR := ../ovmf-dir
 ROMBIOS_DIR := ../rombios
-SEABIOS_DIR := ../seabios-dir
 
 ifeq ($(CONFIG_ROMBIOS),y)
 STDVGA_ROM    := ../vgabios/VGABIOS-lgpl-latest.bin
@@ -59,17 +56,6 @@ endif
 
 ROMS := 
 
-ifeq ($(CONFIG_OVMF),y)
-OBJS += ovmf.o
-CFLAGS += -DENABLE_OVMF
-ifeq ($(OVMF_PATH),)
-	OVMF_ROM := $(OVMF_DIR)/ovmf.bin
-else
-	OVMF_ROM := $(OVMF_PATH)
-endif
-ROMS += $(OVMF_ROM)
-endif
-
 ifeq ($(CONFIG_ROMBIOS),y)
 OBJS += optionroms.o 32bitbios_support.o rombios.o
 CFLAGS += -DENABLE_ROMBIOS
@@ -77,25 +63,27 @@ ROMBIOS_ROM := $(ROMBIOS_DIR)/BIOS-bochs-latest
 ROMS += $(ROMBIOS_ROM) $(STDVGA_ROM) $(CIRRUSVGA_ROM) $(ETHERBOOT_ROMS)
 endif
 
-ifeq ($(CONFIG_SEABIOS),y)
-OBJS += seabios.o
-CFLAGS += -DENABLE_SEABIOS
-ifeq ($(SEABIOS_PATH),)
-	SEABIOS_ROM := $(SEABIOS_DIR)/out/bios.bin
-else
-	SEABIOS_ROM := $(SEABIOS_PATH)
-endif
-ROMS += $(SEABIOS_ROM)
-endif
-
 .PHONY: all
-all: subdirs-all
+all: acpi subdirs-all
 	$(MAKE) hvmloader
 
-ovmf.o rombios.o seabios.o hvmloader.o: roms.inc
+.PHONY: acpi
+acpi:
+	$(MAKE) -C $(ACPI_PATH)  ACPI_BUILD_DIR=$(CURDIR) DSDT_FILES="$(DSDT_FILES)"
+
+rombios.o: roms.inc
 smbios.o: CFLAGS += -D__SMBIOS_DATE__="\"$(SMBIOS_REL_DATE)\""
 
-hvmloader: $(OBJS) acpi/acpi.a
+ACPI_PATH = ../../libacpi
+DSDT_FILES = dsdt_anycpu.c dsdt_15cpu.c dsdt_anycpu_qemu_xen.c
+ACPI_OBJS = $(patsubst %.c,%.o,$(DSDT_FILES)) build.o static_tables.o
+$(ACPI_OBJS): CFLAGS += -I. -DLIBACPI_STDUTILS=\"$(CURDIR)/util.h\"
+CFLAGS += -I$(ACPI_PATH)
+vpath build.c $(ACPI_PATH)
+vpath static_tables.c $(ACPI_PATH)
+OBJS += $(ACPI_OBJS)
+
+hvmloader: $(OBJS)
 	$(LD) $(LDFLAGS_DIRECT) -N -Ttext $(LOADADDR) -o hvmloader.tmp $^
 	$(OBJCOPY) hvmloader.tmp hvmloader
 	rm -f hvmloader.tmp
@@ -108,18 +96,6 @@ ifneq ($(ROMBIOS_ROM),)
 	sh ./mkhex rombios $(ROMBIOS_ROM) >> $@.new
 	echo "#endif" >> $@.new
 endif
-
-ifneq ($(SEABIOS_ROM),)
-	echo "#ifdef ROM_INCLUDE_SEABIOS" >> $@.new
-	sh ./mkhex seabios $(SEABIOS_ROM) >> $@.new
-	echo "#endif" >> $@.new
-endif
-
-ifneq ($(OVMF_ROM),)
-	echo "#ifdef ROM_INCLUDE_OVMF" >> $@.new
-	sh ./mkhex ovmf $(OVMF_ROM) >> $@.new
-	echo "#endif" >> $@.new	
-endif 
 
 ifneq ($(STDVGA_ROM),)
 	echo "#ifdef ROM_INCLUDE_VGABIOS" >> $@.new
@@ -143,6 +119,7 @@ endif
 clean: subdirs-clean
 	rm -f roms.inc roms.inc.new acpi.h
 	rm -f hvmloader hvmloader.tmp *.o $(DEPS)
+	$(MAKE) -C $(ACPI_PATH)  ACPI_BUILD_DIR=$(CURDIR) clean
 
 .PHONY: distclean
 distclean: clean

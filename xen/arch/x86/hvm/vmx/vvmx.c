@@ -1820,16 +1820,32 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
         return 0;
 
     /*
-     * Those MSRs are available only when bit 55 of
-     * MSR_IA32_VMX_BASIC is set.
+     * These MSRs are only available when flags in other MSRs are set.
+     * These prerequisites are listed in the Intel 64 and IA-32
+     * Architectures Software Developer’s Manual, Vol 3, Appendix A.
      */
     switch ( msr )
     {
+    case MSR_IA32_VMX_PROCBASED_CTLS2:
+        if ( !cpu_has_vmx_secondary_exec_control )
+            return 0;
+        break;
+
+    case MSR_IA32_VMX_EPT_VPID_CAP:
+        if ( !(cpu_has_vmx_ept || cpu_has_vmx_vpid) )
+            return 0;
+        break;
+
     case MSR_IA32_VMX_TRUE_PINBASED_CTLS:
     case MSR_IA32_VMX_TRUE_PROCBASED_CTLS:
     case MSR_IA32_VMX_TRUE_EXIT_CTLS:
     case MSR_IA32_VMX_TRUE_ENTRY_CTLS:
         if ( !(vmx_basic_msr & VMX_BASIC_DEFAULT1_ZERO) )
+            return 0;
+        break;
+
+    case MSR_IA32_VMX_VMFUNC:
+        if ( !cpu_has_vmx_vmfunc )
             return 0;
         break;
     }
@@ -1852,7 +1868,7 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
     }
     case MSR_IA32_VMX_PINBASED_CTLS:
     case MSR_IA32_VMX_TRUE_PINBASED_CTLS:
-        /* 1-seetings */
+        /* 1-settings */
         data = PIN_BASED_EXT_INTR_MASK |
                PIN_BASED_NMI_EXITING |
                PIN_BASED_PREEMPT_TIMER;
@@ -1862,7 +1878,7 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
     case MSR_IA32_VMX_TRUE_PROCBASED_CTLS:
     {
         u32 default1_bits = VMX_PROCBASED_CTLS_DEFAULT1;
-        /* 1-seetings */
+        /* 1-settings */
         data = CPU_BASED_HLT_EXITING |
                CPU_BASED_VIRTUAL_INTR_PENDING |
                CPU_BASED_CR8_LOAD_EXITING |
@@ -1894,19 +1910,17 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
         break;
     }
     case MSR_IA32_VMX_PROCBASED_CTLS2:
-        /* 1-seetings */
+        /* 1-settings */
         data = SECONDARY_EXEC_DESCRIPTOR_TABLE_EXITING |
                SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES |
                SECONDARY_EXEC_ENABLE_VPID |
                SECONDARY_EXEC_UNRESTRICTED_GUEST |
                SECONDARY_EXEC_ENABLE_EPT;
-        if ( cpu_has_vmx_pcommit )
-            data |= SECONDARY_EXEC_PCOMMIT;
         data = gen_vmx_msr(data, 0, host_data);
         break;
     case MSR_IA32_VMX_EXIT_CTLS:
     case MSR_IA32_VMX_TRUE_EXIT_CTLS:
-        /* 1-seetings */
+        /* 1-settings */
         data = VM_EXIT_ACK_INTR_ON_EXIT |
                VM_EXIT_IA32E_MODE |
                VM_EXIT_SAVE_PREEMPT_TIMER |
@@ -1919,7 +1933,7 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
         break;
     case MSR_IA32_VMX_ENTRY_CTLS:
     case MSR_IA32_VMX_TRUE_ENTRY_CTLS:
-        /* 1-seetings */
+        /* 1-settings */
         data = VM_ENTRY_LOAD_GUEST_PAT |
                VM_ENTRY_LOAD_GUEST_EFER |
                VM_ENTRY_LOAD_PERF_GLOBAL_CTRL |
@@ -1927,9 +1941,9 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
         data = gen_vmx_msr(data, VMX_ENTRY_CTLS_DEFAULT1, host_data);
         break;
 
-    case IA32_FEATURE_CONTROL_MSR:
-        data = IA32_FEATURE_CONTROL_MSR_LOCK | 
-               IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX;
+    case MSR_IA32_FEATURE_CONTROL:
+        data = IA32_FEATURE_CONTROL_LOCK |
+               IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX;
         break;
     case MSR_IA32_VMX_VMCS_ENUM:
         /* The max index of VVMCS encoding is 0x1f. */
@@ -2182,7 +2196,6 @@ int nvmx_n2_vmexit_handler(struct cpu_user_regs *regs,
     case EXIT_REASON_VMXON:
     case EXIT_REASON_INVEPT:
     case EXIT_REASON_XSETBV:
-    case EXIT_REASON_PCOMMIT:
         /* inject to L1 */
         nvcpu->nv_vmexit_pending = 1;
         break;

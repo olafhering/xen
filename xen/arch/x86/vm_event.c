@@ -18,8 +18,7 @@
  * License along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <xen/sched.h>
-#include <asm/hvm/hvm.h>
+#include <asm/p2m.h>
 #include <asm/vm_event.h>
 
 /* Implicitly serialized by the domctl lock. */
@@ -56,14 +55,18 @@ void vm_event_cleanup_domain(struct domain *d)
     }
 
     d->arch.mem_access_emulate_each_rep = 0;
-    memset(&d->arch.monitor, 0, sizeof(d->arch.monitor));
-    memset(&d->monitor, 0, sizeof(d->monitor));
 }
 
-void vm_event_toggle_singlestep(struct domain *d, struct vcpu *v)
+void vm_event_toggle_singlestep(struct domain *d, struct vcpu *v,
+                                vm_event_response_t *rsp)
 {
-    if ( !is_hvm_domain(d) || !atomic_read(&v->vm_event_pause_count) )
+    if ( !(rsp->flags & VM_EVENT_FLAG_TOGGLE_SINGLESTEP) )
         return;
+
+    if ( !is_hvm_domain(d) )
+        return;
+
+    ASSERT(atomic_read(&v->vm_event_pause_count));
 
     hvm_toggle_singlestep(v);
 }
@@ -72,9 +75,15 @@ void vm_event_register_write_resume(struct vcpu *v, vm_event_response_t *rsp)
 {
     if ( rsp->flags & VM_EVENT_FLAG_DENY )
     {
-        struct monitor_write_data *w = &v->arch.vm_event->write_data;
+        struct monitor_write_data *w;
 
-        ASSERT(w);
+        ASSERT(v->arch.vm_event);
+
+        /* deny flag requires the vCPU to be paused */
+        if ( !atomic_read(&v->vm_event_pause_count) )
+            return;
+
+        w = &v->arch.vm_event->write_data;
 
         switch ( rsp->reason )
         {
@@ -101,6 +110,8 @@ void vm_event_register_write_resume(struct vcpu *v, vm_event_response_t *rsp)
 
 void vm_event_set_registers(struct vcpu *v, vm_event_response_t *rsp)
 {
+    ASSERT(atomic_read(&v->vm_event_pause_count));
+
     v->arch.user_regs.eax = rsp->data.regs.x86.rax;
     v->arch.user_regs.ebx = rsp->data.regs.x86.rbx;
     v->arch.user_regs.ecx = rsp->data.regs.x86.rcx;
@@ -178,6 +189,43 @@ void vm_event_fill_regs(vm_event_request_t *req)
 
     hvm_get_segment_register(curr, x86_seg_cs, &seg);
     req->data.regs.x86.cs_arbytes = seg.attr.bytes;
+}
+
+void vm_event_emulate_check(struct vcpu *v, vm_event_response_t *rsp)
+{
+    if ( !(rsp->flags & VM_EVENT_FLAG_EMULATE) )
+    {
+        v->arch.vm_event->emulate_flags = 0;
+        return;
+    }
+
+    switch ( rsp->reason )
+    {
+    case VM_EVENT_REASON_MEM_ACCESS:
+        /*
+         * Emulate iff this is a response to a mem_access violation and there
+         * are still conflicting mem_access permissions in-place.
+         */
+        if ( p2m_mem_access_emulate_check(v, rsp) )
+        {
+            if ( rsp->flags & VM_EVENT_FLAG_SET_EMUL_READ_DATA )
+                v->arch.vm_event->emul.read = rsp->data.emul.read;
+
+            v->arch.vm_event->emulate_flags = rsp->flags;
+        }
+        break;
+
+    case VM_EVENT_REASON_SOFTWARE_BREAKPOINT:
+        if ( rsp->flags & VM_EVENT_FLAG_SET_EMUL_INSN_DATA )
+        {
+            v->arch.vm_event->emul.insn = rsp->data.emul.insn;
+            v->arch.vm_event->emulate_flags = rsp->flags;
+        }
+        break;
+
+    default:
+        break;
+    };
 }
 
 /*

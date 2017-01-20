@@ -24,10 +24,13 @@
 #include "config.h"
 #include "pci_regs.h"
 #include "apic_regs.h"
-#include "acpi/acpi2_0.h"
 #include "vnuma.h"
+#include <acpi2_0.h>
 #include <xen/version.h>
 #include <xen/hvm/params.h>
+#include <xen/arch-x86/hvm/start_info.h>
+
+const struct hvm_start_info *hvm_start_info;
 
 asm (
     "    .text                       \n"
@@ -46,6 +49,8 @@ asm (
     "    ljmp $"STR(SEL_CODE32)",$1f \n"
     "1:  movl $stack_top,%esp        \n"
     "    movl %esp,%ebp              \n"
+    /* store HVM start info ptr */
+    "    mov  %ebx, hvm_start_info   \n"
     "    call main                   \n"
     /* Relocate real-mode trampoline to 0x0. */
     "    mov  $trampoline_start,%esi \n"
@@ -107,6 +112,9 @@ asm (
     );
 
 unsigned long scratch_start = SCRATCH_PHYSICAL_ADDRESS;
+
+uint32_t ioapic_base_address = 0xfec00000;
+uint8_t ioapic_version;
 
 static void init_hypercalls(void)
 {
@@ -185,6 +193,15 @@ static void init_vm86_tss(void)
 
 static void apic_setup(void)
 {
+    /*
+     * This would the The Right Thing To Do (tm), if only qemu negotiated
+     * with Xen where the IO-APIC actually sits (which is currently hard
+     * coded in Xen and can't be controlled externally). Uncomment this code
+     * once that changed.
+    ioapic_base_address |= (pci_readb(PCI_ISA_DEVFN, 0x80) & 0x3f) << 10;
+     */
+    ioapic_version = ioapic_read(0x01) & 0xff;
+
     /* Set the IOAPIC ID to the static value used in the MP/ACPI tables. */
     ioapic_write(0x00, IOAPIC_ID);
 
@@ -205,12 +222,8 @@ struct bios_info {
 #ifdef ENABLE_ROMBIOS
     { "rombios", &rombios_config, },
 #endif
-#ifdef ENABLE_SEABIOS
     { "seabios", &seabios_config, },
-#endif
-#ifdef ENABLE_OVMF
     { "ovmf", &ovmf_config, },
-#endif
     { NULL, NULL }
 };
 
@@ -249,15 +262,62 @@ static void acpi_enable_sci(void)
     BUG_ON(!(pm1a_cnt_val & ACPI_PM1C_SCI_EN));
 }
 
+const struct hvm_modlist_entry *get_module_entry(
+    const struct hvm_start_info *info,
+    const char *name)
+{
+    const struct hvm_modlist_entry *modlist =
+        (struct hvm_modlist_entry *)(uintptr_t)info->modlist_paddr;
+    unsigned int i;
+
+    if ( !modlist ||
+         info->modlist_paddr > UINTPTR_MAX ||
+         (UINTPTR_MAX - (uintptr_t)info->modlist_paddr) / sizeof(*modlist)
+         < info->nr_modules )
+        return NULL;
+
+    for ( i = 0; i < info->nr_modules; i++ )
+    {
+        char *module_name = (char*)(uintptr_t)modlist[i].cmdline_paddr;
+
+        /* Skip if the module or its cmdline is missing. */
+        if ( !module_name || !modlist[i].paddr )
+            continue;
+
+        /* Skip if the cmdline cannot be read. */
+        if ( modlist[i].cmdline_paddr > UINTPTR_MAX ||
+             (modlist[i].cmdline_paddr + strlen(name)) > UINTPTR_MAX )
+            continue;
+
+        if ( !strcmp(name, module_name) )
+        {
+            if ( modlist[i].paddr > UINTPTR_MAX ||
+                 modlist[i].size > UINTPTR_MAX ||
+                 (modlist[i].paddr + modlist[i].size - 1) > UINTPTR_MAX )
+            {
+                printf("Cannot load \"%s\" from 0x"PRIllx" (0x"PRIllx")\n",
+                       name, PRIllx_arg(modlist[i].paddr),
+                       PRIllx_arg(modlist[i].size));
+                BUG();
+            }
+            return &modlist[i];
+        }
+    }
+
+    return NULL;
+}
+
 int main(void)
 {
     const struct bios_config *bios;
     int acpi_enabled;
+    const struct hvm_modlist_entry *bios_module;
 
     /* Initialise hypercall stubs with RET, rendering them no-ops. */
     memset((void *)HYPERCALL_PHYSICAL_ADDRESS, 0xc3 /* RET */, PAGE_SIZE);
 
     printf("HVM Loader\n");
+    BUG_ON(hvm_start_info->magic != XEN_HVM_START_MAGIC_VALUE);
 
     init_hypercalls();
 
@@ -287,14 +347,27 @@ int main(void)
     }
 
     printf("Loading %s ...\n", bios->name);
-    if ( bios->bios_load )
-        bios->bios_load(bios);
+    bios_module = get_module_entry(hvm_start_info, "firmware");
+    if ( bios_module )
+    {
+        uint32_t paddr = bios_module->paddr;
+
+        bios->bios_load(bios, (void*)paddr, bios_module->size);
+    }
+#ifdef ENABLE_ROMBIOS
+    else if ( bios == &rombios_config )
+    {
+        bios->bios_load(bios, NULL, 0);
+    }
+#endif
     else
     {
-        BUG_ON(bios->bios_address + bios->image_size >
-               HVMLOADER_PHYSICAL_ADDRESS);
-        memcpy((void *)bios->bios_address, bios->image,
-               bios->image_size);
+        /*
+         * If there is no BIOS module supplied and if there is no embeded BIOS
+         * image, then we failed. Only rombios might have an embedded bios blob.
+         */
+        printf("no BIOS ROM image found\n");
+        BUG();
     }
 
     if ( (hvm_info->nr_vcpus > 1) || hvm_info->apic_mode )

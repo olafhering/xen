@@ -55,6 +55,17 @@ struct cpu_user_regs
 
     uint32_t pad1; /* Doubleword-align the user half of the frame */
 };
+
+/* Functions for pending virtual abort checking window. */
+void abort_guest_exit_start(void);
+void abort_guest_exit_end(void);
+
+#define VABORT_GEN_BY_GUEST(r)  \
+( \
+    ( (unsigned long)abort_guest_exit_start == (r)->pc ) || \
+    ( (unsigned long)abort_guest_exit_end == (r)->pc ) \
+)
+
 #endif
 
 /* Layout as used in assembly, with src/dest registers mixed in */
@@ -114,10 +125,6 @@ struct cpu_user_regs
 
 #define READ_SYSREG(R...)       READ_SYSREG32(R)
 #define WRITE_SYSREG(V, R...)   WRITE_SYSREG32(V, R)
-
-/* Erratum 766422: only Cortex A15 r0p4 is affected */
-#define cpu_has_erratum_766422()                             \
-    (unlikely(current_cpu_data.midr.bits == 0x410fc0f4))
 
 #endif /* __ASSEMBLY__ */
 

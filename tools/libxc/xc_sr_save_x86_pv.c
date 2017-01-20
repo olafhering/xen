@@ -430,6 +430,8 @@ static int map_p2m_list(struct xc_sr_context *ctx, uint64_t p2m_cr3)
 
         if ( level == 2 )
         {
+            if ( saved_idx == idx_end )
+                saved_idx++;
             max_pfn = ((xen_pfn_t)saved_idx << 9) * fpp - 1;
             if ( max_pfn < ctx->x86_pv.max_pfn )
             {
@@ -947,9 +949,14 @@ static int normalise_pagetable(struct xc_sr_context *ctx, const uint64_t *src,
 #ifdef __i386__
             if ( mfn == INVALID_MFN )
             {
-                ERROR("PTE truncation detected.  L%lu[%u] = %016"PRIx64,
-                      type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT, i, pte);
-                errno = E2BIG;
+                if ( !ctx->dominfo.paused )
+                    errno = EAGAIN;
+                else
+                {
+                    ERROR("PTE truncation detected.  L%lu[%u] = %016"PRIx64,
+                          type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT, i, pte);
+                    errno = E2BIG;
+                }
                 return -1;
             }
 #endif

@@ -32,6 +32,7 @@
 #include <xen/tasklet.h>
 #include <xsm/xsm.h>
 #include <asm/msi.h>
+#include "ats.h"
 
 struct pci_seg {
     struct list_head alldevs_list;
@@ -378,8 +379,8 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
             break;
 
         default:
-            printk(XENLOG_WARNING "%s: unknown type: %04x:%02x:%02x.%u\n",
-                   __func__, pseg->nr, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
+            printk(XENLOG_WARNING "%04x:%02x:%02x.%u: unknown type %d\n",
+                   pseg->nr, bus, PCI_SLOT(devfn), PCI_FUNC(devfn), pdev->type);
             break;
     }
 
@@ -990,7 +991,8 @@ static int __init _scan_pci_devices(struct pci_seg *pseg, void *arg)
                 pdev = alloc_pdev(pseg, bus, PCI_DEVFN(dev, func));
                 if ( !pdev )
                 {
-                    printk("%s: alloc_pdev failed.\n", __func__);
+                    printk(XENLOG_WARNING "%04x:%02x:%02x.%u: alloc_pdev failed\n",
+                           pseg->nr, bus, dev, func);
                     return -ENOMEM;
                 }
 
@@ -1380,6 +1382,9 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
         goto done;
     }
 
+    if ( pdev->msix )
+        msixtbl_init(d);
+
     pdev->fault.count = 0;
 
     if ( (rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev), flag)) )
@@ -1499,6 +1504,34 @@ static int iommu_get_device_group(
     pcidevs_unlock();
 
     return i;
+}
+
+void iommu_dev_iotlb_flush_timeout(struct domain *d, struct pci_dev *pdev)
+{
+    pcidevs_lock();
+
+    disable_ats_device(pdev);
+
+    ASSERT(pdev->domain);
+    if ( d != pdev->domain )
+    {
+        pcidevs_unlock();
+        return;
+    }
+
+    list_del(&pdev->domain_list);
+    pdev->domain = NULL;
+    _pci_hide_device(pdev);
+
+    if ( !d->is_shutting_down && printk_ratelimit() )
+        printk(XENLOG_ERR
+               "dom%d: ATS device %04x:%02x:%02x.%u flush failed\n",
+               d->domain_id, pdev->seg, pdev->bus, PCI_SLOT(pdev->devfn),
+               PCI_FUNC(pdev->devfn));
+    if ( !is_hardware_domain(d) )
+        domain_crash(d);
+
+    pcidevs_unlock();
 }
 
 int iommu_do_pci_domctl(

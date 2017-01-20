@@ -166,6 +166,16 @@ struct msixtbl_entry
 
 static DEFINE_RCU_READ_LOCK(msixtbl_rcu_lock);
 
+/*
+ * MSI-X table infrastructure is dynamically initialised when an MSI-X capable
+ * device is passed through to a domain, rather than unconditionally for all
+ * domains.
+ */
+static bool msixtbl_initialised(const struct domain *d)
+{
+    return !!d->arch.hvm_domain.msixtbl_list.next;
+}
+
 static struct msixtbl_entry *msixtbl_find_entry(
     struct vcpu *v, unsigned long addr)
 {
@@ -199,9 +209,8 @@ static struct msi_desc *msixtbl_addr_to_desc(
     return NULL;
 }
 
-static int msixtbl_read(
-    struct vcpu *v, unsigned long address,
-    unsigned int len, unsigned long *pval)
+static int msixtbl_read(const struct hvm_io_handler *handler,
+                        uint64_t address, uint32_t len, uint64_t *pval)
 {
     unsigned long offset;
     struct msixtbl_entry *entry;
@@ -213,7 +222,7 @@ static int msixtbl_read(
 
     rcu_read_lock(&msixtbl_rcu_lock);
 
-    entry = msixtbl_find_entry(v, address);
+    entry = msixtbl_find_entry(current, address);
     if ( !entry )
         goto out;
     offset = address & (PCI_MSIX_ENTRY_SIZE - 1);
@@ -333,23 +342,29 @@ out:
     return r;
 }
 
-static int msixtbl_range(struct vcpu *v, unsigned long addr)
+static int _msixtbl_write(const struct hvm_io_handler *handler,
+                          uint64_t address, uint32_t len, uint64_t val)
 {
+    return msixtbl_write(current, address, len, val);
+}
+
+static bool_t msixtbl_range(const struct hvm_io_handler *handler,
+                            const ioreq_t *r)
+{
+    struct vcpu *curr = current;
+    unsigned long addr = r->addr;
     const struct msi_desc *desc;
-    const ioreq_t *r;
+
+    ASSERT(r->type == IOREQ_TYPE_COPY);
 
     rcu_read_lock(&msixtbl_rcu_lock);
-    desc = msixtbl_addr_to_desc(msixtbl_find_entry(v, addr), addr);
+    desc = msixtbl_addr_to_desc(msixtbl_find_entry(curr, addr), addr);
     rcu_read_unlock(&msixtbl_rcu_lock);
 
     if ( desc )
         return 1;
 
-    r = &v->arch.hvm_vcpu.hvm_io.io_req;
-    if ( r->state != STATE_IOREQ_READY || r->addr != addr )
-        return 0;
-    ASSERT(r->type == IOREQ_TYPE_COPY);
-    if ( r->dir == IOREQ_WRITE )
+    if ( r->state == STATE_IOREQ_READY && r->dir == IOREQ_WRITE )
     {
         unsigned int size = r->size;
 
@@ -368,8 +383,8 @@ static int msixtbl_range(struct vcpu *v, unsigned long addr)
                   PCI_MSIX_ENTRY_VECTOR_CTRL_OFFSET) &&
                  !(data & PCI_MSIX_VECTOR_BITMASK) )
             {
-                v->arch.hvm_vcpu.hvm_io.msix_snoop_address = addr;
-                v->arch.hvm_vcpu.hvm_io.msix_snoop_gpa = 0;
+                curr->arch.hvm_vcpu.hvm_io.msix_snoop_address = addr;
+                curr->arch.hvm_vcpu.hvm_io.msix_snoop_gpa = 0;
             }
         }
         else if ( (size == 4 || size == 8) &&
@@ -386,9 +401,9 @@ static int msixtbl_range(struct vcpu *v, unsigned long addr)
             BUILD_BUG_ON((PCI_MSIX_ENTRY_VECTOR_CTRL_OFFSET + 4) &
                          (PCI_MSIX_ENTRY_SIZE - 1));
 
-            v->arch.hvm_vcpu.hvm_io.msix_snoop_address =
+            curr->arch.hvm_vcpu.hvm_io.msix_snoop_address =
                 addr + size * r->count - 4;
-            v->arch.hvm_vcpu.hvm_io.msix_snoop_gpa =
+            curr->arch.hvm_vcpu.hvm_io.msix_snoop_gpa =
                 r->data + size * r->count - 4;
         }
     }
@@ -396,10 +411,10 @@ static int msixtbl_range(struct vcpu *v, unsigned long addr)
     return 0;
 }
 
-static const struct hvm_mmio_ops msixtbl_mmio_ops = {
-    .check = msixtbl_range,
+static const struct hvm_io_ops msixtbl_mmio_ops = {
+    .accept = msixtbl_range,
     .read = msixtbl_read,
-    .write = msixtbl_write
+    .write = _msixtbl_write,
 };
 
 static void add_msixtbl_entry(struct domain *d,
@@ -411,7 +426,7 @@ static void add_msixtbl_entry(struct domain *d,
     INIT_RCU_HEAD(&entry->rcu);
     atomic_set(&entry->refcnt, 0);
 
-    entry->table_len = pci_msix_get_table_len(pdev);
+    entry->table_len = pdev->msix->nr_entries * PCI_MSIX_ENTRY_SIZE;
     entry->pdev = pdev;
     entry->gtable = (unsigned long) gtable;
 
@@ -444,7 +459,7 @@ int msixtbl_pt_register(struct domain *d, struct pirq *pirq, uint64_t gtable)
     ASSERT(pcidevs_locked());
     ASSERT(spin_is_locked(&d->event_lock));
 
-    if ( !has_vlapic(d) )
+    if ( !msixtbl_initialised(d) )
         return -ENODEV;
 
     /*
@@ -468,8 +483,6 @@ int msixtbl_pt_register(struct domain *d, struct pirq *pirq, uint64_t gtable)
 
     pdev = msi_desc->dev;
 
-    spin_lock(&d->arch.hvm_domain.msixtbl_list_lock);
-
     list_for_each_entry( entry, &d->arch.hvm_domain.msixtbl_list, list )
         if ( pdev == entry->pdev )
             goto found;
@@ -480,7 +493,6 @@ int msixtbl_pt_register(struct domain *d, struct pirq *pirq, uint64_t gtable)
 
 found:
     atomic_inc(&entry->refcnt);
-    spin_unlock(&d->arch.hvm_domain.msixtbl_list_lock);
     r = 0;
 
 out:
@@ -517,7 +529,7 @@ void msixtbl_pt_unregister(struct domain *d, struct pirq *pirq)
     ASSERT(pcidevs_locked());
     ASSERT(spin_is_locked(&d->event_lock));
 
-    if ( !has_vlapic(d) )
+    if ( !msixtbl_initialised(d) )
         return;
 
     irq_desc = pirq_spin_lock_irq_desc(pirq, NULL);
@@ -530,14 +542,9 @@ void msixtbl_pt_unregister(struct domain *d, struct pirq *pirq)
 
     pdev = msi_desc->dev;
 
-    spin_lock(&d->arch.hvm_domain.msixtbl_list_lock);
-
     list_for_each_entry( entry, &d->arch.hvm_domain.msixtbl_list, list )
         if ( pdev == entry->pdev )
             goto found;
-
-    spin_unlock(&d->arch.hvm_domain.msixtbl_list_lock);
-
 
 out:
     spin_unlock_irq(&irq_desc->lock);
@@ -547,39 +554,41 @@ found:
     if ( !atomic_dec_and_test(&entry->refcnt) )
         del_msixtbl_entry(entry);
 
-    spin_unlock(&d->arch.hvm_domain.msixtbl_list_lock);
     spin_unlock_irq(&irq_desc->lock);
 }
 
 void msixtbl_init(struct domain *d)
 {
-    if ( !has_vlapic(d) )
+    struct hvm_io_handler *handler;
+
+    if ( !has_hvm_container_domain(d) || !has_vlapic(d) ||
+         msixtbl_initialised(d) )
         return;
 
     INIT_LIST_HEAD(&d->arch.hvm_domain.msixtbl_list);
-    spin_lock_init(&d->arch.hvm_domain.msixtbl_list_lock);
 
-    register_mmio_handler(d, &msixtbl_mmio_ops);
+    handler = hvm_next_io_handler(d);
+    if ( handler )
+    {
+        handler->type = IOREQ_TYPE_COPY;
+        handler->ops = &msixtbl_mmio_ops;
+    }
 }
 
 void msixtbl_pt_cleanup(struct domain *d)
 {
     struct msixtbl_entry *entry, *temp;
-    unsigned long flags;
 
-    if ( !has_vlapic(d) )
+    if ( !msixtbl_initialised(d) )
         return;
 
-    /* msixtbl_list_lock must be acquired with irq_disabled for check_lock() */
-    local_irq_save(flags); 
-    spin_lock(&d->arch.hvm_domain.msixtbl_list_lock);
+    spin_lock(&d->event_lock);
 
     list_for_each_entry_safe( entry, temp,
                               &d->arch.hvm_domain.msixtbl_list, list )
         del_msixtbl_entry(entry);
 
-    spin_unlock(&d->arch.hvm_domain.msixtbl_list_lock);
-    local_irq_restore(flags);
+    spin_unlock(&d->event_lock);
 }
 
 void msix_write_completion(struct vcpu *v)

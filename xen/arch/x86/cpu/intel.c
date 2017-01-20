@@ -18,7 +18,7 @@
 
 #define select_idle_routine(x) ((void)0)
 
-static bool_t __init probe_intel_cpuid_faulting(void)
+static bool __init probe_intel_cpuid_faulting(void)
 {
 	uint64_t x;
 
@@ -32,10 +32,11 @@ static bool_t __init probe_intel_cpuid_faulting(void)
 	return 1;
 }
 
-static void set_cpuid_faulting(bool_t enable)
+DEFINE_PER_CPU(bool, cpuid_faulting_enabled);
+
+static void set_cpuid_faulting(bool enable)
 {
-	static DEFINE_PER_CPU(bool_t, cpuid_faulting_enabled);
-	bool_t *this_enabled = &this_cpu(cpuid_faulting_enabled);
+	bool *this_enabled = &this_cpu(cpuid_faulting_enabled);
 	uint32_t hi, lo;
 
 	ASSERT(cpu_has_cpuid_faulting);
@@ -151,9 +152,10 @@ static void __init probe_masking_msrs(void)
  * used to context switch to the default host state (by the cpu bringup-code,
  * crash path, etc).
  */
-static void intel_ctxt_switch_levelling(const struct domain *nextd)
+static void intel_ctxt_switch_levelling(const struct vcpu *next)
 {
 	struct cpuidmasks *these_masks = &this_cpu(cpuidmasks);
+	const struct domain *nextd = next ? next->domain : NULL;
 	const struct cpuidmasks *masks;
 
 	if (cpu_has_cpuid_faulting) {
@@ -181,6 +183,24 @@ static void intel_ctxt_switch_levelling(const struct domain *nextd)
 	masks = (nextd && is_pv_domain(nextd) && nextd->arch.pv_domain.cpuidmasks)
 		? nextd->arch.pv_domain.cpuidmasks : &cpuidmask_defaults;
 
+        if (msr_basic) {
+		uint64_t val = masks->_1cd;
+
+		/*
+		 * OSXSAVE defaults to 1, which causes fast-forwarding of
+		 * Xen's real setting.  Clobber it if disabled by the guest
+		 * kernel.
+		 */
+		if (next && is_pv_vcpu(next) && !is_idle_vcpu(next) &&
+		    !(next->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE))
+			val &= ~(uint64_t)cpufeat_mask(X86_FEATURE_OSXSAVE);
+
+		if (unlikely(these_masks->_1cd != val)) {
+			wrmsrl(msr_basic, val);
+			these_masks->_1cd = val;
+		}
+        }
+
 #define LAZY(msr, field)						\
 	({								\
 		if (unlikely(these_masks->field != masks->field) &&	\
@@ -191,7 +211,6 @@ static void intel_ctxt_switch_levelling(const struct domain *nextd)
 		}							\
 	})
 
-	LAZY(msr_basic, _1cd);
 	LAZY(msr_ext,   e1cd);
 	LAZY(msr_xsave, Da1);
 
@@ -216,6 +235,11 @@ static void __init noinline intel_init_levelling(void)
 
 		ecx &= opt_cpuid_mask_ecx;
 		edx &= opt_cpuid_mask_edx;
+
+		/* Fast-forward bits - Must be set. */
+		if (ecx & cpufeat_mask(X86_FEATURE_XSAVE))
+			ecx |= cpufeat_mask(X86_FEATURE_OSXSAVE);
+		edx |= cpufeat_mask(X86_FEATURE_APIC);
 
 		cpuidmask_defaults._1cd &= ((u64)edx << 32) | ecx;
 	}

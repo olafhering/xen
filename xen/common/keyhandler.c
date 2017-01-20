@@ -59,12 +59,12 @@ static struct keyhandler {
     IRQ_KEYHANDLER('%', do_debug_key, "trap to xendbg", 0),
     IRQ_KEYHANDLER('*', run_all_keyhandlers, "print all diagnostics", 0),
 
-#ifdef PERF_COUNTERS
+#ifdef CONFIG_PERF_COUNTERS
     KEYHANDLER('p', perfc_printall, "print performance counters", 1),
     KEYHANDLER('P', perfc_reset, "reset performance counters", 0),
 #endif
 
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
     KEYHANDLER('l', spinlock_profile_printall, "print lock profile info", 1),
     KEYHANDLER('L', spinlock_profile_reset, "reset lock profile info", 0),
 #endif

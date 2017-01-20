@@ -827,6 +827,22 @@ static int qmp_run_command(libxl__gc *gc, int domid,
     return rc;
 }
 
+int libxl__qmp_run_command_flexarray(libxl__gc *gc, int domid,
+                                     const char *cmd, flexarray_t *array)
+{
+    libxl__json_object *args = NULL;
+    int i;
+    void *name, *value;
+
+    for (i = 0; i < array->count; i += 2) {
+        flexarray_get(array, i, &name);
+        flexarray_get(array, i + 1, &value);
+        qmp_parameters_add_string(gc, &args, (char *)name, (char *)value);
+    }
+
+    return qmp_run_command(gc, domid, cmd, args, NULL, NULL);
+}
+
 int libxl__qmp_pci_add(libxl__gc *gc, int domid, libxl_device_pci *pcidev)
 {
     libxl__qmp_handler *qmp = NULL;
@@ -979,6 +995,44 @@ int libxl__qmp_cpu_add(libxl__gc *gc, int domid, int idx)
     return qmp_run_command(gc, domid, "cpu-add", args, NULL, NULL);
 }
 
+static int query_cpus_callback(libxl__qmp_handler *qmp,
+                               const libxl__json_object *response,
+                               void *opaque)
+{
+    libxl_bitmap *map = opaque;
+    unsigned int i;
+    const libxl__json_object *cpu = NULL;
+    int rc;
+    GC_INIT(qmp->ctx);
+
+    libxl_bitmap_set_none(map);
+    for (i = 0; (cpu = libxl__json_array_get(response, i)); i++) {
+        unsigned int idx;
+        const libxl__json_object *o;
+
+        o = libxl__json_map_get("CPU", cpu, JSON_INTEGER);
+        if (!o) {
+            LOG(ERROR, "Failed to retrieve CPU index.");
+            rc = ERROR_FAIL;
+            goto out;
+        }
+
+        idx = libxl__json_object_get_integer(o);
+        libxl_bitmap_set(map, idx);
+    }
+
+    rc = 0;
+out:
+    GC_FREE;
+    return rc;
+}
+
+int libxl__qmp_query_cpus(libxl__gc *gc, int domid, libxl_bitmap *map)
+{
+    return qmp_run_command(gc, domid, "query-cpus", NULL,
+                           query_cpus_callback, map);
+}
+
 int libxl__qmp_nbd_server_start(libxl__gc *gc, int domid,
                                 const char *host, const char *port)
 {
@@ -1065,14 +1119,54 @@ int libxl__qmp_x_blockdev_change(libxl__gc *gc, int domid, const char *parent,
     return qmp_run_command(gc, domid, "x-blockdev-change", args, NULL, NULL);
 }
 
-int libxl__qmp_hmp(libxl__gc *gc, int domid, const char *command_line)
+static int hmp_callback(libxl__qmp_handler *qmp,
+                        const libxl__json_object *response,
+                        void *opaque)
+{
+    char **output = opaque;
+    GC_INIT(qmp->ctx);
+    int rc;
+
+    rc = 0;
+    if (!output)
+        goto out;
+
+    *output = NULL;
+
+    if (libxl__json_object_is_string(response)) {
+        *output = libxl__strdup(NOGC, libxl__json_object_get_string(response));
+        goto out;
+    }
+
+    LOG(ERROR, "Response has unexpected format");
+    rc = ERROR_FAIL;
+
+out:
+    GC_FREE;
+    return rc;
+}
+
+int libxl__qmp_hmp(libxl__gc *gc, int domid, const char *command_line,
+                   char **output)
 {
     libxl__json_object *args = NULL;
 
     qmp_parameters_add_string(gc, &args, "command-line", command_line);
 
     return qmp_run_command(gc, domid, "human-monitor-command", args,
-                           NULL, NULL);
+                           hmp_callback, output);
+}
+
+int libxl_qemu_monitor_command(libxl_ctx *ctx, uint32_t domid,
+                               const char *command_line, char **output)
+{
+    GC_INIT(ctx);
+    int rc;
+
+    rc = libxl__qmp_hmp(gc, domid, command_line, output);
+
+    GC_FREE;
+    return rc;
 }
 
 int libxl__qmp_initializations(libxl__gc *gc, uint32_t domid,

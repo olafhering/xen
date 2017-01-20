@@ -27,7 +27,7 @@
 #include <public/hvm/save.h>
 #include <xen/mm.h>
 
-#ifndef NDEBUG
+#ifdef CONFIG_HVM_FEP
 /* Permit use of the Forced Emulation Prefix in HVM guests */
 extern bool_t opt_hvm_fep;
 #else
@@ -100,7 +100,7 @@ struct hvm_function_table {
     bool_t pvh_supported;
 
     /* Necessary hardware support for alternate p2m's? */
-    bool_t altp2m_supported;
+    bool altp2m_supported;
 
     /* Indicate HAP capabilities. */
     unsigned int hap_capabilities;
@@ -146,6 +146,9 @@ struct hvm_function_table {
 
     int  (*get_guest_pat)(struct vcpu *v, u64 *);
     int  (*set_guest_pat)(struct vcpu *v, u64);
+
+    bool (*get_guest_bndcfgs)(struct vcpu *v, u64 *);
+    bool (*set_guest_bndcfgs)(struct vcpu *v, u64);
 
     void (*set_tsc_offset)(struct vcpu *v, u64 offset, u64 at_tsc);
 
@@ -211,7 +214,7 @@ struct hvm_function_table {
                                   uint32_t *eax, uint32_t *ebx,
                                   uint32_t *ecx, uint32_t *edx);
 
-    void (*enable_msr_exit_interception)(struct domain *d);
+    void (*enable_msr_interception)(struct domain *d, uint32_t msr);
     bool_t (*is_singlestep_supported)(void);
     int (*set_mode)(struct vcpu *v, int mode);
 
@@ -383,6 +386,13 @@ static inline unsigned long hvm_get_shadow_gs_base(struct vcpu *v)
     return hvm_funcs.get_shadow_gs_base(v);
 }
 
+static inline bool hvm_get_guest_bndcfgs(struct vcpu *v, u64 *val)
+{
+    return hvm_funcs.get_guest_bndcfgs &&
+           hvm_funcs.get_guest_bndcfgs(v, val);
+}
+
+bool hvm_set_guest_bndcfgs(struct vcpu *v, u64 val);
 
 #define has_hvm_params(d) \
     ((d)->arch.hvm_domain.params != NULL)
@@ -404,6 +414,7 @@ void hvm_hypervisor_cpuid_leaf(uint32_t sub_idx,
                                uint32_t *ecx, uint32_t *edx);
 void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
                                    unsigned int *ecx, unsigned int *edx);
+bool hvm_check_cpuid_faulting(struct vcpu *v);
 void hvm_migrate_timers(struct vcpu *v);
 void hvm_do_resume(struct vcpu *v);
 void hvm_migrate_pirqs(struct vcpu *v);
@@ -473,7 +484,7 @@ enum hvm_access_type {
 };
 bool_t hvm_virtual_to_linear_addr(
     enum x86_segment seg,
-    struct segment_register *reg,
+    const struct segment_register *reg,
     unsigned long offset,
     unsigned int bytes,
     enum hvm_access_type access_type,
@@ -565,11 +576,11 @@ static inline enum hvm_intblk nhvm_interrupt_blocked(struct vcpu *v)
     return hvm_funcs.nhvm_intr_blocked(v);
 }
 
-static inline bool_t hvm_enable_msr_exit_interception(struct domain *d)
+static inline bool_t hvm_enable_msr_interception(struct domain *d, uint32_t msr)
 {
-    if ( hvm_funcs.enable_msr_exit_interception )
+    if ( hvm_funcs.enable_msr_interception )
     {
-        hvm_funcs.enable_msr_exit_interception(d);
+        hvm_funcs.enable_msr_interception(d, msr);
         return 1;
     }
 
@@ -583,19 +594,35 @@ static inline bool_t hvm_is_singlestep_supported(void)
 }
 
 /* returns true if hardware supports alternate p2m's */
-static inline bool_t hvm_altp2m_supported(void)
+static inline bool hvm_altp2m_supported(void)
 {
     return hvm_funcs.altp2m_supported;
 }
 
 /* updates the current hardware p2m */
-void altp2m_vcpu_update_p2m(struct vcpu *v);
+static inline void altp2m_vcpu_update_p2m(struct vcpu *v)
+{
+    if ( hvm_funcs.altp2m_vcpu_update_p2m )
+        hvm_funcs.altp2m_vcpu_update_p2m(v);
+}
 
 /* updates VMCS fields related to VMFUNC and #VE */
-void altp2m_vcpu_update_vmfunc_ve(struct vcpu *v);
+static inline void altp2m_vcpu_update_vmfunc_ve(struct vcpu *v)
+{
+    if ( hvm_funcs.altp2m_vcpu_update_vmfunc_ve )
+        hvm_funcs.altp2m_vcpu_update_vmfunc_ve(v);
+}
 
 /* emulates #VE */
-bool_t altp2m_vcpu_emulate_ve(struct vcpu *v);
+static inline bool altp2m_vcpu_emulate_ve(struct vcpu *v)
+{
+    if ( hvm_funcs.altp2m_vcpu_emulate_ve )
+    {
+        hvm_funcs.altp2m_vcpu_emulate_ve(v);
+        return true;
+    }
+    return false;
+}
 
 /* Check CR4/EFER values */
 const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
@@ -611,7 +638,7 @@ unsigned long hvm_cr4_guest_reserved_bits(const struct vcpu *v, bool_t restore);
     struct vcpu *v_ = (v);                                      \
     struct domain *d_ = v_->domain;                             \
     if ( has_hvm_container_domain(d_) &&                        \
-         d_->arch.hvm_domain.vmx.vcpu_block )                   \
+         (cpu_has_vmx && d_->arch.hvm_domain.vmx.vcpu_block) )  \
         d_->arch.hvm_domain.vmx.vcpu_block(v_);                 \
 })
 

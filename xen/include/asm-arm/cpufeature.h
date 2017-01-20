@@ -35,6 +35,56 @@
 #endif
 #define cpu_has_security  (boot_cpu_feature32(security) > 0)
 
+#define ARM64_WORKAROUND_CLEAN_CACHE    0
+#define ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE    1
+#define ARM32_WORKAROUND_766422 2
+#define ARM64_WORKAROUND_834220 3
+#define LIVEPATCH_FEATURE   4
+
+#define ARM_NCAPS           5
+
+#ifndef __ASSEMBLY__
+
+#include <xen/types.h>
+#include <xen/lib.h>
+#include <xen/bitops.h>
+
+extern DECLARE_BITMAP(cpu_hwcaps, ARM_NCAPS);
+
+static inline bool_t cpus_have_cap(unsigned int num)
+{
+    if ( num >= ARM_NCAPS )
+        return 0;
+
+    return test_bit(num, cpu_hwcaps);
+}
+
+static inline void cpus_set_cap(unsigned int num)
+{
+    if (num >= ARM_NCAPS)
+        printk(XENLOG_WARNING "Attempt to set an illegal CPU capability (%d >= %d)\n",
+               num, ARM_NCAPS);
+    else
+        __set_bit(num, cpu_hwcaps);
+}
+
+struct arm_cpu_capabilities {
+    const char *desc;
+    u16 capability;
+    bool_t (*matches)(const struct arm_cpu_capabilities *);
+    union {
+        struct {    /* To be used for eratum handling only */
+            u32 midr_model;
+            u32 midr_range_min, midr_range_max;
+        };
+    };
+};
+
+void update_cpu_capabilities(const struct arm_cpu_capabilities *caps,
+                             const char *info);
+
+#endif /* __ASSEMBLY__ */
+
 #endif
 /*
  * Local variables:

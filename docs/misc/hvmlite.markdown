@@ -37,24 +37,8 @@ following machine state:
 All other processor registers and flag bits are unspecified. The OS is in
 charge of setting up it's own stack, GDT and IDT.
 
-The format of the boot start info structure is the following (pointed to
-be %ebx):
-
-    struct hvm_start_info {
-    #define HVM_START_MAGIC_VALUE 0x336ec578
-        uint32_t magic;             /* Contains the magic value 0x336ec578       */
-                                    /* ("xEn3" with the 0x80 bit of the "E" set).*/
-        uint32_t flags;             /* SIF_xxx flags.                            */
-        uint32_t cmdline_paddr;     /* Physical address of the command line.     */
-        uint32_t nr_modules;        /* Number of modules passed to the kernel.   */
-        uint32_t modlist_paddr;     /* Physical address of an array of           */
-                                    /* hvm_modlist_entry.                        */
-    };
-
-    struct hvm_modlist_entry {
-        uint32_t paddr;             /* Physical address of the module.           */
-        uint32_t size;              /* Size of the module in bytes.              */
-    };
+The format of the boot start info structure (pointed to by %ebx) can be found
+in xen/include/public/arch-x86/hvm/start_info.h
 
 Other relevant information needed in order to boot a guest kernel
 (console page address, xenstore event channel...) can be obtained
@@ -65,8 +49,8 @@ as HVM guests, using the hypervisor cpuid leaves and msr ranges.
 
 ## AP startup ##
 
-AP startup is performed using hypercalls. The following VCPU operations
-are used in order to bring up secondary vCPUs:
+AP startup can be performed using hypercalls or the local APIC if present.
+The following VCPU hypercalls can be used in order to bring up secondary vCPUs:
 
  * `VCPUOP_initialise` is used to set the initial state of the vCPU. The
    argument passed to the hypercall must be of the type vcpu_hvm_context.
@@ -80,3 +64,14 @@ are used in order to bring up secondary vCPUs:
  * `VCPUOP_down` is used to bring down a vCPU.
 
  * `VCPUOP_is_up` is used to scan the number of available vCPUs.
+
+## Hardware description ##
+
+PVHv2 guests that have access to hardware (either emulated or real) will also
+have ACPI tables with the description of the hardware that's available to the
+guest. This applies to both privileged and unprivileged guests. A pointer to
+the position of the RSDP in memory (if present) can be fetched from the start
+info structure that's passed at boot time (field rsdp_paddr).
+
+Description of paravirtualized devices will come from XenStore, just as it's
+done for HVM guests.

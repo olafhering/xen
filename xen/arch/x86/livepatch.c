@@ -12,13 +12,14 @@
 #include <xen/livepatch.h>
 
 #include <asm/nmi.h>
+#include <asm/livepatch.h>
 
-#define PATCH_INSN_SIZE 5
-
-void arch_livepatch_quiesce(void)
+int arch_livepatch_quiesce(void)
 {
     /* Disable WP to allow changes to read-only pages. */
     write_cr0(read_cr0() & ~X86_CR0_WP);
+
+    return 0;
 }
 
 void arch_livepatch_revive(void)
@@ -29,35 +30,54 @@ void arch_livepatch_revive(void)
 
 int arch_livepatch_verify_func(const struct livepatch_func *func)
 {
-    /* No NOP patching yet. */
-    if ( !func->new_size )
-        return -EOPNOTSUPP;
+    /* If NOPing.. */
+    if ( !func->new_addr )
+    {
+        /* Only do up to maximum amount we can put in the ->opaque. */
+        if ( func->new_size > sizeof(func->opaque) )
+            return -EOPNOTSUPP;
 
-    if ( func->old_size < PATCH_INSN_SIZE )
+        if ( func->old_size < func->new_size )
+            return -EINVAL;
+    }
+    else if ( func->old_size < ARCH_PATCH_INSN_SIZE )
         return -EINVAL;
 
     return 0;
 }
 
-void arch_livepatch_apply_jmp(struct livepatch_func *func)
+void arch_livepatch_apply(struct livepatch_func *func)
 {
-    int32_t val;
     uint8_t *old_ptr;
-
-    BUILD_BUG_ON(PATCH_INSN_SIZE > sizeof(func->opaque));
-    BUILD_BUG_ON(PATCH_INSN_SIZE != (1 + sizeof(val)));
+    uint8_t insn[sizeof(func->opaque)];
+    unsigned int len;
 
     old_ptr = func->old_addr;
-    memcpy(func->opaque, old_ptr, PATCH_INSN_SIZE);
+    len = livepatch_insn_len(func);
+    if ( !len )
+        return;
 
-    *old_ptr++ = 0xe9; /* Relative jump */
-    val = func->new_addr - func->old_addr - PATCH_INSN_SIZE;
-    memcpy(old_ptr, &val, sizeof(val));
+    memcpy(func->opaque, old_ptr, len);
+    if ( func->new_addr )
+    {
+        int32_t val;
+
+        BUILD_BUG_ON(ARCH_PATCH_INSN_SIZE != (1 + sizeof(val)));
+
+        insn[0] = 0xe9; /* Relative jump. */
+        val = func->new_addr - func->old_addr - ARCH_PATCH_INSN_SIZE;
+
+        memcpy(&insn[1], &val, sizeof(val));
+    }
+    else
+        add_nops(insn, len);
+
+    memcpy(old_ptr, insn, len);
 }
 
-void arch_livepatch_revert_jmp(const struct livepatch_func *func)
+void arch_livepatch_revert(const struct livepatch_func *func)
 {
-    memcpy(func->old_addr, func->opaque, PATCH_INSN_SIZE);
+    memcpy(func->old_addr, func->opaque, livepatch_insn_len(func));
 }
 
 /* Serialise the CPU pipeline. */
@@ -104,6 +124,20 @@ int arch_livepatch_verify_elf(const struct livepatch_elf *elf)
     return 0;
 }
 
+bool arch_livepatch_symbol_ok(const struct livepatch_elf *elf,
+                              const struct livepatch_elf_sym *sym)
+{
+    /* No special checks on x86. */
+    return true;
+}
+
+bool arch_livepatch_symbol_deny(const struct livepatch_elf *elf,
+                                const struct livepatch_elf_sym *sym)
+{
+    /* No special checks on x86. */
+    return false;
+}
+
 int arch_livepatch_perform_rel(struct livepatch_elf *elf,
                                const struct livepatch_elf_sec *base,
                                const struct livepatch_elf_sec *rela)
@@ -121,18 +155,6 @@ int arch_livepatch_perform_rela(struct livepatch_elf *elf,
     unsigned int symndx, i;
     uint64_t val;
     uint8_t *dest;
-
-    /* Nothing to do. */
-    if ( !rela->sec->sh_size )
-        return 0;
-
-    if ( rela->sec->sh_entsize < sizeof(Elf_RelA) ||
-         rela->sec->sh_size % rela->sec->sh_entsize )
-    {
-        dprintk(XENLOG_ERR, LIVEPATCH "%s: Section relative header is corrupted!\n",
-                elf->name);
-        return -EINVAL;
-    }
 
     for ( i = 0; i < (rela->sec->sh_size / rela->sec->sh_entsize); i++ )
     {
@@ -222,9 +244,7 @@ int arch_livepatch_secure(const void *va, unsigned int pages, enum va_type type)
     else
         flag = PAGE_HYPERVISOR_RO;
 
-    modify_xen_mappings(start, start + pages * PAGE_SIZE, flag);
-
-    return 0;
+    return modify_xen_mappings(start, start + pages * PAGE_SIZE, flag);
 }
 
 void __init arch_livepatch_init(void)

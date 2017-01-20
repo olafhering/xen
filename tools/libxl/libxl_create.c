@@ -215,6 +215,8 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
     if (!b_info->event_channels)
         b_info->event_channels = 1023;
 
+    libxl__arch_domain_build_info_acpi_setdefault(b_info);
+
     switch (b_info->type) {
     case LIBXL_DOMAIN_TYPE_HVM:
         if (b_info->shadow_memkb == LIBXL_MEMKB_DEFAULT)
@@ -454,7 +456,7 @@ int libxl__domain_build(libxl__gc *gc,
         localents = libxl__calloc(gc, 9, sizeof(char *));
         i = 0;
         localents[i++] = "platform/acpi";
-        localents[i++] = libxl_defbool_val(info->u.hvm.acpi) ? "1" : "0";
+        localents[i++] = libxl__acpi_defbool_val(info) ? "1" : "0";
         localents[i++] = "platform/acpi_s3";
         localents[i++] = libxl_defbool_val(info->u.hvm.acpi_s3) ? "1" : "0";
         localents[i++] = "platform/acpi_s4";
@@ -646,6 +648,23 @@ retry_transaction:
                     GCSPRINTF("%s/control/shutdown", dom_path),
                     rwperm, ARRAY_SIZE(rwperm));
     libxl__xs_mknod(gc, t,
+                    GCSPRINTF("%s/control/feature-poweroff", dom_path),
+                    rwperm, ARRAY_SIZE(rwperm));
+    libxl__xs_mknod(gc, t,
+                    GCSPRINTF("%s/control/feature-reboot", dom_path),
+                    rwperm, ARRAY_SIZE(rwperm));
+    libxl__xs_mknod(gc, t,
+                    GCSPRINTF("%s/control/feature-suspend", dom_path),
+                    rwperm, ARRAY_SIZE(rwperm));
+    if (info->type == LIBXL_DOMAIN_TYPE_HVM) {
+        libxl__xs_mknod(gc, t,
+                        GCSPRINTF("%s/control/feature-s3", dom_path),
+                        rwperm, ARRAY_SIZE(rwperm));
+        libxl__xs_mknod(gc, t,
+                        GCSPRINTF("%s/control/feature-s4", dom_path),
+                        rwperm, ARRAY_SIZE(rwperm));
+    }
+    libxl__xs_mknod(gc, t,
                     GCSPRINTF("%s/device/suspend/event-channel", dom_path),
                     rwperm, ARRAY_SIZE(rwperm));
     libxl__xs_mknod(gc, t,
@@ -742,19 +761,6 @@ static void domcreate_bootloader_done(libxl__egc *egc,
 static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *aodevs,
                                 int ret);
 
-static void domcreate_attach_vscsictrls(libxl__egc *egc, libxl__multidev *multidev,
-                                        int ret);
-static void domcreate_attach_vtpms(libxl__egc *egc, libxl__multidev *multidev,
-                                   int ret);
-static void domcreate_attach_usbctrls(libxl__egc *egc,
-                                      libxl__multidev *multidev, int ret);
-static void domcreate_attach_usbdevs(libxl__egc *egc, libxl__multidev *multidev,
-                                     int ret);
-static void domcreate_attach_pci(libxl__egc *egc, libxl__multidev *aodevs,
-                                 int ret);
-static void domcreate_attach_dtdev(libxl__egc *egc,
-                                   libxl__domain_create_state *dcs);
-
 static void domcreate_console_available(libxl__egc *egc,
                                         libxl__domain_create_state *dcs);
 
@@ -785,7 +791,6 @@ static void initiate_domain_create(libxl__egc *egc,
     libxl_ctx *ctx = libxl__gc_owner(gc);
     uint32_t domid;
     int i, ret;
-    size_t last_devid = -1;
     bool pod_enabled = false;
 
     /* convenience aliases */
@@ -896,17 +901,6 @@ static void initiate_domain_create(libxl__egc *egc,
         goto error_out;
     }
 
-    ret = libxl__domain_make(gc, d_config, &domid, &state->config);
-    if (ret) {
-        LOG(ERROR, "cannot make domain: %d", ret);
-        dcs->guest_domid = domid;
-        ret = ERROR_FAIL;
-        goto error_out;
-    }
-
-    dcs->guest_domid = domid;
-    dcs->dmss.dm.guest_domid = 0; /* means we haven't spawned */
-
     ret = libxl__domain_build_info_setdefault(gc, &d_config->b_info);
     if (ret) {
         LOG(ERROR, "Unable to set domain build info defaults");
@@ -916,9 +910,29 @@ static void initiate_domain_create(libxl__egc *egc,
     if (d_config->c_info.type == LIBXL_DOMAIN_TYPE_HVM &&
         (libxl_defbool_val(d_config->b_info.u.hvm.nested_hvm) &&
          libxl_defbool_val(d_config->b_info.u.hvm.altp2m))) {
+        ret = ERROR_INVAL;
         LOG(ERROR, "nestedhvm and altp2mhvm cannot be used together");
         goto error_out;
     }
+
+    if (d_config->c_info.type == LIBXL_DOMAIN_TYPE_HVM &&
+        libxl_defbool_val(d_config->b_info.u.hvm.altp2m) &&
+        pod_enabled) {
+        ret = ERROR_INVAL;
+        LOG(ERROR, "Cannot enable PoD and ALTP2M at the same time");
+        goto error_out;
+    }
+
+    ret = libxl__domain_make(gc, d_config, &domid, &state->config);
+    if (ret) {
+        LOG(ERROR, "cannot make domain: %d", ret);
+        dcs->guest_domid = domid;
+        ret = ERROR_FAIL;
+        goto error_out;
+    }
+
+    dcs->guest_domid = domid;
+    dcs->sdss.dm.guest_domid = 0; /* means we haven't spawned */
 
     /*
      * Set the dm version quite early so that libxl doesn't have to pass the
@@ -945,25 +959,9 @@ static void initiate_domain_create(libxl__egc *egc,
      * Make two runs over configured NICs in order to avoid duplicate IDs
      * in case the caller partially assigned IDs.
      */
-    for (i = 0; i < d_config->num_nics; i++) {
-        /* We have to init the nic here, because we still haven't
-         * called libxl_device_nic_add when domcreate_launch_dm gets called,
-         * but qemu needs the nic information to be complete.
-         */
-        ret = libxl__device_nic_setdefault(gc, &d_config->nics[i], domid,
-                                           false);
-        if (ret) {
-            LOG(ERROR, "Unable to set nic defaults for nic %d", i);
-            goto error_out;
-        }
-
-        if (d_config->nics[i].devid > last_devid)
-            last_devid = d_config->nics[i].devid;
-    }
-    for (i = 0; i < d_config->num_nics; i++) {
-        if (d_config->nics[i].devid < 0)
-            d_config->nics[i].devid = ++last_devid;
-    }
+    ret = libxl__device_nic_set_devids(gc, d_config, domid);
+    if (ret)
+        goto error_out;
 
     if (restore_fd >= 0 || dcs->domid_soft_reset != INVALID_DOMID) {
         LOG(DEBUG, "restoring, not running bootloader");
@@ -1052,11 +1050,11 @@ static void domcreate_bootloader_done(libxl__egc *egc,
     /* We might be going to call libxl__spawn_local_dm, or _spawn_stub_dm.
      * Fill in any field required by either, including both relevant
      * callbacks (_spawn_stub_dm will overwrite our trespass if needed). */
-    dcs->dmss.dm.spawn.ao = ao;
-    dcs->dmss.dm.guest_config = dcs->guest_config;
-    dcs->dmss.dm.build_state = &dcs->build_state;
-    dcs->dmss.dm.callback = domcreate_devmodel_started;
-    dcs->dmss.callback = domcreate_devmodel_started;
+    dcs->sdss.dm.spawn.ao = ao;
+    dcs->sdss.dm.guest_config = dcs->guest_config;
+    dcs->sdss.dm.build_state = &dcs->build_state;
+    dcs->sdss.dm.callback = domcreate_devmodel_started;
+    dcs->sdss.callback = domcreate_devmodel_started;
 
     if (restore_fd < 0 && dcs->domid_soft_reset == INVALID_DOMID) {
         rc = libxl__domain_build(gc, d_config, domid, state);
@@ -1346,7 +1344,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
 
         if (d_config->b_info.device_model_version ==
             LIBXL_DEVICE_MODEL_VERSION_NONE) {
-            domcreate_devmodel_started(egc, &dcs->dmss.dm, 0);
+            domcreate_devmodel_started(egc, &dcs->sdss.dm, 0);
             return;
         }
 
@@ -1354,11 +1352,11 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         libxl__device_vkb_add(gc, domid, &vkb);
         libxl_device_vkb_dispose(&vkb);
 
-        dcs->dmss.dm.guest_domid = domid;
+        dcs->sdss.dm.guest_domid = domid;
         if (libxl_defbool_val(d_config->b_info.device_model_stubdomain))
-            libxl__spawn_stub_dm(egc, &dcs->dmss);
+            libxl__spawn_stub_dm(egc, &dcs->sdss);
         else
-            libxl__spawn_local_dm(egc, &dcs->dmss.dm);
+            libxl__spawn_local_dm(egc, &dcs->sdss.dm);
 
         /*
          * Handle the domain's (and the related stubdomain's) access to
@@ -1389,12 +1387,12 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         if (ret < 0)
             goto error_out;
         if (ret) {
-            dcs->dmss.dm.guest_domid = domid;
-            libxl__spawn_local_dm(egc, &dcs->dmss.dm);
+            dcs->sdss.dm.guest_domid = domid;
+            libxl__spawn_local_dm(egc, &dcs->sdss.dm);
             return;
         } else {
-            assert(!dcs->dmss.dm.guest_domid);
-            domcreate_devmodel_started(egc, &dcs->dmss.dm, 0);
+            assert(!dcs->sdss.dm.guest_domid);
+            domcreate_devmodel_started(egc, &dcs->sdss.dm, 0);
             return;
         }
     }
@@ -1409,11 +1407,94 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
     domcreate_complete(egc, dcs, ret);
 }
 
+static void libxl__add_dtdevs(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+                              libxl_domain_config *d_config,
+                              libxl__multidev *multidev)
+{
+    AO_GC;
+    libxl__ao_device *aodev = libxl__multidev_prepare(multidev);
+    int i, rc = 0;
+
+    for (i = 0; i < d_config->num_dtdevs; i++) {
+        const libxl_device_dtdev *dtdev = &d_config->dtdevs[i];
+
+        LOG(DEBUG, "Assign device \"%s\" to dom%u", dtdev->path, domid);
+        rc = xc_assign_dt_device(CTX->xch, domid, dtdev->path);
+        if (rc < 0) {
+            LOG(ERROR, "xc_assign_dtdevice failed: %d", rc);
+            goto out;
+        }
+    }
+
+out:
+    aodev->rc = rc;
+    aodev->callback(egc, aodev);
+}
+
+#define libxl_device_dtdev_list NULL
+#define libxl_device_dtdev_compare NULL
+static DEFINE_DEVICE_TYPE_STRUCT(dtdev);
+
+const struct libxl_device_type *device_type_tbl[] = {
+    &libxl__disk_devtype,
+    &libxl__nic_devtype,
+    &libxl__vtpm_devtype,
+    &libxl__vscsictrl_devtype,
+    &libxl__usbctrl_devtype,
+    &libxl__usbdev_devtype,
+    &libxl__pcidev_devtype,
+    &libxl__dtdev_devtype,
+    NULL
+};
+
+static void domcreate_attach_devices(libxl__egc *egc,
+                                     libxl__multidev *multidev,
+                                     int ret)
+{
+    libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
+    STATE_AO_GC(dcs->ao);
+    int domid = dcs->guest_domid;
+    libxl_domain_config *const d_config = dcs->guest_config;
+    const struct libxl_device_type *dt;
+
+    if (ret) {
+        LOG(ERROR, "unable to add %s devices",
+            device_type_tbl[dcs->device_type_idx]->type);
+        goto error_out;
+    }
+
+    dcs->device_type_idx++;
+    dt = device_type_tbl[dcs->device_type_idx];
+    if (dt) {
+        if (*libxl__device_type_get_num(dt, d_config) > 0 && !dt->skip_attach) {
+            /* Attach devices */
+            libxl__multidev_begin(ao, &dcs->multidev);
+            dcs->multidev.callback = domcreate_attach_devices;
+            dt->add(egc, ao, domid, d_config, &dcs->multidev);
+            libxl__multidev_prepared(egc, &dcs->multidev, 0);
+            return;
+        }
+
+        domcreate_attach_devices(egc, &dcs->multidev, 0);
+        return;
+    }
+
+    domcreate_console_available(egc, dcs);
+
+    domcreate_complete(egc, dcs, 0);
+
+    return;
+
+error_out:
+    assert(ret);
+    domcreate_complete(egc, dcs, ret);
+}
+
 static void domcreate_devmodel_started(libxl__egc *egc,
                                        libxl__dm_spawn_state *dmss,
                                        int ret)
 {
-    libxl__domain_create_state *dcs = CONTAINER_OF(dmss, *dcs, dmss.dm);
+    libxl__domain_create_state *dcs = CONTAINER_OF(dmss, *dcs, sdss.dm);
     STATE_AO_GC(dmss->spawn.ao);
     int domid = dcs->guest_domid;
 
@@ -1425,226 +1506,15 @@ static void domcreate_devmodel_started(libxl__egc *egc,
         goto error_out;
     }
 
-    if (dcs->dmss.dm.guest_domid) {
+    if (dcs->sdss.dm.guest_domid) {
         if (d_config->b_info.device_model_version
             == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
             libxl__qmp_initializations(gc, domid, d_config);
         }
     }
 
-    /* Plug nic interfaces */
-    if (d_config->num_nics > 0) {
-        /* Attach nics */
-        libxl__multidev_begin(ao, &dcs->multidev);
-        dcs->multidev.callback = domcreate_attach_vscsictrls;
-        libxl__add_nics(egc, ao, domid, d_config, &dcs->multidev);
-        libxl__multidev_prepared(egc, &dcs->multidev, 0);
-        return;
-    }
-
-    domcreate_attach_vscsictrls(egc, &dcs->multidev, 0);
-    return;
-
-error_out:
-    assert(ret);
-    domcreate_complete(egc, dcs, ret);
-}
-
-static void domcreate_attach_vscsictrls(libxl__egc *egc,
-                                   libxl__multidev *multidev,
-                                   int ret)
-{
-   libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
-   STATE_AO_GC(dcs->ao);
-   int domid = dcs->guest_domid;
-
-   libxl_domain_config* const d_config = dcs->guest_config;
-
-   if(ret) {
-       LOG(ERROR, "unable to add nic devices");
-       goto error_out;
-   }
-
-    /* Plug vscsi devices */
-   if (d_config->num_vscsictrls > 0) {
-       /* Attach vscsictrls */
-       libxl__multidev_begin(ao, &dcs->multidev);
-       dcs->multidev.callback = domcreate_attach_vtpms;
-       libxl__add_vscsictrls(egc, ao, domid, d_config, &dcs->multidev);
-       libxl__multidev_prepared(egc, &dcs->multidev, 0);
-       return;
-   }
-
-   domcreate_attach_vtpms(egc, multidev, 0);
-   return;
-
-error_out:
-   assert(ret);
-   domcreate_complete(egc, dcs, ret);
-}
-
-static void domcreate_attach_vtpms(libxl__egc *egc,
-                                   libxl__multidev *multidev,
-                                   int ret)
-{
-   libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
-   STATE_AO_GC(dcs->ao);
-   int domid = dcs->guest_domid;
-
-   libxl_domain_config* const d_config = dcs->guest_config;
-
-   if(ret) {
-       LOG(ERROR, "unable to add vscsi devices");
-       goto error_out;
-   }
-
-    /* Plug vtpm devices */
-   if (d_config->num_vtpms > 0) {
-       /* Attach vtpms */
-       libxl__multidev_begin(ao, &dcs->multidev);
-       dcs->multidev.callback = domcreate_attach_usbctrls;
-       libxl__add_vtpms(egc, ao, domid, d_config, &dcs->multidev);
-       libxl__multidev_prepared(egc, &dcs->multidev, 0);
-       return;
-   }
-
-   domcreate_attach_usbctrls(egc, multidev, 0);
-   return;
-
-error_out:
-   assert(ret);
-   domcreate_complete(egc, dcs, ret);
-}
-
-static void domcreate_attach_usbctrls(libxl__egc *egc,
-                                      libxl__multidev *multidev, int ret)
-{
-    libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
-    STATE_AO_GC(dcs->ao);
-    int domid = dcs->guest_domid;
-
-    libxl_domain_config *const d_config = dcs->guest_config;
-
-    if (ret) {
-        LOG(ERROR, "unable to add vtpm devices");
-        goto error_out;
-    }
-
-    if (d_config->num_usbctrls > 0) {
-        /* Attach usbctrls */
-        libxl__multidev_begin(ao, &dcs->multidev);
-        dcs->multidev.callback = domcreate_attach_usbdevs;
-        libxl__add_usbctrls(egc, ao, domid, d_config, &dcs->multidev);
-        libxl__multidev_prepared(egc, &dcs->multidev, 0);
-        return;
-    }
-
-    domcreate_attach_usbdevs(egc, multidev, 0);
-    return;
-
-error_out:
-    assert(ret);
-    domcreate_complete(egc, dcs, ret);
-}
-
-
-static void domcreate_attach_usbdevs(libxl__egc *egc, libxl__multidev *multidev,
-                                int ret)
-{
-    libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
-    STATE_AO_GC(dcs->ao);
-    int domid = dcs->guest_domid;
-
-    libxl_domain_config *const d_config = dcs->guest_config;
-
-    if (ret) {
-        LOG(ERROR, "unable to add usbctrl devices");
-        goto error_out;
-    }
-
-    if (d_config->num_usbdevs > 0) {
-        /* Attach usbctrls */
-        libxl__multidev_begin(ao, &dcs->multidev);
-        dcs->multidev.callback = domcreate_attach_pci;
-        libxl__add_usbdevs(egc, ao, domid, d_config, &dcs->multidev);
-        libxl__multidev_prepared(egc, &dcs->multidev, 0);
-        return;
-    }
-
-    domcreate_attach_pci(egc, multidev, 0);
-    return;
-
-error_out:
-    assert(ret);
-    domcreate_complete(egc, dcs, ret);
-}
-
-static void domcreate_attach_pci(libxl__egc *egc, libxl__multidev *multidev,
-                                 int ret)
-{
-    libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
-    STATE_AO_GC(dcs->ao);
-    int i;
-    int domid = dcs->guest_domid;
-
-    /* convenience aliases */
-    libxl_domain_config *const d_config = dcs->guest_config;
-
-    if (ret) {
-        LOG(ERROR, "unable to add usb devices");
-        goto error_out;
-    }
-
-    for (i = 0; i < d_config->num_pcidevs; i++) {
-        ret = libxl__device_pci_add(gc, domid, &d_config->pcidevs[i], 1);
-        if (ret < 0) {
-            LOG(ERROR, "libxl_device_pci_add failed: %d", ret);
-            goto error_out;
-        }
-    }
-
-    if (d_config->num_pcidevs > 0) {
-        ret = libxl__create_pci_backend(gc, domid, d_config->pcidevs,
-            d_config->num_pcidevs);
-        if (ret < 0) {
-            LOG(ERROR, "libxl_create_pci_backend failed: %d", ret);
-            goto error_out;
-        }
-    }
-
-    domcreate_attach_dtdev(egc, dcs);
-    return;
-
-error_out:
-    assert(ret);
-    domcreate_complete(egc, dcs, ret);
-}
-
-static void domcreate_attach_dtdev(libxl__egc *egc,
-                                   libxl__domain_create_state *dcs)
-{
-    STATE_AO_GC(dcs->ao);
-    int i;
-    int ret;
-    int domid = dcs->guest_domid;
-
-    /* convenience aliases */
-    libxl_domain_config *const d_config = dcs->guest_config;
-
-    for (i = 0; i < d_config->num_dtdevs; i++) {
-        const libxl_device_dtdev *dtdev = &d_config->dtdevs[i];
-
-        LOG(DEBUG, "Assign device \"%s\" to dom%u", dtdev->path, domid);
-        ret = xc_assign_dt_device(CTX->xch, domid, dtdev->path);
-        if (ret < 0) {
-            LOG(ERROR, "xc_assign_dtdevice failed: %d", ret);
-            goto error_out;
-        }
-    }
-
-    domcreate_console_available(egc, dcs);
-
-    domcreate_complete(egc, dcs, 0);
+    dcs->device_type_idx = -1;
+    domcreate_attach_devices(egc, &dcs->multidev, 0);
     return;
 
 error_out:

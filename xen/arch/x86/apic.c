@@ -571,7 +571,7 @@ void setup_local_APIC(void)
     for (i = APIC_ISR_NR - 1; i >= 0; i--) {
         value = apic_read(APIC_ISR + i*0x10);
         for (j = 31; j >= 0; j--) {
-            if (value & (1<<j))
+            if (value & (1u << j))
                 ack_APIC_irq();
         }
     }
@@ -1137,7 +1137,7 @@ static int __init calibrate_APIC_clock(void)
     /*
      * We wrapped around just now. Let's start:
      */
-    t1 = rdtsc();
+    t1 = rdtsc_ordered();
     tt1 = apic_read(APIC_TMCCT);
 
     /*
@@ -1147,7 +1147,7 @@ static int __init calibrate_APIC_clock(void)
         wait_8254_wraparound();
 
     tt2 = apic_read(APIC_TMCCT);
-    t2 = rdtsc();
+    t2 = rdtsc_ordered();
 
     /*
      * The APIC bus clock counter is 32 bits only, it

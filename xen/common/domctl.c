@@ -215,54 +215,8 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
     info->cpupool = d->cpupool ? d->cpupool->cpupool_id : CPUPOOLID_NONE;
 
     memcpy(info->handle, d->handle, sizeof(xen_domain_handle_t));
-}
 
-static unsigned int default_vcpu0_location(cpumask_t *online)
-{
-    struct domain *d;
-    struct vcpu   *v;
-    unsigned int   i, cpu, nr_cpus, *cnt;
-    cpumask_t      cpu_exclude_map;
-
-    /* Do an initial CPU placement. Pick the least-populated CPU. */
-    nr_cpus = cpumask_last(&cpu_online_map) + 1;
-    cnt = xzalloc_array(unsigned int, nr_cpus);
-    if ( cnt )
-    {
-        rcu_read_lock(&domlist_read_lock);
-        for_each_domain ( d )
-            for_each_vcpu ( d, v )
-                if ( !(v->pause_flags & VPF_down)
-                     && ((cpu = v->processor) < nr_cpus) )
-                    cnt[cpu]++;
-        rcu_read_unlock(&domlist_read_lock);
-    }
-
-    /*
-     * If we're on a HT system, we only auto-allocate to a non-primary HT. We
-     * favour high numbered CPUs in the event of a tie.
-     */
-    cpumask_copy(&cpu_exclude_map, per_cpu(cpu_sibling_mask, 0));
-    cpu = cpumask_first(&cpu_exclude_map);
-    i = cpumask_next(cpu, &cpu_exclude_map);
-    if ( i < nr_cpu_ids )
-        cpu = i;
-    for_each_cpu(i, online)
-    {
-        if ( cpumask_test_cpu(i, &cpu_exclude_map) )
-            continue;
-        if ( (i == cpumask_first(per_cpu(cpu_sibling_mask, i))) &&
-             (cpumask_next(i, per_cpu(cpu_sibling_mask, i)) < nr_cpu_ids) )
-            continue;
-        cpumask_or(&cpu_exclude_map, &cpu_exclude_map,
-                   per_cpu(cpu_sibling_mask, i));
-        if ( !cnt || cnt[i] <= cnt[cpu] )
-            cpu = i;
-    }
-
-    xfree(cnt);
-
-    return cpu;
+    arch_get_domain_info(d, info);
 }
 
 bool_t domctl_lock_acquire(void)
@@ -442,14 +396,13 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     switch ( op->cmd )
     {
     case XEN_DOMCTL_createdomain:
-    case XEN_DOMCTL_getdomaininfo:
     case XEN_DOMCTL_test_assign_device:
     case XEN_DOMCTL_gdbsx_guestmemio:
         d = NULL;
         break;
     default:
         d = rcu_lock_domain_by_id(op->domain);
-        if ( d == NULL )
+        if ( !d && op->cmd != XEN_DOMCTL_getdomaininfo )
             return -ESRCH;
     }
 
@@ -691,7 +644,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                 continue;
 
             cpu = (i == 0) ?
-                default_vcpu0_location(online) :
+                cpumask_any(online) :
                 cpumask_cycle(d->vcpu[i-1]->processor, online);
 
             if ( alloc_vcpu(d, i, cpu) == NULL )
@@ -863,13 +816,21 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     case XEN_DOMCTL_getdomaininfo:
     {
-        domid_t dom = op->domain;
+        domid_t dom = DOMID_INVALID;
 
-        rcu_read_lock(&domlist_read_lock);
-
-        for_each_domain ( d )
-            if ( d->domain_id >= dom )
+        if ( !d )
+        {
+            ret = -EINVAL;
+            if ( op->domain >= DOMID_FIRST_RESERVED )
                 break;
+
+            rcu_read_lock(&domlist_read_lock);
+
+            dom = op->domain;
+            for_each_domain ( d )
+                if ( d->domain_id >= dom )
+                    break;
+        }
 
         ret = -ESRCH;
         if ( d == NULL )
@@ -885,6 +846,10 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         copyback = 1;
 
     getdomaininfo_out:
+        /* When d was non-NULL upon entry, no cleanup is needed. */
+        if ( dom == DOMID_INVALID )
+            break;
+
         rcu_read_unlock(&domlist_read_lock);
         d = NULL;
         break;
@@ -1074,7 +1039,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                    "memory_map:add: dom%d gfn=%lx mfn=%lx nr=%lx\n",
                    d->domain_id, gfn, mfn, nr_mfns);
 
-            ret = map_mmio_regions(d, gfn, nr_mfns, mfn);
+            ret = map_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn));
             if ( ret < 0 )
                 printk(XENLOG_G_WARNING
                        "memory_map:fail: dom%d gfn=%lx mfn=%lx nr=%lx ret:%ld\n",
@@ -1086,7 +1051,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                    "memory_map:remove: dom%d gfn=%lx mfn=%lx nr=%lx\n",
                    d->domain_id, gfn, mfn, nr_mfns);
 
-            ret = unmap_mmio_regions(d, gfn, nr_mfns, mfn);
+            ret = unmap_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn));
             if ( ret < 0 && is_hardware_domain(current->domain) )
                 printk(XENLOG_ERR
                        "memory_map: error %ld removing dom%d access to [%lx,%lx]\n",

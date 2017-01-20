@@ -39,7 +39,7 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t);
  * Enable and ease the use of scheduling related performance counters.
  *
  */
-#ifdef PERF_COUNTERS
+#ifdef CONFIG_PERF_COUNTERS
 #define SCHED_STATS
 #endif
 
@@ -386,6 +386,12 @@ struct domain
     bool_t           disable_migrate;
     /* Is this guest being debugged by dom0? */
     bool_t           debugger_attached;
+    /*
+     * Set to true at the very end of domain creation, when the domain is
+     * unpaused for the first time by the systemcontroller.
+     */
+    bool             creation_finished;
+
     /* Which guest this guest has privileges on */
     struct domain   *target;
 
@@ -404,7 +410,8 @@ struct domain
     spinlock_t       shutdown_lock;
     bool_t           is_shutting_down; /* in process of shutting down? */
     bool_t           is_shut_down;     /* fully shut down? */
-    int              shutdown_code;
+#define SHUTDOWN_CODE_INVALID ~0u
+    unsigned int     shutdown_code;
 
     /* If this is not 0, send suspend notification here instead of
      * raising DOM_EXC */
@@ -483,7 +490,7 @@ extern struct vcpu *idle_vcpu[NR_CPUS];
 #define is_idle_domain(d) ((d)->domain_id == DOMID_IDLE)
 #define is_idle_vcpu(v)   (is_idle_domain((v)->domain))
 
-#define DOMAIN_DESTROYED (1<<31) /* assumes atomic_t is >= 32 bits */
+#define DOMAIN_DESTROYED (1u << 31) /* assumes atomic_t is >= 32 bits */
 #define put_domain(_d) \
   if ( atomic_dec_and_test(&(_d)->refcnt) ) domain_destroy(_d)
 
@@ -637,7 +644,7 @@ void noreturn asm_domain_crash_synchronous(unsigned long addr);
 void scheduler_init(void);
 int  sched_init_vcpu(struct vcpu *v, unsigned int processor);
 void sched_destroy_vcpu(struct vcpu *v);
-int  sched_init_domain(struct domain *d);
+int  sched_init_domain(struct domain *d, int poolid);
 void sched_destroy_domain(struct domain *d);
 int sched_move_domain(struct domain *d, struct cpupool *c);
 long sched_adjust(struct domain *, struct xen_domctl_scheduler_op *);

@@ -128,6 +128,8 @@ struct vgic_ops {
     int (*vcpu_init)(struct vcpu *v);
     /* Domain specific initialization of vGIC */
     int (*domain_init)(struct domain *d);
+    /* Release resources that were allocated by domain_init */
+    void (*domain_free)(struct domain *d);
     /* vGIC sysreg emulation */
     int (*emulate_sysreg)(struct cpu_user_regs *regs, union hsr hsr);
     /* Maximum number of vCPU supported */
@@ -302,9 +304,10 @@ extern int vgic_emulate(struct cpu_user_regs *regs, union hsr hsr);
 extern void vgic_disable_irqs(struct vcpu *v, uint32_t r, int n);
 extern void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n);
 extern void register_vgic_ops(struct domain *d, const struct vgic_ops *ops);
-int vgic_v2_init(struct domain *d);
-int vgic_v3_init(struct domain *d);
+int vgic_v2_init(struct domain *d, int *mmio_count);
+int vgic_v3_init(struct domain *d, int *mmio_count);
 
+extern int domain_vgic_register(struct domain *d, int *mmio_count);
 extern int vcpu_vgic_free(struct vcpu *v);
 extern int vgic_to_sgi(struct vcpu *v, register_t sgir,
                        enum gic_sgi_mode irqmode, int virq,

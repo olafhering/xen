@@ -47,11 +47,23 @@ static void __init efi_arch_relocate_image(unsigned long delta)
 
     for ( base_relocs = __base_relocs_start; base_relocs < __base_relocs_end; )
     {
-        unsigned int i, n;
+        unsigned int i = 0, n;
 
         n = (base_relocs->size - sizeof(*base_relocs)) /
             sizeof(*base_relocs->entries);
-        for ( i = 0; i < n; ++i )
+
+        /*
+         * Relevant l{2,3}_bootmap entries get initialized explicitly in
+         * efi_arch_memory_setup(), so we must not apply relocations there.
+         * l2_identmap's first slot, otoh, should be handled normally, as
+         * efi_arch_memory_setup() won't touch it (xen_phys_start should
+         * never be zero).
+         */
+        if ( xen_phys_start + base_relocs->rva == (unsigned long)l3_bootmap ||
+             xen_phys_start + base_relocs->rva == (unsigned long)l2_bootmap )
+            i = n;
+
+        for ( ; i < n; ++i )
         {
             unsigned long addr = xen_phys_start + base_relocs->rva +
                                  (base_relocs->entries[i] & 0xfff);
@@ -69,12 +81,9 @@ static void __init efi_arch_relocate_image(unsigned long delta)
                 }
                 break;
             case PE_BASE_RELOC_DIR64:
-                if ( delta )
-                {
-                    *(u64 *)addr += delta;
-                    if ( in_page_tables(addr) )
-                        *(intpte_t *)addr += xen_phys_start;
-                }
+                if ( in_page_tables(addr) )
+                    blexit(L"Unexpected relocation type");
+                *(u64 *)addr += delta;
                 break;
             default:
                 blexit(L"Unsupported relocation type");
@@ -216,7 +225,7 @@ static void __init efi_arch_pre_exit_boot(void)
 
 static void __init noreturn efi_arch_post_exit_boot(void)
 {
-    u64 efer;
+    u64 cr4 = XEN_MINIMAL_CR4 & ~X86_CR4_PGE, efer;
 
     efi_arch_relocate_image(__XEN_VIRT_START - xen_phys_start);
     memcpy((void *)trampoline_phys, trampoline_start, cfg.size);
@@ -232,6 +241,10 @@ static void __init noreturn efi_arch_post_exit_boot(void)
               X86_CR0_AM | X86_CR0_PG);
     asm volatile ( "mov    %[cr4], %%cr4\n\t"
                    "mov    %[cr3], %%cr3\n\t"
+#if XEN_MINIMAL_CR4 & X86_CR4_PGE
+                   "or     $"__stringify(X86_CR4_PGE)", %[cr4]\n\t"
+                   "mov    %[cr4], %%cr4\n\t"
+#endif
                    "movabs $__start_xen, %[rip]\n\t"
                    "lgdt   gdt_descr(%%rip)\n\t"
                    "mov    stack_start(%%rip), %%rsp\n\t"
@@ -243,9 +256,9 @@ static void __init noreturn efi_arch_post_exit_boot(void)
                    "movl   %[cs], 8(%%rsp)\n\t"
                    "mov    %[rip], (%%rsp)\n\t"
                    "lretq  %[stkoff]-16"
-                   : [rip] "=&r" (efer/* any dead 64-bit variable */)
+                   : [rip] "=&r" (efer/* any dead 64-bit variable */),
+                     [cr4] "+&r" (cr4)
                    : [cr3] "r" (idle_pg_table),
-                     [cr4] "r" (mmu_cr4_features),
                      [cs] "ir" (__HYPERVISOR_CS),
                      [ds] "r" (__HYPERVISOR_DS),
                      [stkoff] "i" (STACK_SIZE - sizeof(struct cpu_info)),

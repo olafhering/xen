@@ -7,8 +7,10 @@ config X86
 	select ACPI_LEGACY_TABLES_LOOKUP
 	select COMPAT
 	select CORE_PARKING
+	select HAS_ALTERNATIVE
 	select HAS_CPUFREQ
 	select HAS_EHCI
+	select HAS_EX_TABLE
 	select HAS_GDBSX
 	select HAS_IOPORTS
 	select HAS_KEXEC
@@ -59,6 +61,34 @@ config BIGMEM
 
 	  If unsure, say N.
 
+config HVM_FEP
+	bool "HVM Forced Emulation Prefix support" if EXPERT = "y"
+	default DEBUG
+	---help---
+
+	  Compiles in a feature that allows HVM guest to arbitrarily
+	  exercise the instruction emulator.
+
+	  This feature can only be enabled during boot time with
+	  appropriate hypervisor command line option. Please read
+	  hypervisor command line documentation before trying to use
+	  this feature.
+
+	  This is strictly for testing purposes, and not appropriate
+	  for use in production.
+
+	  If unsure, say N.
+
+config TBOOT
+	def_bool y
+	prompt "Xen tboot support" if EXPERT = "y"
+	depends on X86
+	select CRYPTO
+	---help---
+	  Allows support for Trusted Boot using the Intel(R) Trusted Execution
+	  Technology (TXT)
+
+	  If unsure, say Y.
 endmenu
 
 source "common/Kconfig"
