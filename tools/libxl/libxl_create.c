@@ -1439,6 +1439,7 @@ const struct libxl_device_type *device_type_tbl[] = {
     &libxl__disk_devtype,
     &libxl__nic_devtype,
     &libxl__vtpm_devtype,
+    &libxl__vscsictrl_devtype,
     &libxl__usbctrl_devtype,
     &libxl__usbdev_devtype,
     &libxl__pcidev_devtype,

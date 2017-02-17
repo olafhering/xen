@@ -3504,6 +3504,7 @@ static inline int *libxl__device_type_get_num(
 extern const struct libxl_device_type libxl__disk_devtype;
 extern const struct libxl_device_type libxl__nic_devtype;
 extern const struct libxl_device_type libxl__vtpm_devtype;
+extern const struct libxl_device_type libxl__vscsictrl_devtype;
 extern const struct libxl_device_type libxl__usbctrl_devtype;
 extern const struct libxl_device_type libxl__usbdev_devtype;
 extern const struct libxl_device_type libxl__pcidev_devtype;
