@@ -38,7 +38,7 @@ ifeq ($(CONFIG_ROMBIOS),y)
 	false ; \
 	fi
 endif
-	$(MAKE) $(LD32BIT-y) CC=$(CC) PYTHON=$(PYTHON) subdirs-$@
+	$(MAKE) $(LD32BIT-y) CC=$(CC) PYTHON=$(PYTHON) VERSION="$(SEABIOS_UPSTREAM_REVISION)" subdirs-$@
 
 
 .PHONY: install
