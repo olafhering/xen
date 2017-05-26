@@ -20,6 +20,8 @@ ovmf:
 seabios-dir:
 	GIT=$(GIT) $(XEN_ROOT)/scripts/git-checkout.sh $(SEABIOS_UPSTREAM_URL) $(SEABIOS_UPSTREAM_TAG) seabios-dir
 	cp seabios-config seabios-dir/.config;
+	rm -f seabios-dir/.version
+	echo '$(SEABIOS_UPSTREAM_REVISION)' > seabios-dir/.version
 
 .PHONY: all
 all: $(SUBDIRS-y)
@@ -32,7 +34,7 @@ ifeq ($(CONFIG_ROMBIOS),y)
 	false ; \
 	fi
 endif
-	$(MAKE) PYTHON=$(PYTHON) subdirs-$@
+	$(MAKE) PYTHON=$(PYTHON) EXTRAVERSION="-Xen" subdirs-$@
 
 
 .PHONY: install
