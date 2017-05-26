@@ -29,6 +29,8 @@ seabios-dir:
 	GIT=$(GIT) $(XEN_ROOT)/scripts/git-checkout.sh $(SEABIOS_UPSTREAM_URL) $(SEABIOS_UPSTREAM_REVISION) seabios-dir
 	cp seabios-config seabios-dir/.config;
 	$(MAKE) -C seabios-dir olddefconfig
+	rm -f seabios-dir/.version
+	echo '$(SEABIOS_UPSTREAM_REVISION)' > seabios-dir/.version
 
 .PHONY: all
 all: $(SUBDIRS-y)
@@ -41,7 +43,7 @@ ifeq ($(CONFIG_ROMBIOS),y)
 	false ; \
 	fi
 endif
-	$(MAKE) $(LD32BIT-y) CC=$(CC) PYTHON=$(PYTHON) subdirs-$@
+	$(MAKE) $(LD32BIT-y) CC=$(CC) PYTHON=$(PYTHON) EXTRAVERSION="-Xen" subdirs-$@
 
 
 .PHONY: install
