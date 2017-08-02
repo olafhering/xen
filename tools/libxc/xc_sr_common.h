@@ -140,6 +140,13 @@ struct xc_sr_restore_ops
     int (*setup)(struct xc_sr_context *ctx);
 
     /**
+     * Populate PFNs
+     *
+     */
+    int (*populate_pfns)(struct xc_sr_context *ctx, unsigned count,
+                         const xen_pfn_t *original_pfns, const uint32_t *types);
+
+    /**
      * Process an individual record from the stream.  The caller shall take
      * care of processing common records (e.g. END, PAGE_DATA).
      *
@@ -170,6 +177,12 @@ struct xc_sr_x86_pv_restore_vcpu
 {
     void *basic, *extd, *xsave, *msr;
     size_t basicsz, extdsz, xsavesz, msrsz;
+};
+
+struct xc_sr_bitmap
+{
+    void *p;
+    unsigned long bits;
 };
 
 struct xc_sr_context
@@ -255,8 +268,7 @@ struct xc_sr_context
             domid_t      xenstore_domid,  console_domid;
 
             /* Bitmap of currently populated PFNs during restore. */
-            unsigned long *populated_pfns;
-            xen_pfn_t max_populated_pfn;
+            struct xc_sr_bitmap populated_pfns;
 
             /* Sender has invoked verify mode on the stream. */
             bool verify;
@@ -331,6 +343,11 @@ struct xc_sr_context
                     /* HVM context blob. */
                     void *context;
                     size_t contextsz;
+
+                    /* Bitmap of currently allocated PFNs during restore. */
+                    struct xc_sr_bitmap attempted_1g;
+                    struct xc_sr_bitmap attempted_2m;
+                    struct xc_sr_bitmap allocated_pfns;
                 } restore;
             };
         } x86_hvm;
@@ -342,6 +359,64 @@ extern struct xc_sr_save_ops save_ops_x86_hvm;
 
 extern struct xc_sr_restore_ops restore_ops_x86_pv;
 extern struct xc_sr_restore_ops restore_ops_x86_hvm;
+
+extern bool _xc_sr_bitmap_resize(struct xc_sr_bitmap *bm, unsigned long bits);
+
+static inline bool xc_sr_bitmap_resize(struct xc_sr_bitmap *bm, unsigned long bits)
+{
+    if (bits > bm->bits)
+        return _xc_sr_bitmap_resize(bm, bits);
+    return true;
+}
+
+static inline void xc_sr_bitmap_free(struct xc_sr_bitmap *bm)
+{
+    free(bm->p);
+}
+
+static inline bool xc_sr_set_bit(unsigned long bit, struct xc_sr_bitmap *bm)
+{
+    if (!xc_sr_bitmap_resize(bm, bit))
+        return false;
+
+    set_bit(bit, bm->p);
+    return true;
+}
+
+static inline bool xc_sr_test_bit(unsigned long bit, struct xc_sr_bitmap *bm)
+{
+    if (bit > bm->bits)
+        return false;
+    return !!test_bit(bit, bm->p);
+}
+
+static inline int xc_sr_test_and_clear_bit(unsigned long bit, struct xc_sr_bitmap *bm)
+{
+    return test_and_clear_bit(bit, bm->p);
+}
+
+static inline int xc_sr_test_and_set_bit(unsigned long bit, struct xc_sr_bitmap *bm)
+{
+    return test_and_set_bit(bit, bm->p);
+}
+
+static inline bool pfn_is_populated(struct xc_sr_context *ctx, xen_pfn_t pfn)
+{
+    return xc_sr_test_bit(pfn, &ctx->restore.populated_pfns);
+}
+
+static inline int pfn_set_populated(struct xc_sr_context *ctx, xen_pfn_t pfn)
+{
+    xc_interface *xch = ctx->xch;
+
+    if ( !xc_sr_set_bit(pfn, &ctx->restore.populated_pfns) )
+    {
+        ERROR("Failed to realloc populated_pfns bitmap");
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
+}
 
 struct xc_sr_record
 {
