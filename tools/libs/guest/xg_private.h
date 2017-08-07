@@ -180,4 +180,9 @@ struct xc_cpu_policy {
 };
 #endif /* x86 */
 
+#define SUPERPAGE_2MB_SHIFT   9
+#define SUPERPAGE_2MB_NR_PFNS (1UL << SUPERPAGE_2MB_SHIFT)
+#define SUPERPAGE_1GB_SHIFT   18
+#define SUPERPAGE_1GB_NR_PFNS (1UL << SUPERPAGE_1GB_SHIFT)
+
 #endif /* XG_PRIVATE_H */

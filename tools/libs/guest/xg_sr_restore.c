@@ -71,60 +71,6 @@ static int read_headers(struct xc_sr_context *ctx)
     return 0;
 }
 
-/*
- * Given a set of pfns, obtain memory from Xen to fill the physmap for the
- * unpopulated subset.  If types is NULL, no page type checking is performed
- * and all unpopulated pfns are populated.
- */
-int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
-                  const xen_pfn_t *original_pfns, const uint32_t *types)
-{
-    xc_interface *xch = ctx->xch;
-    unsigned int i, nr_pfns = 0;
-    int rc = -1;
-
-    for ( i = 0; i < count; ++i )
-    {
-        if ( (!types || page_type_to_populate(types[i])) &&
-             !pfn_is_populated(ctx, original_pfns[i]) )
-        {
-            rc = pfn_set_populated(ctx, original_pfns[i]);
-            if ( rc )
-                goto err;
-            ctx->restore.pp_pfns[nr_pfns] = ctx->restore.pp_mfns[nr_pfns] = original_pfns[i];
-            ++nr_pfns;
-        }
-    }
-
-    if ( nr_pfns )
-    {
-        rc = xc_domain_populate_physmap_exact(
-            xch, ctx->domid, nr_pfns, 0, 0, ctx->restore.pp_mfns);
-        if ( rc )
-        {
-            PERROR("Failed to populate physmap");
-            goto err;
-        }
-
-        for ( i = 0; i < nr_pfns; ++i )
-        {
-            if ( ctx->restore.pp_mfns[i] == INVALID_MFN )
-            {
-                ERROR("Populate physmap failed for pfn %u", i);
-                rc = -1;
-                goto err;
-            }
-
-            ctx->restore.ops.set_gfn(ctx, ctx->restore.pp_pfns[i], ctx->restore.pp_mfns[i]);
-        }
-    }
-
-    rc = 0;
-
- err:
-    return rc;
-}
-
 static int handle_static_data_end_v2(struct xc_sr_context *ctx)
 {
     int rc = 0;
@@ -259,7 +205,8 @@ static int map_guest_pages(struct xc_sr_context *ctx,
     uint32_t i, p;
     int rc;
 
-    rc = populate_pfns(ctx, pages->count, ctx->restore.pfns, ctx->restore.types);
+    rc = ctx->restore.ops.populate_pfns(ctx, pages->count, ctx->restore.pfns,
+                                        ctx->restore.types);
     if ( rc )
     {
         ERROR("Failed to populate pfns for batch of %u pages", pages->count);
@@ -1074,6 +1021,9 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
         return -1;
     }
 
+    /* See xc_domain_getinfo */
+    ctx.restore.max_pages = ctx.dominfo.max_pages;
+    ctx.restore.tot_pages = ctx.dominfo.tot_pages;
     ctx.restore.p2m_size = nr_pfns;
     ctx.restore.ops = hvm ? restore_ops_x86_hvm : restore_ops_x86_pv;
 

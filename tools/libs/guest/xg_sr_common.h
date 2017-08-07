@@ -208,6 +208,16 @@ struct xc_sr_restore_ops
     int (*setup)(struct xc_sr_context *ctx);
 
     /**
+     * Populate PFNs
+     *
+     * Given a set of pfns, obtain memory from Xen to fill the physmap for the
+     * unpopulated subset.
+     */
+    int (*populate_pfns)(struct xc_sr_context *ctx, unsigned count,
+                         const xen_pfn_t *original_pfns, const uint32_t *types);
+
+
+    /**
      * Process an individual record from the stream.  The caller shall take
      * care of processing common records (e.g. END, PAGE_DATA).
      *
@@ -338,6 +348,8 @@ struct xc_sr_context
 
             int send_back_fd;
             unsigned long p2m_size;
+            unsigned long max_pages;
+            unsigned long tot_pages;
             xc_hypercall_buffer_t dirty_bitmap_hbuf;
 
             /* From Image Header. */
@@ -471,6 +483,14 @@ struct xc_sr_context
                     {
                         /* HVM context blob. */
                         struct xc_sr_blob context;
+
+                        /* Bitmap of currently allocated PFNs during restore. */
+                        struct sr_bitmap attempted_1g;
+                        struct sr_bitmap attempted_2m;
+                        struct sr_bitmap allocated_pfns;
+                        xen_pfn_t prev_populated_pfn;
+                        xen_pfn_t iteration_tracker_pfn;
+                        unsigned long iteration;
                     } restore;
                 };
             } hvm;
@@ -534,14 +554,6 @@ static inline int write_record(struct xc_sr_context *ctx,
 int read_record_header(struct xc_sr_context *ctx, int fd, struct xc_sr_rhdr *rhdr);
 int read_record_data(struct xc_sr_context *ctx, int fd, struct xc_sr_rhdr *rhdr,
                      struct xc_sr_record *rec);
-
-/*
- * This would ideally be private in restore.c, but is needed by
- * x86_pv_localise_page() if we receive pagetables frames ahead of the
- * contents of the frames they point at.
- */
-int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
-                  const xen_pfn_t *original_pfns, const uint32_t *types);
 
 /* Handle a STATIC_DATA_END record. */
 int handle_static_data_end(struct xc_sr_context *ctx);
