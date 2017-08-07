@@ -960,6 +960,64 @@ static void x86_pv_set_gfn(struct xc_sr_context *ctx, xen_pfn_t pfn,
 }
 
 /*
+ * Given a set of pfns, obtain memory from Xen to fill the physmap for the
+ * unpopulated subset.  If types is NULL, no page type checking is performed
+ * and all unpopulated pfns are populated.
+ */
+static int x86_pv_populate_pfns(struct xc_sr_context *ctx, unsigned count,
+                                const xen_pfn_t *original_pfns,
+                                const uint32_t *types)
+{
+    xc_interface *xch = ctx->xch;
+    xen_pfn_t *mfns = ctx->restore.pp_mfns,
+        *pfns = ctx->restore.pp_pfns;
+    unsigned int i, nr_pfns = 0;
+    int rc = -1;
+
+    for ( i = 0; i < count; ++i )
+    {
+        if ( (!types ||
+              (types && page_type_has_stream_data(types[i]) == true)) &&
+             !pfn_is_populated(ctx, original_pfns[i]) )
+        {
+            rc = pfn_set_populated(ctx, original_pfns[i]);
+            if ( rc )
+                goto err;
+            pfns[nr_pfns] = mfns[nr_pfns] = original_pfns[i];
+            ++nr_pfns;
+        }
+    }
+
+    if ( nr_pfns )
+    {
+        rc = xc_domain_populate_physmap_exact(
+            xch, ctx->domid, nr_pfns, 0, 0, mfns);
+        if ( rc )
+        {
+            PERROR("Failed to populate physmap");
+            goto err;
+        }
+
+        for ( i = 0; i < nr_pfns; ++i )
+        {
+            if ( mfns[i] == INVALID_MFN )
+            {
+                ERROR("Populate physmap failed for pfn %u", i);
+                rc = -1;
+                goto err;
+            }
+
+            ctx->restore.ops.set_gfn(ctx, pfns[i], mfns[i]);
+        }
+    }
+
+    rc = 0;
+
+ err:
+    return rc;
+}
+
+/*
  * restore_ops function.  Convert pfns back to mfns in pagetables.  Possibly
  * needs to populate new frames if a PTE is found referring to a frame which
  * hasn't yet been seen from PAGE_DATA records.
@@ -1003,7 +1061,7 @@ static int x86_pv_localise_page(struct xc_sr_context *ctx,
         }
     }
 
-    if ( to_populate && populate_pfns(ctx, to_populate, pfns, NULL) )
+    if ( to_populate && x86_pv_populate_pfns(ctx, to_populate, pfns, NULL) )
         return -1;
 
     for ( i = 0; i < (PAGE_SIZE / sizeof(uint64_t)); ++i )
@@ -1200,6 +1258,7 @@ struct xc_sr_restore_ops restore_ops_x86_pv =
     .set_gfn         = x86_pv_set_gfn,
     .localise_page   = x86_pv_localise_page,
     .setup           = x86_pv_setup,
+    .populate_pfns   = x86_pv_populate_pfns,
     .process_record  = x86_pv_process_record,
     .static_data_complete = x86_static_data_complete,
     .stream_complete = x86_pv_stream_complete,
