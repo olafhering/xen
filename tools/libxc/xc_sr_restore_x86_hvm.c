@@ -135,6 +135,8 @@ static int x86_hvm_localise_page(struct xc_sr_context *ctx,
 static int x86_hvm_setup(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
+    struct xc_sr_bitmap *bm;
+    unsigned long bits;
 
     if ( ctx->restore.guest_type != DHDR_TYPE_X86_HVM )
     {
@@ -149,7 +151,30 @@ static int x86_hvm_setup(struct xc_sr_context *ctx)
         return -1;
     }
 
+    bm = &ctx->x86_hvm.restore.attempted_1g;
+    bits = (ctx->restore.p2m_size >> SUPERPAGE_1GB_SHIFT) + 1;
+    if ( xc_sr_bitmap_resize(bm, bits) == false )
+        goto out;
+
+    bm = &ctx->x86_hvm.restore.attempted_2m;
+    bits = (ctx->restore.p2m_size >> SUPERPAGE_2MB_SHIFT) + 1;
+    if ( xc_sr_bitmap_resize(bm, bits) == false )
+        goto out;
+
+    bm = &ctx->x86_hvm.restore.allocated_pfns;
+    bits = ctx->restore.p2m_size + 1;
+    if ( xc_sr_bitmap_resize(bm, bits) == false )
+        goto out;
+
+    /* No superpage in 1st 2MB due to VGA hole */
+    xc_sr_set_bit(0, &ctx->x86_hvm.restore.attempted_1g);
+    xc_sr_set_bit(0, &ctx->x86_hvm.restore.attempted_2m);
+
     return 0;
+
+out:
+    ERROR("Unable to allocate memory for pfn bitmaps");
+    return -1;
 }
 
 /*
@@ -224,9 +249,259 @@ static int x86_hvm_stream_complete(struct xc_sr_context *ctx)
 static int x86_hvm_cleanup(struct xc_sr_context *ctx)
 {
     free(ctx->x86_hvm.restore.context);
+    xc_sr_bitmap_free(&ctx->x86_hvm.restore.attempted_1g);
+    xc_sr_bitmap_free(&ctx->x86_hvm.restore.attempted_2m);
+    xc_sr_bitmap_free(&ctx->x86_hvm.restore.allocated_pfns);
 
     return 0;
 }
+
+/*
+ * Set a pfn as allocated, expanding the tracking structures if needed.
+ */
+static int pfn_set_allocated(struct xc_sr_context *ctx, xen_pfn_t pfn)
+{
+    xc_interface *xch = ctx->xch;
+
+    if ( !xc_sr_set_bit(pfn, &ctx->x86_hvm.restore.allocated_pfns) )
+    {
+        ERROR("Failed to realloc allocated_pfns bitmap");
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
+}
+
+struct x86_hvm_sp {
+    xen_pfn_t pfn;
+    xen_pfn_t base_pfn;
+    unsigned long index;
+    unsigned long count;
+};
+
+/*
+ * Try to allocate a 1GB page for this pfn, but avoid Over-allocation.
+ * If this succeeds, mark the range of 2MB pages as busy.
+ */
+static bool x86_hvm_alloc_1g(struct xc_sr_context *ctx, struct x86_hvm_sp *sp)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_bitmap *bm;
+    unsigned int order, shift;
+    int i, done;
+    xen_pfn_t extent;
+
+    bm = &ctx->x86_hvm.restore.attempted_1g;
+
+    /* Only one attempt to avoid overlapping allocation */
+    if ( xc_sr_test_and_set_bit(sp->index, bm) )
+        return false;
+
+    order = SUPERPAGE_1GB_SHIFT;
+    sp->count = 1ULL << order;
+
+    /* Allocate only if there is room for another superpage */
+    if ( ctx->restore.tot_pages + sp->count > ctx->restore.max_pages )
+        return false;
+
+    extent = sp->base_pfn = (sp->pfn >> order) << order;
+    done = xc_domain_populate_physmap(xch, ctx->domid, 1, order, 0, &extent);
+    if ( done < 0 ) {
+        PERROR("populate_physmap failed.");
+        return false;
+    }
+    if ( done == 0 )
+        return false;
+
+    DPRINTF("1G base_pfn %" PRI_xen_pfn "\n", sp->base_pfn);
+
+    /* Mark all 2MB pages as done to avoid overlapping allocation */
+    bm = &ctx->x86_hvm.restore.attempted_2m;
+    shift = SUPERPAGE_1GB_SHIFT - SUPERPAGE_2MB_SHIFT;
+    for ( i = 0; i < (sp->count >> shift); i++ )
+        xc_sr_set_bit((sp->base_pfn >> SUPERPAGE_2MB_SHIFT) + i, bm);
+
+    return true;
+}
+
+/* Allocate a 2MB page if x86_hvm_alloc_1g failed, avoid Over-allocation. */
+static bool x86_hvm_alloc_2m(struct xc_sr_context *ctx, struct x86_hvm_sp *sp)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_bitmap *bm;
+    unsigned int order;
+    int done;
+    xen_pfn_t extent;
+
+    bm = &ctx->x86_hvm.restore.attempted_2m;
+
+    /* Only one attempt to avoid overlapping allocation */
+    if ( xc_sr_test_and_set_bit(sp->index, bm) )
+        return false;
+
+    order = SUPERPAGE_2MB_SHIFT;
+    sp->count = 1ULL << order;
+
+    /* Allocate only if there is room for another superpage */
+    if ( ctx->restore.tot_pages + sp->count > ctx->restore.max_pages )
+        return false;
+
+    extent = sp->base_pfn = (sp->pfn >> order) << order;
+    done = xc_domain_populate_physmap(xch, ctx->domid, 1, order, 0, &extent);
+    if ( done < 0 ) {
+        PERROR("populate_physmap failed.");
+        return false;
+    }
+    if ( done == 0 )
+        return false;
+
+    DPRINTF("2M base_pfn %" PRI_xen_pfn "\n", sp->base_pfn);
+    return true;
+}
+
+/* Allocate a single page if x86_hvm_alloc_2m failed. */
+static bool x86_hvm_alloc_4k(struct xc_sr_context *ctx, struct x86_hvm_sp *sp)
+{
+    xc_interface *xch = ctx->xch;
+    unsigned int order;
+    int done;
+    xen_pfn_t extent;
+
+    order = 0;
+    sp->count = 1ULL << order;
+
+    /* Allocate only if there is room for another page */
+    if ( ctx->restore.tot_pages + sp->count > ctx->restore.max_pages )
+        return false;
+
+    extent = sp->base_pfn = (sp->pfn >> order) << order;
+    done = xc_domain_populate_physmap(xch, ctx->domid, 1, order, 0, &extent);
+    if ( done < 0 ) {
+        PERROR("populate_physmap failed.");
+        return false;
+    }
+    if ( done == 0 )
+        return false;
+
+    DPRINTF("4K base_pfn %" PRI_xen_pfn "\n", sp->base_pfn);
+    return true;
+}
+/*
+ * Attempt to allocate a superpage where the pfn resides.
+ */
+static int x86_hvm_allocate_pfn(struct xc_sr_context *ctx, xen_pfn_t pfn)
+{
+    xc_interface *xch = ctx->xch;
+    bool success;
+    int rc = -1;
+    unsigned long idx_1g, idx_2m;
+    struct x86_hvm_sp sp = {
+        .pfn = pfn
+    };
+
+    if ( xc_sr_test_bit(pfn, &ctx->x86_hvm.restore.allocated_pfns) )
+        return 0;
+
+    idx_1g = pfn >> SUPERPAGE_1GB_SHIFT;
+    idx_2m = pfn >> SUPERPAGE_2MB_SHIFT;
+    if ( !xc_sr_bitmap_resize(&ctx->x86_hvm.restore.attempted_1g, idx_1g) )
+    {
+        PERROR("Failed to realloc attempted_1g");
+        return -1;
+    }
+    if ( !xc_sr_bitmap_resize(&ctx->x86_hvm.restore.attempted_2m, idx_2m) )
+    {
+        PERROR("Failed to realloc attempted_2m");
+        return -1;
+    }
+
+    sp.index = idx_1g;
+    success = x86_hvm_alloc_1g(ctx, &sp);
+
+    if ( success == false ) {
+        sp.index = idx_2m;
+        success = x86_hvm_alloc_2m(ctx, &sp);
+    }
+
+    if ( success == false ) {
+        sp.index = 0;
+        success = x86_hvm_alloc_4k(ctx, &sp);
+    }
+
+    if ( success == true ) {
+        do {
+            sp.count--;
+            ctx->restore.tot_pages++;
+            rc = pfn_set_allocated(ctx, sp.base_pfn + sp.count);
+            if ( rc )
+                break;
+        } while ( sp.count );
+    }
+    return rc;
+}
+
+static int x86_hvm_populate_pfns(struct xc_sr_context *ctx, unsigned count,
+                                 const xen_pfn_t *original_pfns,
+                                 const uint32_t *types)
+{
+    xc_interface *xch = ctx->xch;
+    xen_pfn_t min_pfn = original_pfns[0], max_pfn = original_pfns[0];
+    unsigned i;
+    int rc = -1;
+
+    for ( i = 0; i < count; ++i )
+    {
+        if ( original_pfns[i] < min_pfn )
+            min_pfn = original_pfns[i];
+        if ( original_pfns[i] > max_pfn )
+            max_pfn = original_pfns[i];
+        if ( (types[i] != XEN_DOMCTL_PFINFO_XTAB &&
+              types[i] != XEN_DOMCTL_PFINFO_BROKEN) &&
+             !pfn_is_populated(ctx, original_pfns[i]) )
+        {
+            rc = x86_hvm_allocate_pfn(ctx, original_pfns[i]);
+            if ( rc )
+                goto err;
+            rc = pfn_set_populated(ctx, original_pfns[i]);
+            if ( rc )
+                goto err;
+        }
+    }
+
+    /* Cover the gap between this and the previous batch */
+    if ( ctx->x86_hvm.restore.min_pfn < min_pfn )
+        min_pfn = ctx->x86_hvm.restore.min_pfn;
+
+    while ( min_pfn < max_pfn )
+    {
+        struct xc_sr_bitmap *bm;
+        bm = &ctx->x86_hvm.restore.allocated_pfns;
+        if ( !xc_sr_bitmap_resize(bm, min_pfn) )
+        {
+            PERROR("Failed to realloc allocated_pfns %" PRI_xen_pfn, min_pfn);
+            goto err;
+        }
+        if ( !pfn_is_populated(ctx, min_pfn) &&
+            xc_sr_test_and_clear_bit(min_pfn, bm) ) {
+            xen_pfn_t pfn = min_pfn;
+            rc = xc_domain_decrease_reservation_exact(xch, ctx->domid, 1, 0, &pfn);
+            if ( rc )
+            {
+                PERROR("Failed to release pfn %" PRI_xen_pfn, min_pfn);
+                goto err;
+            }
+            ctx->restore.tot_pages--;
+        }
+        min_pfn++;
+    }
+    ctx->x86_hvm.restore.min_pfn = min_pfn;
+
+    rc = 0;
+
+ err:
+    return rc;
+}
+
 
 struct xc_sr_restore_ops restore_ops_x86_hvm =
 {
@@ -236,6 +511,7 @@ struct xc_sr_restore_ops restore_ops_x86_hvm =
     .set_page_type   = x86_hvm_set_page_type,
     .localise_page   = x86_hvm_localise_page,
     .setup           = x86_hvm_setup,
+    .populate_pfns   = x86_hvm_populate_pfns,
     .process_record  = x86_hvm_process_record,
     .stream_complete = x86_hvm_stream_complete,
     .cleanup         = x86_hvm_cleanup,
