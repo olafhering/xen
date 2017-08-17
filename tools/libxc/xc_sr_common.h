@@ -140,6 +140,16 @@ struct xc_sr_restore_ops
     int (*setup)(struct xc_sr_context *ctx);
 
     /**
+     * Populate PFNs
+     *
+     * Given a set of pfns, obtain memory from Xen to fill the physmap for the
+     * unpopulated subset.
+     */
+    int (*populate_pfns)(struct xc_sr_context *ctx, unsigned count,
+                         const xen_pfn_t *original_pfns, const uint32_t *types);
+
+
+    /**
      * Process an individual record from the stream.  The caller shall take
      * care of processing common records (e.g. END, PAGE_DATA).
      *
@@ -336,6 +346,11 @@ struct xc_sr_context
                     /* HVM context blob. */
                     void *context;
                     size_t contextsz;
+
+                    /* Bitmap of currently allocated PFNs during restore. */
+                    struct xc_sr_bitmap attempted_1g;
+                    struct xc_sr_bitmap attempted_2m;
+                    struct xc_sr_bitmap allocated_pfns;
                 } restore;
             };
         } x86_hvm;

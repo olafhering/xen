@@ -69,74 +69,6 @@ static int read_headers(struct xc_sr_context *ctx)
 }
 
 /*
- * Given a set of pfns, obtain memory from Xen to fill the physmap for the
- * unpopulated subset.  If types is NULL, no page type checking is performed
- * and all unpopulated pfns are populated.
- */
-int populate_pfns(struct xc_sr_context *ctx, unsigned count,
-                  const xen_pfn_t *original_pfns, const uint32_t *types)
-{
-    xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = malloc(count * sizeof(*mfns)),
-        *pfns = malloc(count * sizeof(*pfns));
-    unsigned i, nr_pfns = 0;
-    int rc = -1;
-
-    if ( !mfns || !pfns )
-    {
-        ERROR("Failed to allocate %zu bytes for populating the physmap",
-              2 * count * sizeof(*mfns));
-        goto err;
-    }
-
-    for ( i = 0; i < count; ++i )
-    {
-        if ( (!types || (types &&
-                         (types[i] != XEN_DOMCTL_PFINFO_XTAB &&
-                          types[i] != XEN_DOMCTL_PFINFO_BROKEN))) &&
-             !pfn_is_populated(ctx, original_pfns[i]) )
-        {
-            rc = pfn_set_populated(ctx, original_pfns[i]);
-            if ( rc )
-                goto err;
-            pfns[nr_pfns] = mfns[nr_pfns] = original_pfns[i];
-            ++nr_pfns;
-        }
-    }
-
-    if ( nr_pfns )
-    {
-        rc = xc_domain_populate_physmap_exact(
-            xch, ctx->domid, nr_pfns, 0, 0, mfns);
-        if ( rc )
-        {
-            PERROR("Failed to populate physmap");
-            goto err;
-        }
-
-        for ( i = 0; i < nr_pfns; ++i )
-        {
-            if ( mfns[i] == INVALID_MFN )
-            {
-                ERROR("Populate physmap failed for pfn %u", i);
-                rc = -1;
-                goto err;
-            }
-
-            ctx->restore.ops.set_gfn(ctx, pfns[i], mfns[i]);
-        }
-    }
-
-    rc = 0;
-
- err:
-    free(pfns);
-    free(mfns);
-
-    return rc;
-}
-
-/*
  * Given a list of pfns, their types, and a block of page data from the
  * stream, populate and record their types, map the relevant subset and copy
  * the data into the guest.
@@ -161,7 +93,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         goto err;
     }
 
-    rc = populate_pfns(ctx, count, pfns, types);
+    rc = ctx->restore.ops.populate_pfns(ctx, count, pfns, types);
     if ( rc )
     {
         ERROR("Failed to populate pfns for batch of %u pages", count);
