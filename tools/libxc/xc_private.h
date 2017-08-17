@@ -66,6 +66,11 @@ struct iovec {
 #define DECLARE_FLASK_OP struct xen_flask_op op
 #define DECLARE_PLATFORM_OP struct xen_platform_op platform_op
 
+#define SUPERPAGE_2MB_SHIFT   9
+#define SUPERPAGE_2MB_NR_PFNS (1UL << SUPERPAGE_2MB_SHIFT)
+#define SUPERPAGE_1GB_SHIFT   18
+#define SUPERPAGE_1GB_NR_PFNS (1UL << SUPERPAGE_1GB_SHIFT)
+
 #undef PAGE_SHIFT
 #undef PAGE_SIZE
 #undef PAGE_MASK
