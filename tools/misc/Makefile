@@ -36,6 +36,7 @@ INSTALL_SBIN += $(INSTALL_SBIN-y)
 
 # Everything to be installed in a private bin/
 INSTALL_PRIVBIN                += xenpvnetboot
+INSTALL_PRIVBIN                += xen-vtsc
 
 # Everything to be installed
 TARGETS_ALL := $(INSTALL_BIN) $(INSTALL_SBIN) $(INSTALL_PRIVBIN)
@@ -110,6 +111,9 @@ xen-livepatch: xen-livepatch.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
 
 xen-diag: xen-diag.o
+	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
+
+xen-vtsc: xen-vtsc.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
 
 xen-lowmemd: xen-lowmemd.o

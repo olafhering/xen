@@ -1355,11 +1355,16 @@ int xc_domain_set_time_offset(xc_interface *xch,
                               uint32_t domid,
                               int32_t time_offset_seconds);
 
+int xc_domain_set_vtsc_khz_tolerance(xc_interface *xch,
+                                     uint32_t domid,
+                                     uint16_t vtsc_khz_tolerance);
+
 int xc_domain_set_tsc_info(xc_interface *xch,
                            uint32_t domid,
                            uint32_t tsc_mode,
                            uint64_t elapsed_nsec,
                            uint32_t gtsc_khz,
+                           uint16_t vtsc_khz_tolerance,
                            uint32_t incarnation);
 
 int xc_domain_get_tsc_info(xc_interface *xch,
@@ -1367,6 +1372,7 @@ int xc_domain_get_tsc_info(xc_interface *xch,
                            uint32_t *tsc_mode,
                            uint64_t *elapsed_nsec,
                            uint32_t *gtsc_khz,
+                           uint16_t *vtsc_khz_tolerance,
                            uint32_t *incarnation);
 
 int xc_domain_disable_migrate(xc_interface *xch, uint32_t domid);

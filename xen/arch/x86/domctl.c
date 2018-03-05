@@ -939,6 +939,7 @@ long arch_do_domctl(
             tsc_get_info(d, &domctl->u.tsc_info.tsc_mode,
                          &domctl->u.tsc_info.elapsed_nsec,
                          &domctl->u.tsc_info.gtsc_khz,
+                         &domctl->u.tsc_info.vtsc_khz_tolerance,
                          &domctl->u.tsc_info.incarnation);
             domain_unpause(d);
             copyback = true;
@@ -954,8 +955,18 @@ long arch_do_domctl(
             tsc_set_info(d, domctl->u.tsc_info.tsc_mode,
                          domctl->u.tsc_info.elapsed_nsec,
                          domctl->u.tsc_info.gtsc_khz,
+                         domctl->u.tsc_info.vtsc_khz_tolerance,
                          domctl->u.tsc_info.incarnation);
             domain_unpause(d);
+        }
+        break;
+
+    case XEN_DOMCTL_set_vtsc_khz_tolerance:
+        if ( d == currd )
+            ret = -EINVAL;
+        else
+        {
+            d->arch.vtsc_khz_tolerance = domctl->u.tsc_info.vtsc_khz_tolerance;
         }
         break;
 

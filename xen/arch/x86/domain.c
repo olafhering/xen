@@ -558,7 +558,7 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     }
 
     /* initialize default tsc behavior in case tools don't */
-    tsc_set_info(d, TSC_MODE_DEFAULT, 0UL, 0, 0);
+    tsc_set_info(d, TSC_MODE_DEFAULT, 0UL, 0, 0, 0);
     spin_lock_init(&d->arch.vtsc_lock);
 
     /* PV/PVH guests get an emulated PIT too for video BIOSes to use. */

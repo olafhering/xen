@@ -697,12 +697,14 @@ struct xen_domctl_disable_migrate {
 
 /* XEN_DOMCTL_gettscinfo */
 /* XEN_DOMCTL_settscinfo */
+/* XEN_DOMCTL_set_vtsc_khz_tolerance */
 struct xen_domctl_tsc_info {
     /* IN/OUT */
     uint32_t tsc_mode;
     uint32_t gtsc_khz;
     uint32_t incarnation;
-    uint32_t pad;
+    uint16_t vtsc_khz_tolerance;
+    uint16_t pad;
     uint64_aligned_t elapsed_nsec;
 };
 
@@ -1172,6 +1174,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_soft_reset                    79
 #define XEN_DOMCTL_set_gnttab_limits             80
 #define XEN_DOMCTL_vuart_op                      81
+#define XEN_DOMCTL_set_vtsc_khz_tolerance        82
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002

@@ -221,6 +221,7 @@ tools/misc/xen-detect
 tools/misc/xen-diag
 tools/misc/xen-tmem-list-parse
 tools/misc/xen-livepatch
+tools/misc/xen-vtsc
 tools/misc/xenperf
 tools/misc/xenpm
 tools/misc/xen-hvmctx

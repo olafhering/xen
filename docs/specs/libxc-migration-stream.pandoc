@@ -3,7 +3,7 @@
   Andrew Cooper <<andrew.cooper3@citrix.com>>
   Wen Congyang <<wency@cn.fujitsu.com>>
   Yang Hongyang <<hongyang.yang@easystack.cn>>
-% Revision 2
+% Revision 3
 
 Introduction
 ============
@@ -472,7 +472,7 @@ XEN\_DOMCTL\_{get,set}tscinfo hypercall sub-ops.
     +------------------------+------------------------+
     | nsec                                            |
     +------------------------+------------------------+
-    | incarnation            | (reserved)             |
+    | incarnation            | tolerance | (reserved) |
     +------------------------+------------------------+
 
 --------------------------------------------------------------------
@@ -485,6 +485,8 @@ khz              TSC frequency, in kHz.
 nsec             Elapsed time, in nanoseconds.
 
 incarnation      Incarnation.
+
+vtsc_tolerance   Amount of Jitter the domU can handle after migration.
 --------------------------------------------------------------------
 
 \clearpage

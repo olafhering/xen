@@ -369,6 +369,7 @@ struct arch_domain
     /* TSC management (emulation, pv, scaling, stats) */
     int tsc_mode;            /* see include/asm-x86/time.h */
     bool_t vtsc;             /* tsc is emulated (may change after migrate) */
+    uint16_t vtsc_khz_tolerance; /* domU handles that much jitter in khz value */
     s_time_t vtsc_last;      /* previous TSC value (guarantee monotonicity) */
     spinlock_t vtsc_lock;
     uint64_t vtsc_offset;    /* adjustment for save/restore/migrate */
