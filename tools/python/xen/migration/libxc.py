@@ -65,6 +65,7 @@ REC_TYPE_x86_pv_vcpu_msrs           = 0x0000000c
 REC_TYPE_verify                     = 0x0000000d
 REC_TYPE_checkpoint                 = 0x0000000e
 REC_TYPE_checkpoint_dirty_pfn_list  = 0x0000000f
+REC_TYPE_vtsc_tolerance_khz         = 0x00000010
 
 rec_type_to_str = {
     REC_TYPE_end                        : "End",
@@ -83,6 +84,7 @@ rec_type_to_str = {
     REC_TYPE_verify                     : "Verify",
     REC_TYPE_checkpoint                 : "Checkpoint",
     REC_TYPE_checkpoint_dirty_pfn_list  : "Checkpoint dirty pfn list"
+    REC_TYPE_vtsc_tolerance_khz         : "vTSC tolerance"
 }
 
 # page_data
@@ -119,6 +121,9 @@ TSC_INFO_FORMAT           = "IIQII"
 # hvm_params
 HVM_PARAMS_ENTRY_FORMAT   = "QQ"
 HVM_PARAMS_FORMAT         = "II"
+
+# vtsc_tolerance_khz
+VTSC_TOLERANCE_KHZ_FORMAT = "II"
 
 class VerifyLibxc(VerifyBase):
     """ Verify a Libxc v2 stream """
@@ -424,6 +429,23 @@ class VerifyLibxc(VerifyBase):
         """ checkpoint dirty pfn list """
         raise RecordError("Found checkpoint dirty pfn list record in stream")
 
+    def verify_record_vtsc_tolerance_khz(self, content):
+        """ tsc info record """
+
+        sz = calcsize(VTSC_TOLERANCE_KHZ_FORMAT)
+
+        if len(content) != sz:
+            raise RecordError("Length should be %u bytes" % (sz, ))
+
+        tolerance, res1 = unpack(VTSC_TOLERANCE_KHZ_FORMAT, content)
+
+        if res1 != 0:
+            raise StreamError("Reserved bits set in VTSC_TOLERANCE_KHZ: 0x%08x"
+                              % (res1, ))
+
+        self.info("  Tolerance %u" % (tolerance))
+
+
 
 record_verifiers = {
     REC_TYPE_end:
@@ -466,4 +488,6 @@ record_verifiers = {
         VerifyLibxc.verify_record_checkpoint,
     REC_TYPE_checkpoint_dirty_pfn_list:
         VerifyLibxc.verify_record_checkpoint_dirty_pfn_list,
+    REC_TYPE_vtsc_tolerance_khz:
+        VerifyLibxc.verify_record_vtsc_tolerance_khz,
     }

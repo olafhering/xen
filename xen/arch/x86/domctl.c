@@ -959,6 +959,14 @@ long arch_do_domctl(
         }
         break;
 
+    case XEN_DOMCTL_get_vtsc_tolerance_khz:
+        domctl->u.vtsc_tolerance_khz.tolerance = d->arch.vtsc_tolerance_khz;
+        break;
+
+    case XEN_DOMCTL_set_vtsc_tolerance_khz:
+        d->arch.vtsc_tolerance_khz = domctl->u.vtsc_tolerance_khz.tolerance;
+        break;
+
     case XEN_DOMCTL_suppress_spurious_page_faults:
         d->arch.suppress_spurious_page_faults = 1;
         break;

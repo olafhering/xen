@@ -26,6 +26,7 @@ class TestLibxc(unittest.TestCase):
                          (libxc.TSC_INFO_FORMAT, 24),
                          (libxc.HVM_PARAMS_ENTRY_FORMAT, 16),
                          (libxc.HVM_PARAMS_FORMAT, 8),
+                         (libxc.VTSC_TOLERANCE_KHZ_FORMAT, 24),
                          ):
             self.assertEqual(calcsize(fmt), sz)
 

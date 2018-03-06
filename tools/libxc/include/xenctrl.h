@@ -1355,6 +1355,14 @@ int xc_domain_set_time_offset(xc_interface *xch,
                               uint32_t domid,
                               int32_t time_offset_seconds);
 
+int xc_domain_set_vtsc_tolerance_khz(xc_interface *xch,
+                                     uint32_t domid,
+                                     uint32_t vtsc_tolerance_khz);
+
+int xc_domain_get_vtsc_tolerance_khz(xc_interface *xch,
+                                     uint32_t domid,
+                                     uint32_t *vtsc_tolerance_khz);
+
 int xc_domain_set_tsc_info(xc_interface *xch,
                            uint32_t domid,
                            uint32_t tsc_mode,

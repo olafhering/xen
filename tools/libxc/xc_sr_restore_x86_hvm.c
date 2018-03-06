@@ -178,6 +178,9 @@ static int x86_hvm_process_record(struct xc_sr_context *ctx,
     case REC_TYPE_HVM_PARAMS:
         return handle_hvm_params(ctx, rec);
 
+    case REC_TYPE_VTSC_TOLERANCE_KHZ:
+        return handle_vtsc_tolerance_khz(ctx, rec);
+
     default:
         return RECORD_NOT_PROCESSED;
     }

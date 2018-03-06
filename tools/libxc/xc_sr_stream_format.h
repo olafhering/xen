@@ -76,6 +76,7 @@ struct xc_sr_rhdr
 #define REC_TYPE_VERIFY                     0x0000000dU
 #define REC_TYPE_CHECKPOINT                 0x0000000eU
 #define REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST  0x0000000fU
+#define REC_TYPE_VTSC_TOLERANCE_KHZ         0x00000010U
 
 #define REC_TYPE_OPTIONAL             0x80000000U
 
@@ -130,6 +131,14 @@ struct xc_sr_rec_hvm_params_entry
     uint64_t index;
     uint64_t value;
 };
+
+/* VTSC_TOLERANCE_KHZ */
+struct xc_sr_rec_vtsc_tolerance_khz
+{
+    uint32_t tolerance;
+    uint32_t _res1;
+};
+
 
 struct xc_sr_rec_hvm_params
 {

@@ -847,6 +847,31 @@ int xc_domain_disable_migrate(xc_interface *xch, uint32_t domid)
     return do_domctl(xch, &domctl);
 }
 
+int xc_domain_set_vtsc_tolerance_khz(xc_interface *xch,
+                                     uint32_t domid,
+                                     uint32_t vtsc_tolerance_khz)
+{
+    DECLARE_DOMCTL;
+    domctl.cmd = XEN_DOMCTL_set_vtsc_tolerance_khz;
+    domctl.domain = domid;
+    domctl.u.vtsc_tolerance_khz.tolerance = vtsc_tolerance_khz;
+    return do_domctl(xch, &domctl);
+}
+
+int xc_domain_get_vtsc_tolerance_khz(xc_interface *xch,
+                                     uint32_t domid,
+                                     uint32_t *vtsc_tolerance_khz)
+{
+    int rc;
+    DECLARE_DOMCTL;
+    domctl.cmd = XEN_DOMCTL_get_vtsc_tolerance_khz;
+    domctl.domain = domid;
+    rc = do_domctl(xch, &domctl);
+    if ( rc == 0 )
+        *vtsc_tolerance_khz = domctl.u.vtsc_tolerance_khz.tolerance;
+    return rc;
+}
+
 int xc_domain_set_tsc_info(xc_interface *xch,
                            uint32_t domid,
                            uint32_t tsc_mode,

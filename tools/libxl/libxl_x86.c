@@ -317,6 +317,8 @@ int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
     default:
         abort();
     }
+    xc_domain_set_vtsc_tolerance_khz(ctx->xch, domid,
+                                     d_config->b_info.vtsc_tolerance_khz);
     xc_domain_set_tsc_info(ctx->xch, domid, tsc_mode, 0, 0, 0);
     if (libxl_defbool_val(d_config->b_info.disable_migrate))
         xc_domain_disable_migrate(ctx->xch, domid);

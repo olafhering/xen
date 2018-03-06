@@ -3,7 +3,7 @@
   Andrew Cooper <<andrew.cooper3@citrix.com>>
   Wen Congyang <<wency@cn.fujitsu.com>>
   Yang Hongyang <<hongyang.yang@easystack.cn>>
-% Revision 2
+% Revision 3
 
 Introduction
 ============
@@ -231,7 +231,9 @@ type         0x00000000: END
 
              0x0000000F: CHECKPOINT_DIRTY_PFN_LIST (Secondary -> Primary)
 
-             0x00000010 - 0x7FFFFFFF: Reserved for future _mandatory_
+             0x00000010: VTSC_TOLERANCE_KHZ
+
+             0x00000011 - 0x7FFFFFFF: Reserved for future _mandatory_
              records.
 
              0x80000000 - 0xFFFFFFFF: Reserved for future _optional_
@@ -624,6 +626,23 @@ The count of pfns is: record->length/sizeof(uint64_t).
 
 \clearpage
 
+VTSC_TOLERANCE_KHZ
+-------------------------
+
+Domain TSC information, as accessed by the
+XEN\_DOMCTL\_{get,set}\_vtsc\_khz\_tolerance hypercall sub-ops.
+
+     0     1     2     3     4     5     6     7 octet
+    +------------------------+------------------------+
+    | tolerance              | reserved               |
+    +------------------------+------------------------+
+
+Field            Description
+-----------      ---------------------------------------------------
+tolerance        Amount of Jitter the domU can handle after migration.
+
+\clearpage
+
 Layout
 ======
 
@@ -675,9 +694,13 @@ A typical save record for an x86 HVM guest image would look like:
 4. TSC\_INFO
 5. HVM\_PARAMS
 6. HVM\_CONTEXT
+7. VTSC\_TOLERANCE\_KHZ
 
 HVM\_PARAMS must precede HVM\_CONTEXT, as certain parameters can affect
 the validity of architectural state in the context.
+
+VTSC\_TOLERANCE\_KHZ must precede TSC\_INFO because the decision to
+emulate TSC depends on the tolerance value.
 
 
 Legacy Images (x86 only)
