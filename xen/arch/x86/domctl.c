@@ -421,7 +421,7 @@ long arch_do_domctl(
         /* Games to allow this code block to handle a compat guest. */
         void __user *guest_handle = domctl->u.getpageframeinfo3.array.p;
 
-        if ( unlikely(num > 1024) ||
+        if ( unlikely(num > XEN_GETPAGEFRAMEINFO3_MAX_SIZE) ||
              unlikely(num != domctl->u.getpageframeinfo3.num) )
         {
             ret = -E2BIG;

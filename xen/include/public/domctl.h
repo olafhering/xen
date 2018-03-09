@@ -137,6 +137,8 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_getdomaininfo_t);
 #define XEN_DOMCTL_PFINFO_BROKEN  (0xdU<<28) /* broken page */
 #define XEN_DOMCTL_PFINFO_LTAB_MASK (0xfU<<28)
 
+#define XEN_GETPAGEFRAMEINFO3_MAX_SIZE 1024U
+
 /* XEN_DOMCTL_getpageframeinfo3 */
 struct xen_domctl_getpageframeinfo3 {
     /* IN variables. */

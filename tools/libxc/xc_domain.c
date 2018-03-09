@@ -2035,14 +2035,15 @@ int xc_map_domain_meminfo(xc_interface *xch, uint32_t domid,
                                            minfo->guest_width);
 
     /* Retrieve PFN types in batches */
-    for ( i = 0; i < minfo->p2m_size ; i+=1024 )
+    for ( i = 0; i < minfo->p2m_size ; i+=XEN_GETPAGEFRAMEINFO3_MAX_SIZE )
     {
-        int count = ((minfo->p2m_size - i ) > 1024 ) ?
-                        1024: (minfo->p2m_size - i);
+        int count = ((minfo->p2m_size - i ) > XEN_GETPAGEFRAMEINFO3_MAX_SIZE ) ?
+                        XEN_GETPAGEFRAMEINFO3_MAX_SIZE: (minfo->p2m_size - i);
 
         if ( xc_get_pfn_type_batch(xch, domid, count, minfo->pfn_type + i) )
         {
-            PERROR("Could not get %d-eth batch of PFN types", (i+1)/1024);
+            PERROR("Could not get %d-eth batch of PFN types",
+                  (i+1)/XEN_GETPAGEFRAMEINFO3_MAX_SIZE);
             goto failed;
         }
     }
