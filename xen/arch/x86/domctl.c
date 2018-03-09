@@ -415,14 +415,13 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_getpageframeinfo3:
     {
-        unsigned int num = domctl->u.getpageframeinfo3.num;
+        unsigned long num = domctl->u.getpageframeinfo3.num;
         unsigned int width = has_32bit_shinfo(currd) ? 4 : 8;
 
         /* Games to allow this code block to handle a compat guest. */
         void __user *guest_handle = domctl->u.getpageframeinfo3.array.p;
 
-        if ( unlikely(num > XEN_GETPAGEFRAMEINFO3_MAX_SIZE) ||
-             unlikely(num != domctl->u.getpageframeinfo3.num) )
+        if ( unlikely(num > XEN_GETPAGEFRAMEINFO3_MAX_SIZE) )
         {
             ret = -E2BIG;
             break;
