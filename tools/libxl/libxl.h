@@ -348,6 +348,12 @@
 #define LIBXL_HAVE_BUILDINFO_BOOTLOADER_ARGS 1
 
 /*
+ * LIBXL_HAVE_VTSC_TOLERANCE_KHZ indicates that libxl_domain_build_info
+ * has the vtsc_tolerance_khz field.
+ */
+#define LIBXL_HAVE_VTSC_TOLERANCE_KHZ 1
+
+/*
  * libxl ABI compatibility
  *
  * The only guarantee which libxl makes regarding ABI compatibility

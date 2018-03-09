@@ -706,6 +706,13 @@ struct xen_domctl_tsc_info {
     uint64_aligned_t elapsed_nsec;
 };
 
+/* XEN_DOMCTL_get_vtsc_tolerance_khz */
+/* XEN_DOMCTL_set_vtsc_tolerance_khz */
+struct xen_domctl_vtsc_tolerance_khz {
+    /* IN/OUT */
+    uint32_t tolerance;
+};
+
 /* XEN_DOMCTL_gdbsx_guestmemio      guest mem io */
 struct xen_domctl_gdbsx_memio {
     /* IN */
@@ -1172,6 +1179,8 @@ struct xen_domctl {
 #define XEN_DOMCTL_soft_reset                    79
 #define XEN_DOMCTL_set_gnttab_limits             80
 #define XEN_DOMCTL_vuart_op                      81
+#define XEN_DOMCTL_get_vtsc_tolerance_khz        82
+#define XEN_DOMCTL_set_vtsc_tolerance_khz        83
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1199,6 +1208,7 @@ struct xen_domctl {
         struct xen_domctl_settimeoffset     settimeoffset;
         struct xen_domctl_disable_migrate   disable_migrate;
         struct xen_domctl_tsc_info          tsc_info;
+        struct xen_domctl_vtsc_tolerance_khz vtsc_tolerance_khz;
         struct xen_domctl_hvmcontext        hvmcontext;
         struct xen_domctl_hvmcontext_partial hvmcontext_partial;
         struct xen_domctl_address_size      address_size;

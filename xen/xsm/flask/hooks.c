@@ -718,9 +718,11 @@ static int flask_domctl(struct domain *d, int cmd)
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SET_CPUID);
 
     case XEN_DOMCTL_gettscinfo:
+    case XEN_DOMCTL_get_vtsc_tolerance_khz:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__GETTSC);
 
     case XEN_DOMCTL_settscinfo:
+    case XEN_DOMCTL_set_vtsc_tolerance_khz:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SETTSC);
 
     case XEN_DOMCTL_audit_p2m:
