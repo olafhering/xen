@@ -1891,6 +1891,16 @@ determined in a similar way to that of B<default> TSC mode.
 
 Please see B<xen-tscmode(7)> for more information on this option.
 
+=item B<vtsc_tolerance_khz="KHZ">
+
+B<(x86 only, relevant only for tsc_mode=default)>
+When a domU is started, the CPU frequency of the host is used by the domU for
+TSC related time measurement. Once the domU is either migrated or
+saved/restored on another host that CPU frequency has to be emulated to avoid
+timedrift. To avoid the performance penalty of the TSC emulation, allow a
+certain amount of jitter of the measured CPU frequency on the hosts the domU
+is supposed to run on.
+
 =item B<localtime=BOOLEAN>
 
 Set the real time clock to local time or to UTC. False (0) by default,

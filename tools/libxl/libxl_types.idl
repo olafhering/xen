@@ -466,6 +466,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("vcpu_soft_affinity", Array(libxl_bitmap, "num_vcpu_soft_affinity")),
     ("numa_placement",  libxl_defbool),
     ("tsc_mode",        libxl_tsc_mode),
+    ("vtsc_tolerance_khz", uint32),
     ("max_memkb",       MemKB),
     ("target_memkb",    MemKB),
     ("video_memkb",     MemKB),

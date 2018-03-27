@@ -61,10 +61,12 @@ u64 gtime_to_gtsc(struct domain *d, u64 time);
 u64 gtsc_to_gtime(struct domain *d, u64 tsc);
 
 void tsc_set_info(struct domain *d, uint32_t tsc_mode, uint64_t elapsed_nsec,
-                  uint32_t gtsc_khz, uint32_t incarnation);
+                  uint32_t gtsc_khz, uint16_t vtsc_tolerance_khz,
+                  uint32_t incarnation);
    
 void tsc_get_info(struct domain *d, uint32_t *tsc_mode, uint64_t *elapsed_nsec,
-                  uint32_t *gtsc_khz, uint32_t *incarnation);
+                  uint32_t *gtsc_khz, uint16_t *vtsc_tolerance_khz,
+                  uint32_t *incarnation);
    
 
 void force_update_vcpu_system_time(struct vcpu *v);

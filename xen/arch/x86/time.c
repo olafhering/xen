@@ -2064,7 +2064,7 @@ int host_tsc_is_safe(void)
  */
 void tsc_get_info(struct domain *d, uint32_t *tsc_mode,
                   uint64_t *elapsed_nsec, uint32_t *gtsc_khz,
-                  uint32_t *incarnation)
+                  uint16_t *vtsc_tolerance_khz, uint32_t *incarnation)
 {
     bool enable_tsc_scaling = is_hvm_domain(d) &&
                               hvm_tsc_scaling_supported && !d->arch.vtsc;
@@ -2080,6 +2080,7 @@ void tsc_get_info(struct domain *d, uint32_t *tsc_mode,
         *elapsed_nsec = *gtsc_khz = 0;
         break;
     case TSC_MODE_DEFAULT:
+        *vtsc_tolerance_khz = d->arch.vtsc_tolerance_khz;
         if ( d->arch.vtsc )
         {
     case TSC_MODE_ALWAYS_EMULATE:
@@ -2122,7 +2123,8 @@ void tsc_get_info(struct domain *d, uint32_t *tsc_mode,
  */
 void tsc_set_info(struct domain *d,
                   uint32_t tsc_mode, uint64_t elapsed_nsec,
-                  uint32_t gtsc_khz, uint32_t incarnation)
+                  uint32_t gtsc_khz, uint16_t vtsc_tolerance_khz,
+                  uint32_t incarnation)
 {
     ASSERT(!is_system_domain(d));
 
@@ -2134,9 +2136,12 @@ void tsc_set_info(struct domain *d,
 
     switch ( d->arch.tsc_mode = tsc_mode )
     {
+        bool disable_vtsc;
         bool enable_tsc_scaling;
 
     case TSC_MODE_DEFAULT:
+        d->arch.vtsc_tolerance_khz = vtsc_tolerance_khz;
+        /* Fallthrough. */
     case TSC_MODE_ALWAYS_EMULATE:
         d->arch.vtsc_offset = get_s_time() - elapsed_nsec;
         d->arch.tsc_khz = gtsc_khz ?: cpu_khz;
@@ -2149,8 +2154,26 @@ void tsc_set_info(struct domain *d,
          * When a guest is created, gtsc_khz is passed in as zero, making
          * d->arch.tsc_khz == cpu_khz. Thus no need to check incarnation.
          */
+        disable_vtsc = d->arch.tsc_khz == cpu_khz;
+
+        if ( tsc_mode == TSC_MODE_DEFAULT && gtsc_khz &&
+             d->arch.vtsc_tolerance_khz )
+        {
+            uint32_t khz_diff;
+
+            khz_diff = cpu_khz > gtsc_khz ?
+                       cpu_khz - gtsc_khz : gtsc_khz - cpu_khz;
+            disable_vtsc = khz_diff <= d->arch.vtsc_tolerance_khz;
+
+            printk(XENLOG_G_INFO "%s: d%u: host has %lu kHz,"
+                   " domU expects %u kHz,"
+                   " difference of %u is %s tolerance of %u\n",
+                   __func__, d->domain_id, cpu_khz, gtsc_khz, khz_diff,
+                   disable_vtsc ? "within" : "outside",
+                   d->arch.vtsc_tolerance_khz);
+        }
         if ( tsc_mode == TSC_MODE_DEFAULT && host_tsc_is_safe() &&
-             (d->arch.tsc_khz == cpu_khz ||
+             (disable_vtsc ||
               (is_hvm_domain(d) &&
                hvm_get_tsc_scaling_ratio(d->arch.tsc_khz))) )
         {
@@ -2239,6 +2262,8 @@ static void dump_softtsc(unsigned char key)
             printk(",ofs=%#"PRIx64, d->arch.vtsc_offset);
         if ( d->arch.tsc_khz )
             printk(",khz=%"PRIu32, d->arch.tsc_khz);
+        if ( d->arch.vtsc_tolerance_khz )
+            printk(",tol=%"PRIu16, d->arch.vtsc_tolerance_khz);
         if ( d->arch.incarnation )
             printk(",inc=%"PRIu32, d->arch.incarnation);
 #if !defined(NDEBUG) || defined(CONFIG_PERF_COUNTERS)
