@@ -1126,6 +1126,9 @@ void parse_config_data(const char *config_source,
         }
     }
 
+    if (!xlu_cfg_get_long(config, "vtsc_tolerance_khz", &l, 0))
+        b_info->vtsc_tolerance_khz = l < 0 || l > UINT16_MAX ? UINT16_MAX : l;
+
     if (!xlu_cfg_get_long(config, "rtc_timeoffset", &l, 0))
         b_info->rtc_timeoffset = l;
 

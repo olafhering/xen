@@ -1360,6 +1360,7 @@ int xc_domain_set_tsc_info(xc_interface *xch,
                            uint32_t tsc_mode,
                            uint64_t elapsed_nsec,
                            uint32_t gtsc_khz,
+                           uint16_t vtsc_tolerance_khz,
                            uint32_t incarnation);
 
 int xc_domain_get_tsc_info(xc_interface *xch,
@@ -1367,6 +1368,7 @@ int xc_domain_get_tsc_info(xc_interface *xch,
                            uint32_t *tsc_mode,
                            uint64_t *elapsed_nsec,
                            uint32_t *gtsc_khz,
+                           uint16_t *vtsc_tolerance_khz,
                            uint32_t *incarnation);
 
 int xc_domain_disable_migrate(xc_interface *xch, uint32_t domid);
