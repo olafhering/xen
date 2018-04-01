@@ -374,6 +374,7 @@ struct arch_domain
     uint64_t vtsc_offset;    /* adjustment for save/restore/migrate */
     uint32_t tsc_khz;        /* cached guest khz for certain emulated or
                                 hardware TSC scaling cases */
+    uint32_t vtsc_tolerance_khz; /* domU handles that much jitter in cpu_khz */
     struct time_scale vtsc_to_ns; /* scaling for certain emulated or
                                      hardware TSC scaling cases */
     struct time_scale ns_to_vtsc; /* scaling for certain emulated or
