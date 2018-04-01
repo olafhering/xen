@@ -12,7 +12,8 @@ int write_tsc_info(struct xc_sr_context *ctx)
     };
 
     if ( xc_domain_get_tsc_info(xch, ctx->domid, &tsc.mode,
-                                &tsc.nsec, &tsc.khz, &tsc.incarnation) < 0 )
+                                &tsc.nsec, &tsc.khz, &tsc.vtsc_tolerance,
+                                &tsc.incarnation) < 0 )
     {
         PERROR("Unable to obtain TSC information");
         return -1;
@@ -34,7 +35,8 @@ int handle_tsc_info(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     }
 
     if ( xc_domain_set_tsc_info(xch, ctx->domid, tsc->mode,
-                                tsc->nsec, tsc->khz, tsc->incarnation) )
+                                tsc->nsec, tsc->khz, tsc->vtsc_tolerance,
+                                tsc->incarnation) )
     {
         PERROR("Unable to set TSC information");
         return -1;

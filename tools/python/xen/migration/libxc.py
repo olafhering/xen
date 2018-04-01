@@ -114,7 +114,7 @@ X86_PV_P2M_FRAMES_FORMAT  = "II"
 X86_PV_VCPU_HDR_FORMAT    = "II"
 
 # tsc_info
-TSC_INFO_FORMAT           = "IIQII"
+TSC_INFO_FORMAT           = "IIQIHH"
 
 # hvm_params
 HVM_PARAMS_ENTRY_FORMAT   = "QQ"
@@ -363,14 +363,14 @@ class VerifyLibxc(VerifyBase):
         if len(content) != sz:
             raise RecordError("Length should be %u bytes" % (sz, ))
 
-        mode, khz, nsec, incarn, res1 = unpack(TSC_INFO_FORMAT, content)
+        mode, khz, nsec, incarn, tolerance, res1 = unpack(TSC_INFO_FORMAT, content)
 
         if res1 != 0:
             raise StreamError("Reserved bits set in TSC_INFO: 0x%08x"
                               % (res1, ))
 
-        self.info("  Mode %u, %u kHz, %u ns, incarnation %d"
-                  % (mode, khz, nsec, incarn))
+        self.info("  Mode %u, %u kHz, %u ns, incarnation %d, tolerance %u kHz"
+                  % (mode, khz, nsec, incarn, tolerance))
 
 
     def verify_record_hvm_context(self, content):

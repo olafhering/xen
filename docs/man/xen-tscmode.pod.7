@@ -99,6 +99,9 @@ whether or not the VM has been saved/restored/migrated
 
 =back
 
+If the tsc_mode is set to "default" the decision to emulate TSC can be
+tweaked further with the "vtsc_tolerance_khz" option.
+
 To understand this in more detail, the rest of this document must
 be read.
 
@@ -210,6 +213,19 @@ physical machine and target physical machine have the same TSC frequency
 is emulated.  Note that, though emulated, the "apparent" TSC frequency
 will be the TSC frequency of the initial physical machine, even after
 migration.
+
+Since the calibration of the TSC frequency may not be 100% accurate, the
+exact value of the frequency can change even across reboots. This means
+also several otherwise identical systems can have a slightly different
+TSC frequency. As a result TSC access will be emulated if a domU is
+migrated from one host to another, identical host. To avoid the
+performance impact of TSC emulation a certain tolerance of the measured
+host TSC frequency can be specified with "vtsc_tolerance_khz". If the
+measured "cpu_khz" value is within the tolerance range, TSC access
+remains native. Otherwise it will be emulated. This allows to migrate
+domUs between identical hardware. If the domU will be migrated to a
+different kind of hardware, say from a "2.3GHz" to a "2.5GHz" system,
+TSC will be emualted to maintain the TSC frequency expected by the domU.
 
 For environments where both TSC-safeness AND highest performance
 even across migration is a requirement, application code can be specially
