@@ -43,6 +43,9 @@ static char __initdata opt_clocksource[10];
 string_param("clocksource", opt_clocksource);
 
 unsigned long __read_mostly cpu_khz;  /* CPU clock frequency in kHz. */
+#define VTSC_NTP_PPM_TOLERANCE 500UL  /* Amount of drift NTP will handle */
+#define VTSC_JITTER_RANGE_KHZ 200UL   /* Assumed jitter in cpu_khz */
+static unsigned int __read_mostly vtsc_tolerance_khz;
 DEFINE_SPINLOCK(rtc_lock);
 unsigned long pit0_ticks;
 
@@ -1885,6 +1888,16 @@ void __init early_time_init(void)
     printk("Detected %lu.%03lu MHz processor.\n", 
            cpu_khz / 1000, cpu_khz % 1000);
 
+    tmp = 1000 * 1000;
+    tmp += VTSC_NTP_PPM_TOLERANCE;
+    tmp *= cpu_khz;
+    tmp /= 1000 * 1000;
+    tmp -= cpu_khz;
+    if (tmp >= VTSC_JITTER_RANGE_KHZ)
+        tmp -= VTSC_JITTER_RANGE_KHZ;
+    vtsc_tolerance_khz = (unsigned int)tmp;
+    printk("Tolerating vtsc jitter for domUs: %u kHz.\n", vtsc_tolerance_khz);
+
     setup_irq(0, 0, &irq0);
 }
 
@@ -2208,6 +2221,7 @@ void tsc_set_info(struct domain *d,
 
     switch ( d->arch.tsc_mode = tsc_mode )
     {
+        bool disable_vtsc;
         bool enable_tsc_scaling;
 
     case TSC_MODE_DEFAULT:
@@ -2223,8 +2237,25 @@ void tsc_set_info(struct domain *d,
          * When a guest is created, gtsc_khz is passed in as zero, making
          * d->arch.tsc_khz == cpu_khz. Thus no need to check incarnation.
          */
+        disable_vtsc = d->arch.tsc_khz == cpu_khz;
+
+        if ( tsc_mode == TSC_MODE_DEFAULT && gtsc_khz && vtsc_tolerance_khz )
+        {
+            long khz_diff;
+
+            khz_diff = ABS((long)(cpu_khz - gtsc_khz));
+            disable_vtsc = khz_diff <= vtsc_tolerance_khz;
+
+            printk(XENLOG_G_INFO "d%d: host has %lu kHz,"
+                   " domU expects %u kHz,"
+                   " difference of %ld is %s tolerance of %u\n",
+                   d->domain_id, cpu_khz, gtsc_khz, khz_diff,
+                   disable_vtsc ? "within" : "outside",
+                   vtsc_tolerance_khz);
+        }
+
         if ( tsc_mode == TSC_MODE_DEFAULT && host_tsc_is_safe() &&
-             (d->arch.tsc_khz == cpu_khz ||
+             (disable_vtsc ||
               (is_hvm_domain(d) &&
                hvm_get_tsc_scaling_ratio(d->arch.tsc_khz))) )
         {
