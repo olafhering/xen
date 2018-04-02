@@ -2084,6 +2084,18 @@ constant host TSC and supports Intel VMX TSC scaling/AMD SVM TSC
 ratio, its guest TSC frequency will be the same before and after
 migration, and guest rdtsc/p will be executed natively after migration as well
 
+B<(x86 only, relevant only for tsc_mode=default)>
+When a domU is started, the CPU frequency of the host is used by the domU for
+TSC related time measurement. Once the domU is either migrated or
+saved/restored on another host that CPU frequency has to be emulated to avoid
+timedrift. To avoid the performance penalty of the TSC emulation, allow a
+certain amount of jitter of the measured CPU frequency on the hosts the domU
+is supposed to run on. Default value is 0, i.e. no tolerance.
+
+Please see B<xen-tscmode(7)> for more information about the impact of this
+option, specifically about potential clock drive in the domU when
+vtsc_tolerance_khz="KHZ" is used.
+
 =item B<always_emulate>
 
 Guest rdtsc/p is always emulated and the virtual TSC will appear to increment

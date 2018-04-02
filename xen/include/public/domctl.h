@@ -735,7 +735,7 @@ struct xen_domctl_tsc_info {
     uint32_t tsc_mode;
     uint32_t gtsc_khz;
     uint32_t incarnation;
-    uint32_t pad;
+    uint32_t vtsc_tolerance_khz;
     uint64_aligned_t elapsed_nsec;
 };
 

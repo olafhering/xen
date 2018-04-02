@@ -231,6 +231,8 @@ struct xc_sr_context
             /* Currently buffering records between a checkpoint */
             bool buffer_all_records;
 
+            uint32_t vtsc_tolerance_khz;
+
 /*
  * With Remus/COLO, we buffer the records sent by the primary at checkpoint,
  * in case the primary will fail, we can recover from the last

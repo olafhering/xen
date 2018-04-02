@@ -103,6 +103,9 @@ whether or not the VM has been saved/restored/migrated
 
 =back
 
+If the tsc_mode is set to "default" the decision to emulate TSC can be
+tweaked further with the "vtsc_tolerance_khz" option in /etc/xen/sr.conf.
+
 To understand this in more detail, the rest of this document must
 be read.
 
@@ -214,6 +217,64 @@ physical machine and target physical machine have the same TSC frequency
 is emulated.  Note that, though emulated, the "apparent" TSC frequency
 will be the TSC frequency of the initial physical machine, even after
 migration.
+
+Since the calibration of the TSC frequency isn't 100% accurate, the
+value measured by Xen will vary across reboots. This means also several
+otherwise identical systems can have a slightly different _measured_ TSC
+frequency. As a result TSC access will be emulated if a domU is migrated
+from one host to another, identical host. To avoid the performance
+impact of TSC emulation a certain tolerance of the measured host TSC
+frequency can be specified with "vtsc_tolerance_khz". If the measured
+"cpu_khz" value is within the tolerance range, TSC access remains
+native. Otherwise it will be emulated. This allows to migrate domUs
+between identical hardware. If the domU will be migrated to a different
+kind of hardware, say from a "2.3GHz" to a "2.5GHz" system, TSC will be
+emualted to maintain the TSC frequency expected by the domU.
+
+Some math to demonstrate the expected time drift in a domU with
+tsc_mode==2: on a 2.0GHz host, The dom0 and domU kernels may measure the
+TSC frequency as 2000.082 MHz during boot. This means, the amount of
+2000082*1000=2000082000 Hz ticks represent "a second".
+If ntpd runs in that dom0, it will estimate the drift and stores it in a
+ntp.drift file. The unit of the number is "PPM", in this example let it
+be 23.296. This means the time would run 23.296 microsends faster per
+second, the TSC frequency is in fact lower, ntpd has to delay system time.
+
+Xen:    ((1*1000*1000*1000)*2000084000) / ((1*1000*1000*1000) + 23296) = 2000037407 Hz = 2000.037 MHz
+
+Native: ((1*1000*1000*1000)*2000070000) / ((1*1000*1000*1000) + 16393) = 2000037213 Hz = 2000.037 MHz
+
+The other, supposedly identical, system reports 2000.086 MHz and 6.157 ppm
+drift:
+
+Xen:    ((1*1000*1000*1000)*2000086000) / ((1*1000*1000*1000) +  6157) = 2000073685 Hz = 2000.073 MHz
+
+Native: ((1*1000*1000*1000)*2000070000) / ((1*1000*1000*1000) + -1876) = 2000073752 Hz = 2000.073 MHz
+
+If a domU is started on the first system, it will use the reported
+frequency of 2000.084 MHz. The ntpd within that domU will calculate the
+effective drift and keep the actual time close to the reference system.
+Once that domU is migrated to the second system, the kernel does not
+recalculate the TSC frequency. It continues to use the value it found
+during startup. Now the TSC ticks faster. ntpd will notice this and
+increases the drift. It can correct a drift up to 500 PPM. The time
+drift on the second system will be:
+
+( ((2000074370 * ((1*1000*1000*1000) + 23296)) / 2000037407) - (1*1000*1000*1000) ) / 1000 =  41.777
+
+To see how much the actual TSC could change to stay within the +/- 500 PPM limit: 
+
+(2000037407 * ((1*1000*1000*1000) + 500000)) / ((1*1000*1000*1000) + 23296) = 2000990810 Hz = 2000.990 MHz
+
+(2000037407 * ((1*1000*1000*1000) - 500000)) / ((1*1000*1000*1000) + 23296) = 1998990819 Hz = 1998.990 MHz
+
+This means a domU can not be migrated from a 2.0GHz host to a 2.1GHz
+or 1.9GHz host, the drift would be too large.
+
+The exact value of the vtsc_tolerance_khz config option must be
+calculated by the host admin based on the ntp.drift and estimated TSC
+frequency for each host. Based on the example numbers above,  a possible
+value would be between 898 and 1102 (2000082-2000980=-898, 2000082-1998980=1102).
 
 For environments where both TSC-safeness AND highest performance
 even across migration is a requirement, application code can be specially

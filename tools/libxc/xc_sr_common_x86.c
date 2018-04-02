@@ -10,9 +10,11 @@ int write_tsc_info(struct xc_sr_context *ctx)
         .length = sizeof(tsc),
         .data = &tsc
     };
+    uint32_t vtsc_tolerance_khz;
 
     if ( xc_domain_get_tsc_info(xch, ctx->domid, &tsc.mode,
-                                &tsc.nsec, &tsc.khz, &tsc.incarnation) < 0 )
+                                &tsc.nsec, &tsc.khz, &vtsc_tolerance_khz,
+                                &tsc.incarnation) < 0 )
     {
         PERROR("Unable to obtain TSC information");
         return -1;
@@ -34,7 +36,8 @@ int handle_tsc_info(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     }
 
     if ( xc_domain_set_tsc_info(xch, ctx->domid, tsc->mode,
-                                tsc->nsec, tsc->khz, tsc->incarnation) )
+                                tsc->nsec, tsc->khz, ctx->restore.vtsc_tolerance_khz,
+                                tsc->incarnation) )
     {
         PERROR("Unable to set TSC information");
         return -1;

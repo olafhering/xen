@@ -4,6 +4,96 @@
 
 #include "xc_sr_common.h"
 
+static const char config_file[] = XEN_CONFIG_DIR "/sr.conf";
+static void parse_config(struct xc_sr_context *ctx, FILE *f, size_t len)
+{
+    xc_interface *xch = ctx->xch;
+    long long v;
+    char *buf, *s;
+    int i, num;
+
+    /* fgets needs a terminating null byte */
+    len++;
+    buf = malloc(len);
+    if ( !buf )
+        return;
+    do
+    {
+        s = fgets(buf, len, f);
+        if ( !s )
+            break;
+
+        /* trim trailing whitespace */
+        i = strlen(s);
+        while ( --i > 0 )
+        {
+            if ( s[i] == '\n' || s[i] == ' ' || s[i] == '\t' || s[i] == '\r' )
+            {
+                s[i] = '\0';
+                continue;
+            }
+            break;
+        }
+
+        i = sscanf(s, "vtsc_tolerance_khz=%lld%n", &v, &num);
+        if ( i == 1 )
+        {
+            if ( strlen(&s[num]) > 1 )
+            {
+                ERROR("garbage after vtsc_tolerance_khz=: '%s'", &s[num]);
+                continue;
+            }
+            if ( v > INT_MAX )
+                v = INT_MAX;
+            else if ( v < 0 )
+                v = 0;
+            IPRINTF("domid %u got vtsc_tolerance_khz %lld from %s",
+                    ctx->domid, v, config_file);
+            ctx->restore.vtsc_tolerance_khz = v;
+        }
+    } while ( s && !feof(f) && !ferror(f) );
+    free(buf);
+}
+
+static int read_config(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    FILE *f;
+    struct stat stab;
+    int rc = -1;
+
+    errno = 0;
+    f = fopen(config_file, "r");
+    if ( !f )
+    {
+        if ( errno != ENOENT )
+            PERROR("failed to open %s", config_file);
+        return 0;
+    }
+    if ( fstat(fileno(f), &stab) )
+    {
+        PERROR("failed to fstat %s", config_file);
+        goto done;
+    }
+    if ( !S_ISREG(stab.st_mode) )
+    {
+        ERROR("%s is not a plain file", config_file);
+        goto done;
+    }
+    if ( stab.st_size > SHRT_MAX )
+    {
+        ERROR("file %s is far too large", config_file);
+        goto done;
+    }
+    if ( stab.st_size )
+        parse_config(ctx, f, stab.st_size);
+
+    rc = 0;
+done:
+    fclose(f);
+    return rc;
+}
+
 /*
  * Read and validate the Image and Domain headers.
  */
@@ -876,6 +966,9 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
     }
 
     ctx.domid = dom;
+
+    if ( read_config(&ctx) )
+        return -1;
 
     if ( read_headers(&ctx) )
         return -1;
