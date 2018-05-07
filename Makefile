@@ -56,9 +56,6 @@ build-tools:
 .PHONY: build-stubdom
 build-stubdom: mini-os-dir
 	$(MAKE) -C stubdom build
-ifeq (x86_64,$(XEN_TARGET_ARCH))
-	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom pv-grub
-endif
 
 .PHONY: build-docs
 build-docs:
@@ -103,9 +100,6 @@ install-tools:
 .PHONY: install-stubdom
 install-stubdom: install-tools mini-os-dir
 	$(MAKE) -C stubdom install
-ifeq (x86_64,$(XEN_TARGET_ARCH))
-	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom install-grub
-endif
 
 .PHONY: tools/firmware/seabios-dir-force-update
 tools/firmware/seabios-dir-force-update:
