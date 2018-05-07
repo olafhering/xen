@@ -136,9 +136,6 @@ install-tools: install-tools-public-headers
 .PHONY: install-stubdom
 install-stubdom: mini-os-dir install-tools
 	$(MAKE) -C stubdom install
-ifeq (x86_64,$(XEN_TARGET_ARCH))
-	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom install-grub
-endif
 
 .PHONY: tools/firmware/seabios-dir-force-update
 tools/firmware/seabios-dir-force-update:
