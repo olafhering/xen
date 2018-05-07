@@ -199,7 +199,7 @@ uninstall: uninstall-man-pages uninstall-html
 
 # Individual file build targets
 html/index.html: $(DOC_HTML) $(CURDIR)/gen-html-index INDEX
-	$(PERL) -w -- $(CURDIR)/gen-html-index -i INDEX html $(DOC_HTML)
+	$(PERL) -w -- $(CURDIR)/gen-html-index -i INDEX html $(sort $(DOC_HTML))
 
 html/%.html: %.markdown
 ifneq ($(MARKDOWN),)
@@ -222,8 +222,8 @@ html/hypercall/%/index.html: $(CURDIR)/xen-headers Makefile
 	$(INSTALL_DIR) $(@D)
 	$(PERL) -w $(CURDIR)/xen-headers -O $(@D) \
 		-T 'arch-$* - Xen public headers' \
-		$(patsubst %,-X arch-%,$(filter-out $*,$(DOC_ARCHES))) \
-		$(patsubst %,-X xen-%,$(filter-out $*,$(DOC_ARCHES))) \
+		$(sort $(patsubst %,-X arch-%,$(filter-out $*,$(DOC_ARCHES)))) \
+		$(sort $(patsubst %,-X xen-%,$(filter-out $*,$(DOC_ARCHES)))) \
 		$(EXTRA_EXCLUDE) \
 		$(XEN_ROOT)/xen include/public include/xen/errno.h
 
