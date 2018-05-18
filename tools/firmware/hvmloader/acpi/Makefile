@@ -27,7 +27,7 @@ all: acpi.a
 
 ssdt_s3.h ssdt_s4.h ssdt_pm.h ssdt_tpm.h: %.h: %.asl iasl
 	iasl -vs -p $* -tc $<
-	sed -e 's/AmlCode/$*/g' $*.hex >$@
+	sed -e 's/AmlCode/$*/g' -e 's/_aml_code//g' $*.hex >$@
 	rm -f $*.hex $*.aml
 
 mk_dsdt: mk_dsdt.c
@@ -44,7 +44,7 @@ dsdt_%cpu.asl: dsdt.asl mk_dsdt
 
 $(filter dsdt_%.c,$(C_SRC)): %.c: iasl %.asl
 	iasl -vs -p $* -tc $*.asl
-	sed -e 's/AmlCode/$*/g' $*.hex >$@
+	sed -e 's/AmlCode/$*/g' -e 's/_aml_code//g' $*.hex >$@
 	echo "int $*_len=sizeof($*);" >>$@
 	rm -f $*.aml $*.hex
 
