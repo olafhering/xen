@@ -43,7 +43,10 @@ ALL_OBJS-$(x86)          += $(BASEDIR)/crypto/built_in.o
 
 CFLAGS += -fno-builtin -fno-common
 CFLAGS += -Werror -Wredundant-decls -Wno-pointer-arith
-CFLAGS += -pipe -g -D__XEN__ -include $(BASEDIR)/include/xen/config.h
+ifeq ($(debug_symbols),y)
+CFLAGS += -g
+endif
+CFLAGS += -pipe -D__XEN__ -include $(BASEDIR)/include/xen/config.h
 CFLAGS += -nostdinc
 
 CFLAGS-$(XSM_ENABLE)    += -DXSM_ENABLE
