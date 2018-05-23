@@ -47,7 +47,10 @@ ALL_OBJS-$(CONFIG_X86)   += $(BASEDIR)/crypto/built_in.o
 
 CFLAGS += -nostdinc -fno-builtin -fno-common
 CFLAGS += -Werror -Wredundant-decls -Wno-pointer-arith
-CFLAGS += -pipe -g -D__XEN__ -include $(BASEDIR)/include/xen/config.h
+ifeq ($(debug_symbols),y)
+CFLAGS += -g
+endif
+CFLAGS += -pipe -D__XEN__ -include $(BASEDIR)/include/xen/config.h
 CFLAGS += '-D__OBJECT_FILE__="$@"'
 
 ifneq ($(clang),y)
