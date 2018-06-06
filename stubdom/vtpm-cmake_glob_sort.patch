@@ -1,0 +1,61 @@
+sort entries returned by readdir
+--- a/crypto/CMakeLists.txt
++++ b/crypto/CMakeLists.txt
+@@ -4,7 +4,9 @@
+ # $Id: CMakeLists.txt 464 2011-07-09 14:57:41Z mast $
+ 
+ file(GLOB tpm_crypto_SRCS "*.[h|c]")
++list(SORT tpm_crypto_SRCS)
+ file(GLOB bn_SRCS "bn_*.c")
++list(SORT bn_SRCS)
+ list(REMOVE_ITEM tpm_crypto_SRCS ${bn_SRCS})
+ 
+ if(USE_OPENSSL)
+--- a/mtm/CMakeLists.txt
++++ b/mtm/CMakeLists.txt
+@@ -6,5 +6,6 @@
+ add_definitions(-DMTM_EMULATOR)
+ file(GLOB tpm_SRCS ../tpm/tpm_cmd_handler.c ../tpm/tpm_data.c)
+ file(GLOB mtm_SRCS "*.[h|c]")
++list(SORT mtm_SRCS)
+ add_library(mtm STATIC ${mtm_SRCS} ${tpm_SRCS})
+ 
+--- a/tpm/CMakeLists.txt
++++ b/tpm/CMakeLists.txt
+@@ -4,5 +4,6 @@
+ # $Id: CMakeLists.txt 364 2010-02-11 10:24:45Z mast $
+ 
+ file(GLOB tpm_SRCS "*.[h|c]")
++list(SORT tpm_SRCS)
+ add_library(tpm STATIC ${tpm_SRCS})
+ 
+--- a/tpmd/unix/CMakeLists.txt
++++ b/tpmd/unix/CMakeLists.txt
+@@ -6,6 +6,7 @@
+ include_directories("${PROJECT_SOURCE_DIR}/tpm")
+ 
+ file(GLOB tpmd_SRCS "*.[h|c]")
++list(SORT tpmd_SRCS)
+ add_executable(tpmd ${tpmd_SRCS})
+ if(MTM_EMULATOR)
+ add_definitions(-DMTM_EMULATOR)
+--- a/tpmd/windows/CMakeLists.txt
++++ b/tpmd/windows/CMakeLists.txt
+@@ -6,6 +6,7 @@
+ include_directories("${PROJECT_SOURCE_DIR}/tpm")
+ 
+ file(GLOB tpmd_SRCS "*.[h|c]")
++list(SORT tpmd_SRCS)
+ add_executable(tpmd ${tpmd_SRCS})
+ if(MTM_EMULATOR)
+ add_definitions(-DMTM_EMULATOR)
+--- a/tpmd_dev/CMakeLists.txt
++++ b/tpmd_dev/CMakeLists.txt
+@@ -34,6 +34,7 @@ endif()
+ if(tpmd_dev_OBJ)
+ 
+ file(GLOB tpmd_dev_SRCS "${tpmd_dev_SOURCE_DIR}/*")
++list(SORT tpmd_dev_SRCS)
+ 
+ add_custom_command(OUTPUT ${tpmd_dev_OBJ}
+                    COMMAND cp -rf ${tpmd_dev_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}
