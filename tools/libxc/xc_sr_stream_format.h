@@ -121,7 +121,8 @@ struct xc_sr_rec_tsc_info
     uint32_t khz;
     uint64_t nsec;
     uint32_t incarnation;
-    uint32_t _res1;
+    uint16_t vtsc_tolerance;
+    uint16_t _res1;
 };
 
 /* HVM_PARAMS */

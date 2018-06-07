@@ -1522,7 +1522,7 @@ static PyObject *pyxc_domain_set_tsc_info(XcObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "ii", &dom, &tsc_mode))
         return NULL;
 
-    if (xc_domain_set_tsc_info(self->xc_handle, dom, tsc_mode, 0, 0, 0) != 0)
+    if (xc_domain_set_tsc_info(self->xc_handle, dom, tsc_mode, 0, 0, 0, 0) != 0)
         return pyxc_error_to_exception(self->xc_handle);
 
     Py_INCREF(zero);

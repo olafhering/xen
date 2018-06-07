@@ -852,6 +852,7 @@ int xc_domain_set_tsc_info(xc_interface *xch,
                            uint32_t tsc_mode,
                            uint64_t elapsed_nsec,
                            uint32_t gtsc_khz,
+                           uint16_t vtsc_tolerance_khz,
                            uint32_t incarnation)
 {
     DECLARE_DOMCTL;
@@ -860,6 +861,7 @@ int xc_domain_set_tsc_info(xc_interface *xch,
     domctl.u.tsc_info.tsc_mode = tsc_mode;
     domctl.u.tsc_info.elapsed_nsec = elapsed_nsec;
     domctl.u.tsc_info.gtsc_khz = gtsc_khz;
+    domctl.u.tsc_info.vtsc_tolerance_khz = vtsc_tolerance_khz;
     domctl.u.tsc_info.incarnation = incarnation;
     return do_domctl(xch, &domctl);
 }
@@ -869,6 +871,7 @@ int xc_domain_get_tsc_info(xc_interface *xch,
                            uint32_t *tsc_mode,
                            uint64_t *elapsed_nsec,
                            uint32_t *gtsc_khz,
+                           uint16_t *vtsc_tolerance_khz,
                            uint32_t *incarnation)
 {
     int rc;
@@ -882,6 +885,7 @@ int xc_domain_get_tsc_info(xc_interface *xch,
         *tsc_mode = domctl.u.tsc_info.tsc_mode;
         *elapsed_nsec = domctl.u.tsc_info.elapsed_nsec;
         *gtsc_khz = domctl.u.tsc_info.gtsc_khz;
+        *vtsc_tolerance_khz = domctl.u.tsc_info.vtsc_tolerance_khz;
         *incarnation = domctl.u.tsc_info.incarnation;
     }
     return rc;

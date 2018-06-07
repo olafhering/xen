@@ -314,7 +314,8 @@ int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
     default:
         abort();
     }
-    xc_domain_set_tsc_info(ctx->xch, domid, tsc_mode, 0, 0, 0);
+    xc_domain_set_tsc_info(ctx->xch, domid, tsc_mode, 0, 0,
+                           d_config->b_info.vtsc_tolerance_khz, 0);
     if (libxl_defbool_val(d_config->b_info.disable_migrate))
         xc_domain_disable_migrate(ctx->xch, domid);
     rtc_timeoffset = d_config->b_info.rtc_timeoffset;
