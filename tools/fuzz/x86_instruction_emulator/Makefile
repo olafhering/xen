@@ -22,6 +22,7 @@ x86-emulate.c x86-emulate.h: %:
 	[ -L $* ] || ln -sf $(XEN_ROOT)/tools/tests/x86_emulator/$*
 
 CFLAGS += $(CFLAGS_xeninclude) -D__XEN_TOOLS__ -I.
+CFLAGS += -U_FORTIFY_SOURCE
 
 GCOV_FLAGS := --coverage
 %-cov.o: %.c
