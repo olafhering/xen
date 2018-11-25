@@ -10,7 +10,7 @@
 #include "lfb.h"
 #include "font.h"
 
-#define MAX_XRES 1900
+#define MAX_XRES 1920
 #define MAX_YRES 1200
 #define MAX_BPP 4
 #define MAX_FONT_W 8
