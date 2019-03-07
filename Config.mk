@@ -268,13 +268,13 @@ QEMU_TRADITIONAL_URL ?= http://xenbits.xen.org/git-http/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/seabios.git
 MINIOS_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/mini-os.git
 else
-OVMF_UPSTREAM_URL ?= git://xenbits.xen.org/ovmf.git
+OVMF_UPSTREAM_URL ?= git://github.com/tianocore/edk2
 QEMU_UPSTREAM_URL ?= git://xenbits.xen.org/qemu-xen.git
 QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= ef529e6ab7c31290a33045bb1f1837447cc0eb56
+OVMF_UPSTREAM_REVISION ?= master
 QEMU_UPSTREAM_REVISION ?= qemu-xen-4.12.0-rc1
 MINIOS_UPSTREAM_REVISION ?= xen-4.12.0-rc1
 
