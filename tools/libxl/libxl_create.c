@@ -1093,6 +1093,10 @@ static void domcreate_bootloader_done(libxl__egc *egc,
         return;
     }
 
+    /* Prepare environment for domcreate_stream_done */
+    if (!dcs->srs.dcs)
+        dcs->srs.dcs = dcs;
+
     /* Restore */
     callbacks->restore_results = libxl__srm_callout_callback_restore_results;
 
@@ -1116,7 +1120,6 @@ static void domcreate_bootloader_done(libxl__egc *egc,
         goto out;
 
     dcs->srs.ao = ao;
-    dcs->srs.dcs = dcs;
     dcs->srs.fd = restore_fd;
     dcs->srs.legacy = (dcs->restore_params.stream_version == 1);
     dcs->srs.back_channel = false;
