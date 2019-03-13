@@ -43,6 +43,23 @@ static char __initdata opt_clocksource[10];
 string_param("clocksource", opt_clocksource);
 
 unsigned long __read_mostly cpu_khz;  /* CPU clock frequency in kHz. */
+/*
+ * NTP implementations running within the domU can handle a certain
+ * difference of the system clockspeed, compared to an external
+ * clocksource. This is ususally described as "drift". How much drift an
+ * OS can handle is described in its documentation. For NTP in Linux the
+ * value is 500 PPM, which is the lowest compared to other OS.
+ */
+#define VTSC_NTP_PPM_TOLERANCE 500UL
+/*
+ * The measurement of cpu_khz is not accurate. Its accuracy depends on the
+ * hardware. A bunch of systems with supposedly identical frequencies will
+ * measure different frequencies, which will also vary accross reboots.
+ * This variable tries to cover a range of frequencies seen in the wild.
+ * The range is substracted from the PPM value above.
+ */
+#define VTSC_MEASUREMENT_INACCURACY_RANGE_KHZ 200UL
+static unsigned int __read_mostly vtsc_tolerance_khz;
 DEFINE_SPINLOCK(rtc_lock);
 unsigned long pit0_ticks;
 
@@ -1885,6 +1902,27 @@ void __init early_time_init(void)
     printk("Detected %lu.%03lu MHz processor.\n", 
            cpu_khz / 1000, cpu_khz % 1000);
 
+    /*
+     * How many kHz (in other words: drift) is ntpd in domU expected to handle?
+     *    freq    tolerated freq difference
+     *  ------- = -------------------------
+     *  Million         Million + PPM      
+     */
+    tmp = 1000 * 1000;
+    tmp += VTSC_NTP_PPM_TOLERANCE;
+    tmp *= cpu_khz;
+    tmp /= 1000 * 1000;
+
+    tmp -= cpu_khz;
+
+    /*
+     * Reduce the theoretical upper limit by the assumed measuring inaccuracy.
+     */
+    if ( tmp >= VTSC_MEASUREMENT_INACCURACY_RANGE_KHZ )
+        tmp -= VTSC_MEASUREMENT_INACCURACY_RANGE_KHZ;
+    vtsc_tolerance_khz = tmp;
+    printk("Tolerating vtsc jitter for domUs: %u kHz\n", vtsc_tolerance_khz);
+
     setup_irq(0, 0, &irq0);
 }
 
@@ -2193,6 +2231,8 @@ int tsc_set_info(struct domain *d,
 
     switch ( tsc_mode )
     {
+        bool disable_vtsc;
+
     case TSC_MODE_DEFAULT:
     case TSC_MODE_ALWAYS_EMULATE:
         d->arch.vtsc_offset = get_s_time() - elapsed_nsec;
@@ -2201,13 +2241,30 @@ int tsc_set_info(struct domain *d,
 
         /*
          * In default mode use native TSC if the host has safe TSC and
-         * host and guest frequencies are the same (either "naturally" or
-         * - for HVM/PVH - via TSC scaling).
+         * host and guest frequencies are (almost) the same (either "naturally"
+         * or - for HVM/PVH - via TSC scaling).
          * When a guest is created, gtsc_khz is passed in as zero, making
          * d->arch.tsc_khz == cpu_khz. Thus no need to check incarnation.
          */
+        disable_vtsc = d->arch.tsc_khz == cpu_khz;
+
+        if ( tsc_mode == TSC_MODE_DEFAULT && gtsc_khz && vtsc_tolerance_khz )
+        {
+            long khz_diff;
+
+            khz_diff = ABS(((long)cpu_khz - gtsc_khz));
+            disable_vtsc = khz_diff <= vtsc_tolerance_khz;
+
+            printk(XENLOG_G_INFO "d%d: host has %lu kHz,"
+                   " domU expects %u kHz,"
+                   " difference of %ld is %s tolerance of %u\n",
+                   d->domain_id, cpu_khz, gtsc_khz, khz_diff,
+                   disable_vtsc ? "within" : "outside",
+                   vtsc_tolerance_khz);
+        }
+
         if ( tsc_mode == TSC_MODE_DEFAULT && host_tsc_is_safe() &&
-             (d->arch.tsc_khz == cpu_khz ||
+             (disable_vtsc ||
               (is_hvm_domain(d) &&
                hvm_get_tsc_scaling_ratio(d->arch.tsc_khz))) )
         {
