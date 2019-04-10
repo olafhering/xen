@@ -2022,7 +2022,7 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
     libxl__domain_build_state *const d_state = sdss->dm.build_state;
     libxl__domain_build_state *const stubdom_state = &sdss->dm_state;
     uint32_t dm_domid = sdss->pvqemu.guest_domid;
-    int need_qemu;
+    bool need_qemu;
 
     if (ret) {
         LOGD(ERROR, guest_domid, "error connecting disk devices");
@@ -2091,7 +2091,15 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
         }
     }
 
-    need_qemu = libxl__need_xenpv_qemu(gc, dm_config);
+    switch (dm_config->b_info.device_model_version) {
+        case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
+        case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
+            need_qemu = true;
+            break;
+        default:
+            need_qemu = false;
+            break;
+    }
 
     for (i = 0; i < num_console; i++) {
         libxl__device device;
@@ -2579,17 +2587,10 @@ int libxl__destroy_device_model(libxl__gc *gc, uint32_t domid)
 }
 
 /* Return 0 if no dm needed, 1 if needed and <0 if error. */
-int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
+int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config, uint32_t domid)
 {
-    int idx, i, ret, num;
-    uint32_t domid;
+    int idx, i, ret = 0, num;
     const struct libxl_device_type *dt;
-
-    ret = libxl__get_domid(gc, &domid);
-    if (ret) {
-        LOG(ERROR, "unable to get domain id");
-        goto out;
-    }
 
     if (d_config->num_vfbs > 0 || d_config->num_p9s > 0) {
         ret = 1;
@@ -2642,21 +2643,26 @@ int libxl__dm_check_start(libxl__gc *gc, libxl_domain_config *d_config,
                           uint32_t domid)
 {
     int rc;
+    bool need_qemu;
 
     if (libxl__dm_active(gc, domid))
         return 0;
 
-    rc = libxl__need_xenpv_qemu(gc, d_config);
-    if (rc < 0)
-        goto out;
-
-    if (!rc)
+    switch (d_config->b_info.device_model_version) {
+        case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
+        case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
+            need_qemu = true;
+            break;
+        default:
+            need_qemu = false;
+            break;
+    }
+    if (need_qemu == false)
         return 0;
 
     LOGD(ERROR, domid, "device model required but not running");
     rc = ERROR_FAIL;
 
-out:
     return rc;
 }
 
