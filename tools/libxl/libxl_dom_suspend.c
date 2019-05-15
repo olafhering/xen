@@ -444,6 +444,8 @@ int libxl__domain_resume_device_model(libxl__gc *gc, uint32_t domid)
         if (libxl__qmp_resume(gc, domid))
             return ERROR_FAIL;
         break;
+    case LIBXL_DEVICE_MODEL_VERSION_NONE:
+        break;
     default:
         return ERROR_INVAL;
     }
@@ -461,14 +463,10 @@ int libxl__domain_resume(libxl__gc *gc, uint32_t domid, int suspend_cancel)
         goto out;
     }
 
-    if (type == LIBXL_DOMAIN_TYPE_HVM ||
-        libxl__device_model_version_running(gc, domid) ==
-        LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
-        rc = libxl__domain_resume_device_model(gc, domid);
-        if (rc) {
-            LOGD(ERROR, domid, "failed to resume device model:%d", rc);
-            goto out;
-        }
+    rc = libxl__domain_resume_device_model(gc, domid);
+    if (rc) {
+        LOGD(ERROR, domid, "failed to resume device model:%d", rc);
+        goto out;
     }
 
     if (xc_domain_resume(CTX->xch, domid, suspend_cancel)) {
