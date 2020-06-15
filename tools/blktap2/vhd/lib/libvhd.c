@@ -1842,6 +1842,7 @@ vhd_read_block(vhd_context_t *ctx, uint32_t block, char **bufp)
 	uint64_t blk;
 	off_t end, off;
 
+	end = 0;
 	buf   = NULL;
 	*bufp = NULL;
 
