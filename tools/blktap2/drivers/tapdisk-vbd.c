@@ -370,7 +370,7 @@ out:
 			tapdisk_image_free(image);
 		}
 		while (!list_empty(head)) {
-			image = list_entry(&head->next, td_image_t, next);
+			image = list_entry(head->next, td_image_t, next);
 			td_close(image);
 			tapdisk_image_free(image);
 		}
