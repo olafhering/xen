@@ -204,20 +204,11 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned int count,
                              xen_pfn_t *pfns, uint32_t *types, void *page_data)
 {
     xc_interface *xch = ctx->xch;
-    int *map_errs = malloc(count * sizeof(*map_errs));
     int rc;
     void *mapping = NULL, *guest_page = NULL;
     unsigned int i, /* i indexes the pfns from the record. */
         j,          /* j indexes the subset of pfns we decide to map. */
         nr_pages = 0;
-
-    if ( !map_errs )
-    {
-        rc = -1;
-        ERROR("Failed to allocate %zu bytes to process page data",
-              count * sizeof(*map_errs));
-        goto err;
-    }
 
     rc = populate_pfns(ctx, count, pfns, types);
     if ( rc )
@@ -240,7 +231,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned int count,
 
     mapping = guest_page = xenforeignmemory_map(
         xch->fmem, ctx->domid, PROT_READ | PROT_WRITE,
-        nr_pages, ctx->restore.mfns, map_errs);
+        nr_pages, ctx->restore.mfns, ctx->restore.map_errs);
     if ( !mapping )
     {
         rc = -1;
@@ -254,11 +245,11 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned int count,
         if ( !page_type_has_stream_data(types[i]) )
             continue;
 
-        if ( map_errs[j] )
+        if ( ctx->restore.map_errs[j] )
         {
             rc = -1;
             ERROR("Mapping pfn %#"PRIpfn" (mfn %#"PRIpfn", type %#"PRIx32") failed with %d",
-                  pfns[i], ctx->restore.mfns[j], types[i], map_errs[j]);
+                  pfns[i], ctx->restore.mfns[j], types[i], ctx->restore.map_errs[j]);
             goto err;
         }
 
@@ -295,8 +286,6 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned int count,
  err:
     if ( mapping )
         xenforeignmemory_unmap(xch->fmem, mapping, nr_pages);
-
-    free(map_errs);
 
     return rc;
 }
@@ -704,7 +693,9 @@ static int setup(struct xc_sr_context *ctx)
     ctx->restore.pfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.pfns));
     ctx->restore.types = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.types));
     ctx->restore.mfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.mfns));
-    if ( !ctx->restore.pfns || !ctx->restore.types || !ctx->restore.mfns )
+    ctx->restore.map_errs = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.map_errs));
+    if ( !ctx->restore.pfns || !ctx->restore.types || !ctx->restore.mfns ||
+         !ctx->restore.map_errs )
     {
         ERROR("Unable to allocate memory");
         rc = -1;
@@ -741,6 +732,7 @@ static void cleanup(struct xc_sr_context *ctx)
 
     free(ctx->restore.buffered_records);
     free(ctx->restore.populated_pfns);
+    free(ctx->restore.map_errs);
     free(ctx->restore.mfns);
     free(ctx->restore.types);
     free(ctx->restore.pfns);
