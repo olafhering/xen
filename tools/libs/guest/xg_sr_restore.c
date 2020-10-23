@@ -138,12 +138,11 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
                   const xen_pfn_t *original_pfns, const uint32_t *types)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = malloc(count * sizeof(*mfns)),
-        *pfns = malloc(count * sizeof(*pfns));
+    xen_pfn_t *mfns = malloc(count * sizeof(*mfns));
     unsigned int i, nr_pfns = 0;
     int rc = -1;
 
-    if ( !mfns || !pfns )
+    if ( !mfns )
     {
         ERROR("Failed to allocate %zu bytes for populating the physmap",
               2 * count * sizeof(*mfns));
@@ -158,7 +157,7 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
             rc = pfn_set_populated(ctx, original_pfns[i]);
             if ( rc )
                 goto err;
-            pfns[nr_pfns] = mfns[nr_pfns] = original_pfns[i];
+            ctx->restore.pp_pfns[nr_pfns] = mfns[nr_pfns] = original_pfns[i];
             ++nr_pfns;
         }
     }
@@ -182,14 +181,13 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
                 goto err;
             }
 
-            ctx->restore.ops.set_gfn(ctx, pfns[i], mfns[i]);
+            ctx->restore.ops.set_gfn(ctx, ctx->restore.pp_pfns[i], mfns[i]);
         }
     }
 
     rc = 0;
 
  err:
-    free(pfns);
     free(mfns);
 
     return rc;
@@ -694,8 +692,9 @@ static int setup(struct xc_sr_context *ctx)
     ctx->restore.types = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.types));
     ctx->restore.mfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.mfns));
     ctx->restore.map_errs = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.map_errs));
+    ctx->restore.pp_pfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.pp_pfns));
     if ( !ctx->restore.pfns || !ctx->restore.types || !ctx->restore.mfns ||
-         !ctx->restore.map_errs )
+         !ctx->restore.map_errs || !ctx->restore.pp_pfns )
     {
         ERROR("Unable to allocate memory");
         rc = -1;
@@ -732,6 +731,7 @@ static void cleanup(struct xc_sr_context *ctx)
 
     free(ctx->restore.buffered_records);
     free(ctx->restore.populated_pfns);
+    free(ctx->restore.pp_pfns);
     free(ctx->restore.map_errs);
     free(ctx->restore.mfns);
     free(ctx->restore.types);
