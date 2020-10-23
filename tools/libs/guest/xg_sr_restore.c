@@ -315,7 +315,7 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     int rc = -1;
 
     xen_pfn_t pfn;
-    uint32_t *types = NULL, type;
+    uint32_t type;
 
     /*
      * v2 compatibility only exists for x86 streams.  This is a bit of a
@@ -362,14 +362,6 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         goto err;
     }
 
-    types = malloc(pages->count * sizeof(*types));
-    if ( !types )
-    {
-        ERROR("Unable to allocate enough memory for %u pfns",
-              pages->count);
-        goto err;
-    }
-
     for ( i = 0; i < pages->count; ++i )
     {
         pfn = pages->pfn[i] & PAGE_DATA_PFN_MASK;
@@ -393,7 +385,7 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
             pages_of_data++;
 
         ctx->restore.pfns[i] = pfn;
-        types[i] = type;
+        ctx->restore.types[i] = type;
     }
 
     if ( rec->length != (sizeof(*pages) +
@@ -406,11 +398,9 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         goto err;
     }
 
-    rc = process_page_data(ctx, pages->count, ctx->restore.pfns, types,
-                           &pages->pfn[pages->count]);
+    rc = process_page_data(ctx, pages->count, ctx->restore.pfns,
+                           ctx->restore.types, &pages->pfn[pages->count]);
  err:
-    free(types);
-
     return rc;
 }
 
@@ -714,7 +704,8 @@ static int setup(struct xc_sr_context *ctx)
     }
 
     ctx->restore.pfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.pfns));
-    if ( !ctx->restore.pfns )
+    ctx->restore.types = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.types));
+    if ( !ctx->restore.pfns  || !ctx->restore.types )
     {
         ERROR("Unable to allocate memory");
         rc = -1;
@@ -751,6 +742,7 @@ static void cleanup(struct xc_sr_context *ctx)
 
     free(ctx->restore.buffered_records);
     free(ctx->restore.populated_pfns);
+    free(ctx->restore.types);
     free(ctx->restore.pfns);
 
     if ( ctx->restore.ops.cleanup(ctx) )
