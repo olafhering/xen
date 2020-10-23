@@ -91,7 +91,7 @@ static int write_batch(struct xc_sr_context *ctx)
     void *guest_mapping = NULL;
     void **guest_data = NULL;
     void **local_pages = NULL;
-    int *errors = NULL, rc = -1;
+    int rc = -1;
     unsigned int i, p, nr_pages = 0, nr_pages_mapped = 0;
     unsigned int nr_pfns = ctx->save.nr_batch_pfns;
     void *page, *orig_page;
@@ -104,8 +104,6 @@ static int write_batch(struct xc_sr_context *ctx)
 
     assert(nr_pfns != 0);
 
-    /* Errors from attempting to map the gfns. */
-    errors = malloc(nr_pfns * sizeof(*errors));
     /* Pointers to page data to send.  Mapped gfns or local allocations. */
     guest_data = calloc(nr_pfns, sizeof(*guest_data));
     /* Pointers to locally allocated pages.  Need freeing. */
@@ -113,7 +111,7 @@ static int write_batch(struct xc_sr_context *ctx)
     /* iovec[] for writev(). */
     iov = malloc((nr_pfns + 4) * sizeof(*iov));
 
-    if ( !errors || !guest_data || !local_pages || !iov )
+    if ( !guest_data || !local_pages || !iov )
     {
         ERROR("Unable to allocate arrays for a batch of %u pages",
               nr_pfns);
@@ -158,8 +156,8 @@ static int write_batch(struct xc_sr_context *ctx)
 
     if ( nr_pages > 0 )
     {
-        guest_mapping = xenforeignmemory_map(
-            xch->fmem, ctx->domid, PROT_READ, nr_pages, ctx->save.mfns, errors);
+        guest_mapping = xenforeignmemory_map(xch->fmem, ctx->domid, PROT_READ,
+            nr_pages, ctx->save.mfns, ctx->save.errors);
         if ( !guest_mapping )
         {
             PERROR("Failed to map guest pages");
@@ -172,10 +170,11 @@ static int write_batch(struct xc_sr_context *ctx)
             if ( !page_type_has_stream_data(ctx->save.types[i]) )
                 continue;
 
-            if ( errors[p] )
+            if ( ctx->save.errors[p] )
             {
                 ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
-                      ctx->save.batch_pfns[i], ctx->save.mfns[p], errors[p]);
+                      ctx->save.batch_pfns[i], ctx->save.mfns[p],
+                      ctx->save.errors[p]);
                 goto err;
             }
 
@@ -271,7 +270,6 @@ static int write_batch(struct xc_sr_context *ctx)
     free(iov);
     free(local_pages);
     free(guest_data);
-    free(errors);
 
     return rc;
 }
@@ -846,10 +844,11 @@ static int setup(struct xc_sr_context *ctx)
                                   sizeof(*ctx->save.batch_pfns));
     ctx->save.mfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->save.mfns));
     ctx->save.types = malloc(MAX_BATCH_SIZE * sizeof(*ctx->save.types));
+    ctx->save.errors = malloc(MAX_BATCH_SIZE * sizeof(*ctx->save.errors));
     ctx->save.deferred_pages = bitmap_alloc(ctx->save.p2m_size);
 
     if ( !ctx->save.batch_pfns || !ctx->save.mfns || !ctx->save.types ||
-         !dirty_bitmap || !ctx->save.deferred_pages )
+         !ctx->save.errors || !dirty_bitmap || !ctx->save.deferred_pages )
     {
         ERROR("Unable to allocate memory for dirty bitmaps, batch pfns and"
               " deferred pages");
@@ -880,6 +879,7 @@ static void cleanup(struct xc_sr_context *ctx)
     xc_hypercall_buffer_free_pages(xch, dirty_bitmap,
                                    NRPAGES(bitmap_size(ctx->save.p2m_size)));
     free(ctx->save.deferred_pages);
+    free(ctx->save.errors);
     free(ctx->save.types);
     free(ctx->save.mfns);
     free(ctx->save.batch_pfns);

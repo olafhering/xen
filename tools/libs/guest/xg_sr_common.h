@@ -246,6 +246,7 @@ struct xc_sr_context
             xen_pfn_t *batch_pfns;
             xen_pfn_t *mfns;
             xen_pfn_t *types;
+            int *errors;
             unsigned int nr_batch_pfns;
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
