@@ -244,6 +244,7 @@ struct xc_sr_context
             struct precopy_stats stats;
 
             xen_pfn_t *batch_pfns;
+            xen_pfn_t *mfns;
             unsigned int nr_batch_pfns;
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
