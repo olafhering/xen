@@ -249,6 +249,7 @@ struct xc_sr_context
             int *errors;
             struct iovec *iov;
             uint64_t *rec_pfns;
+            void **guest_data;
             unsigned int nr_batch_pfns;
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
