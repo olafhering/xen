@@ -258,6 +258,7 @@ struct xc_sr_context
             struct restore_callbacks *callbacks;
             xen_pfn_t *pfns;
             uint32_t *types;
+            xen_pfn_t *mfns;
 
             int send_back_fd;
             unsigned long p2m_size;
