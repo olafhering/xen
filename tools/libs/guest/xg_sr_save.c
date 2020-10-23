@@ -95,7 +95,6 @@ static int write_batch(struct xc_sr_context *ctx)
     unsigned int i, p, nr_pages = 0, nr_pages_mapped = 0;
     unsigned int nr_pfns = ctx->save.nr_batch_pfns;
     void *page, *orig_page;
-    uint64_t *rec_pfns = NULL;
     int iovcnt = 0;
     struct xc_sr_rec_page_data_header hdr = { 0 };
     struct xc_sr_record rec = {
@@ -202,22 +201,15 @@ static int write_batch(struct xc_sr_context *ctx)
         }
     }
 
-    rec_pfns = malloc(nr_pfns * sizeof(*rec_pfns));
-    if ( !rec_pfns )
-    {
-        ERROR("Unable to allocate %zu bytes of memory for page data pfn list",
-              nr_pfns * sizeof(*rec_pfns));
-        goto err;
-    }
-
     hdr.count = nr_pfns;
 
     rec.length = sizeof(hdr);
-    rec.length += nr_pfns * sizeof(*rec_pfns);
+    rec.length += nr_pfns * sizeof(*ctx->save.rec_pfns);
     rec.length += nr_pages * PAGE_SIZE;
 
     for ( i = 0; i < nr_pfns; ++i )
-        rec_pfns[i] = ((uint64_t)(ctx->save.types[i]) << 32) | ctx->save.batch_pfns[i];
+        ctx->save.rec_pfns[i] = ((uint64_t)(ctx->save.types[i]) << 32) |
+                                ctx->save.batch_pfns[i];
 
     ctx->save.iov[0].iov_base = &rec.type;
     ctx->save.iov[0].iov_len = sizeof(rec.type);
@@ -228,12 +220,13 @@ static int write_batch(struct xc_sr_context *ctx)
     ctx->save.iov[2].iov_base = &hdr;
     ctx->save.iov[2].iov_len = sizeof(hdr);
 
-    ctx->save.iov[3].iov_base = rec_pfns;
-    ctx->save.iov[3].iov_len = nr_pfns * sizeof(*rec_pfns);
+    ctx->save.iov[3].iov_base = ctx->save.rec_pfns;
+    ctx->save.iov[3].iov_len = nr_pfns * sizeof(*ctx->save.rec_pfns);
 
     iovcnt = 4;
     ctx->save.pages_sent += nr_pages;
-    ctx->save.overhead_sent += sizeof(rec) + sizeof(hdr) + nr_pfns * sizeof(*rec_pfns);
+    ctx->save.overhead_sent += sizeof(rec) + sizeof(hdr) +
+                               nr_pfns * sizeof(*ctx->save.rec_pfns);
 
     if ( nr_pages )
     {
@@ -260,7 +253,6 @@ static int write_batch(struct xc_sr_context *ctx)
     rc = ctx->save.nr_batch_pfns = 0;
 
  err:
-    free(rec_pfns);
     if ( guest_mapping )
         xenforeignmemory_unmap(xch->fmem, guest_mapping, nr_pages_mapped);
     for ( i = 0; local_pages && i < nr_pfns; ++i )
@@ -843,11 +835,12 @@ static int setup(struct xc_sr_context *ctx)
     ctx->save.types = malloc(MAX_BATCH_SIZE * sizeof(*ctx->save.types));
     ctx->save.errors = malloc(MAX_BATCH_SIZE * sizeof(*ctx->save.errors));
     ctx->save.iov = malloc((4 + MAX_BATCH_SIZE) * sizeof(*ctx->save.iov));
+    ctx->save.rec_pfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->save.rec_pfns));
     ctx->save.deferred_pages = bitmap_alloc(ctx->save.p2m_size);
 
     if ( !ctx->save.batch_pfns || !ctx->save.mfns || !ctx->save.types ||
-         !ctx->save.errors || !ctx->save.iov || !dirty_bitmap ||
-         !ctx->save.deferred_pages )
+         !ctx->save.errors || !ctx->save.iov || !ctx->save.rec_pfns ||
+         !dirty_bitmap || !ctx->save.deferred_pages )
     {
         ERROR("Unable to allocate memory for dirty bitmaps, batch pfns and"
               " deferred pages");
@@ -878,6 +871,7 @@ static void cleanup(struct xc_sr_context *ctx)
     xc_hypercall_buffer_free_pages(xch, dirty_bitmap,
                                    NRPAGES(bitmap_size(ctx->save.p2m_size)));
     free(ctx->save.deferred_pages);
+    free(ctx->save.rec_pfns);
     free(ctx->save.iov);
     free(ctx->save.errors);
     free(ctx->save.types);
