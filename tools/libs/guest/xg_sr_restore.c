@@ -138,16 +138,8 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
                   const xen_pfn_t *original_pfns, const uint32_t *types)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = malloc(count * sizeof(*mfns));
     unsigned int i, nr_pfns = 0;
     int rc = -1;
-
-    if ( !mfns )
-    {
-        ERROR("Failed to allocate %zu bytes for populating the physmap",
-              2 * count * sizeof(*mfns));
-        goto err;
-    }
 
     for ( i = 0; i < count; ++i )
     {
@@ -157,7 +149,7 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
             rc = pfn_set_populated(ctx, original_pfns[i]);
             if ( rc )
                 goto err;
-            ctx->restore.pp_pfns[nr_pfns] = mfns[nr_pfns] = original_pfns[i];
+            ctx->restore.pp_pfns[nr_pfns] = ctx->restore.pp_mfns[nr_pfns] = original_pfns[i];
             ++nr_pfns;
         }
     }
@@ -165,7 +157,7 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
     if ( nr_pfns )
     {
         rc = xc_domain_populate_physmap_exact(
-            xch, ctx->domid, nr_pfns, 0, 0, mfns);
+            xch, ctx->domid, nr_pfns, 0, 0, ctx->restore.pp_mfns);
         if ( rc )
         {
             PERROR("Failed to populate physmap");
@@ -174,22 +166,20 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
 
         for ( i = 0; i < nr_pfns; ++i )
         {
-            if ( mfns[i] == INVALID_MFN )
+            if ( ctx->restore.pp_mfns[i] == INVALID_MFN )
             {
                 ERROR("Populate physmap failed for pfn %u", i);
                 rc = -1;
                 goto err;
             }
 
-            ctx->restore.ops.set_gfn(ctx, ctx->restore.pp_pfns[i], mfns[i]);
+            ctx->restore.ops.set_gfn(ctx, ctx->restore.pp_pfns[i], ctx->restore.pp_mfns[i]);
         }
     }
 
     rc = 0;
 
  err:
-    free(mfns);
-
     return rc;
 }
 
@@ -693,8 +683,10 @@ static int setup(struct xc_sr_context *ctx)
     ctx->restore.mfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.mfns));
     ctx->restore.map_errs = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.map_errs));
     ctx->restore.pp_pfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.pp_pfns));
+    ctx->restore.pp_mfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.pp_mfns));
     if ( !ctx->restore.pfns || !ctx->restore.types || !ctx->restore.mfns ||
-         !ctx->restore.map_errs || !ctx->restore.pp_pfns )
+         !ctx->restore.map_errs || !ctx->restore.pp_pfns ||
+         !ctx->restore.pp_mfns )
     {
         ERROR("Unable to allocate memory");
         rc = -1;
@@ -731,6 +723,7 @@ static void cleanup(struct xc_sr_context *ctx)
 
     free(ctx->restore.buffered_records);
     free(ctx->restore.populated_pfns);
+    free(ctx->restore.pp_mfns);
     free(ctx->restore.pp_pfns);
     free(ctx->restore.map_errs);
     free(ctx->restore.mfns);
