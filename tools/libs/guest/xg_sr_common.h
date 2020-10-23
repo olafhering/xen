@@ -261,6 +261,7 @@ struct xc_sr_context
             xen_pfn_t *mfns;
             int *map_errs;
             xen_pfn_t *pp_pfns;
+            xen_pfn_t *pp_mfns;
 
             int send_back_fd;
             unsigned long p2m_size;
