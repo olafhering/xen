@@ -262,6 +262,10 @@ struct xc_sr_context
             int *map_errs;
             xen_pfn_t *pp_pfns;
             xen_pfn_t *pp_mfns;
+            void **guest_data;
+
+            void *guest_mapping;
+            uint32_t nr_mapped_pages;
 
             int send_back_fd;
             unsigned long p2m_size;
