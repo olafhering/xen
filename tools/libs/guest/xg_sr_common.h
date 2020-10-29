@@ -263,6 +263,8 @@ struct xc_sr_context
             xen_pfn_t *pp_pfns;
             xen_pfn_t *pp_mfns;
             void **guest_data;
+            struct iovec *iov;
+            struct xc_sr_rec_page_data_header *pages;
 
             void *guest_mapping;
             uint32_t nr_mapped_pages;
@@ -311,6 +313,7 @@ struct xc_sr_context
 
             /* Sender has invoked verify mode on the stream. */
             bool verify;
+            void *verify_buf;
         } restore;
     };
 
