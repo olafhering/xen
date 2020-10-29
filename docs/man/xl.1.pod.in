@@ -486,7 +486,9 @@ domain.
 
 =item B<--debug>
 
-Display huge (!) amount of debug information during the migration process.
+This enables verification mode, which will transfer the entire domU memory
+once more to the receiving host to make sure the content is identical on
+both sides.
 
 =item B<-p>
 
