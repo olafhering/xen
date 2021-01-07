@@ -505,6 +505,14 @@ possible to use this option for a 'localhost' migration.
 
 Number of copy iterations before final suspend+move (default: 5)
 
+=item B<--min_remaing> I<pages>
+
+Number of remaining dirty pages. If the number of dirty pages drops that
+low, the guest is suspended and the domU will finally be moved to I<host>.
+
+This allows the host admin to control for how long the domU will likely
+be suspended during transit.
+
 =back
 
 =item B<remus> [I<OPTIONS>] I<domain-id> I<host>

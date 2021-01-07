@@ -166,17 +166,18 @@ const struct cmd_spec cmd_table[] = {
       &main_migrate, 0, 1,
       "Migrate a domain to another host",
       "[options] <Domain> <host>",
-      "-h              Print this help.\n"
-      "-C <config>     Send <config> instead of config file from creation.\n"
-      "-s <sshcommand> Use <sshcommand> instead of ssh.  String will be passed\n"
-      "                to sh. If empty, run <host> instead of ssh <host> xl\n"
-      "                migrate-receive [-d -e]\n"
-      "-e              Do not wait in the background (on <host>) for the death\n"
-      "                of the domain.\n"
-      "--debug         Enable verification mode.\n"
-      "-p              Do not unpause domain after migrating it.\n"
-      "-D              Preserve the domain id\n"
-      "--max_iters N   Number of copy iterations before final stop+move"
+      "-h                Print this help.\n"
+      "-C <config>       Send <config> instead of config file from creation.\n"
+      "-s <sshcommand>   Use <sshcommand> instead of ssh.  String will be passed\n"
+      "                  to sh. If empty, run <host> instead of ssh <host> xl\n"
+      "                  migrate-receive [-d -e]\n"
+      "-e                Do not wait in the background (on <host>) for the death\n"
+      "                  of the domain.\n"
+      "--debug           Enable verification mode.\n"
+      "-p                Do not unpause domain after migrating it.\n"
+      "-D                Preserve the domain id\n"
+      "--max_iters N     Number of copy iterations before final stop+move\n"
+      "--min_remaining N Number of remaining dirty pages before final stop+move"
     },
     { "restore",
       &main_restore, 0, 1,
