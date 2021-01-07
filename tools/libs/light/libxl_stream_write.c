@@ -344,11 +344,18 @@ void libxl__xc_domain_save_done(libxl__egc *egc, void *dss_void,
         goto err;
 
     if (retval) {
+        if (dss->remaining_dirty_pages) {
+            LOGD(NOTICE, dss->domid, "saving domain: aborted,"
+                 " %ld remaining dirty pages.", dss->remaining_dirty_pages);
+        } else {
         LOGEVD(ERROR, errnoval, dss->domid, "saving domain: %s",
               dss->dsps.guest_responded ?
               "domain responded to suspend request" :
               "domain did not respond to suspend request");
-        if (!dss->dsps.guest_responded)
+        }
+        if (dss->remaining_dirty_pages)
+           rc = ERROR_MIGRATION_ABORTED;
+        else if(!dss->dsps.guest_responded)
             rc = ERROR_GUEST_TIMEDOUT;
         else if (dss->rc)
             rc = dss->rc;

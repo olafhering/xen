@@ -177,7 +177,7 @@ static void migrate_do_preamble(int send_fd, int recv_fd, pid_t child,
 }
 
 static void migrate_domain(uint32_t domid, int preserve_domid,
-                           const char *rune, int debug,
+                           const char *rune, int debug, int abort_if_busy,
                            uint32_t max_iters,
                            uint32_t min_remaining,
                            const char *override_config_file)
@@ -213,14 +213,20 @@ static void migrate_domain(uint32_t domid, int preserve_domid,
 
     if (debug)
         props.flags |= LIBXL_SUSPEND_DEBUG;
+    if (abort_if_busy)
+        props.flags |= LIBXL_SUSPEND_ABORT_IF_BUSY;
     rc = libxl_domain_suspend(ctx, domid, send_fd, &props, NULL);
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
-        if (rc == ERROR_GUEST_TIMEDOUT)
-            goto failed_suspend;
-        else
-            goto failed_resume;
+        switch (rc) {
+            case ERROR_GUEST_TIMEDOUT:
+                goto failed_suspend;
+            case ERROR_MIGRATION_ABORTED:
+                goto failed_busy;
+            default:
+                goto failed_resume;
+        }
     }
 
     //fprintf(stderr, "migration sender: Transfer complete.\n");
@@ -300,6 +306,12 @@ static void migrate_domain(uint32_t domid, int preserve_domid,
     close(send_fd);
     migration_child_report(recv_fd);
     fprintf(stderr, "Migration failed, failed to suspend at sender.\n");
+    exit(EXIT_FAILURE);
+
+ failed_busy:
+    close(send_fd);
+    migration_child_report(recv_fd);
+    fprintf(stderr, "Migration aborted as requested, domain is too busy.\n");
     exit(EXIT_FAILURE);
 
  failed_resume:
@@ -545,13 +557,14 @@ int main_migrate(int argc, char **argv)
     char *rune = NULL;
     char *host;
     int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
-    int preserve_domid = 0;
+    int preserve_domid = 0, abort_if_busy = 0;
     uint32_t max_iters = 0;
     uint32_t min_remaining = 0;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"max_iters", 1, 0, 0x101},
         {"min_remaining", 1, 0, 0x102},
+        {"abort_if_busy", 0, 0, 0x103},
         {"live", 0, 0, 0x200},
         COMMON_LONG_OPTS
     };
@@ -584,6 +597,9 @@ int main_migrate(int argc, char **argv)
         break;
     case 0x102: /* --min_remaining */
         min_remaining = atoi(optarg);
+        break;
+    case 0x103: /* --abort_if_busy */
+        abort_if_busy = 1;
         break;
     case 0x200: /* --live */
         /* ignored for compatibility with xm */
@@ -619,7 +635,7 @@ int main_migrate(int argc, char **argv)
                   pause_after_migration ? " -p" : "");
     }
 
-    migrate_domain(domid, preserve_domid, rune, debug,
+    migrate_domain(domid, preserve_domid, rune, debug, abort_if_busy,
                    max_iters, min_remaining, config_filename);
     return EXIT_SUCCESS;
 }
