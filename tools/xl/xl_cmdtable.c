@@ -177,7 +177,11 @@ const struct cmd_spec cmd_table[] = {
       "-p                Do not unpause domain after migrating it.\n"
       "-D                Preserve the domain id\n"
       "--max_iters N     Number of copy iterations before final stop+move\n"
-      "--min_remaining N Number of remaining dirty pages before final stop+move"
+      "--min_remaining N Number of remaining dirty pages before final stop+move\n"
+      "--abort_if_busy   Abort migration instead of doing final stop+move,\n"
+      "                  if the number of dirty pages is higher than <min_remaining>\n"
+      "                  after <max_iters> iterations. Otherwise the amount of memory\n"
+      "                  to be transfered would exceed maximum allowed domU downtime."
     },
     { "restore",
       &main_restore, 0, 1,

@@ -513,6 +513,14 @@ low, the guest is suspended and the domU will finally be moved to I<host>.
 This allows the host admin to control for how long the domU will likely
 be suspended during transit.
 
+=item B<--abort_if_busy>
+
+Abort migration instead of doing final suspend/move/resume if the
+guest produced more than I<min_remaining> dirty pages during th number
+of I<max_iters> iterations.
+This avoids long periods of time where the guest is suspended, which
+may confuse the workload within domU.
+
 =back
 
 =item B<remus> [I<OPTIONS>] I<domain-id> I<host>

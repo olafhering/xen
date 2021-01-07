@@ -1863,6 +1863,7 @@ typedef struct {
 } libxl_domain_suspend_props;
 #define LIBXL_SUSPEND_DEBUG 1
 #define LIBXL_SUSPEND_LIVE 2
+#define LIBXL_SUSPEND_ABORT_IF_BUSY 4
 
 int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
                          libxl_domain_suspend_props *props,

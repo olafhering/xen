@@ -3651,9 +3651,11 @@ struct libxl__domain_save_state {
     libxl_domain_type type;
     int live;
     int debug;
+    int abort_if_busy;
     int checkpointed_stream;
     uint32_t max_iters;
     uint32_t min_remaining;
+    long remaining_dirty_pages;
     const libxl_domain_remus_info *remus;
     /* private */
     int rc;

@@ -383,11 +383,16 @@ static int libxl__domain_save_precopy_policy(struct precopy_stats stats, void *u
          stats.iteration, stats.dirty_count, stats.total_written);
     if (stats.dirty_count >= 0 && stats.dirty_count < dss->min_remaining)
         goto stop_copy;
-    if (stats.iteration >= dss->max_iters)
+    if (stats.dirty_count >= 0 && stats.iteration >= dss->max_iters)
         goto stop_copy;
     return XGS_POLICY_CONTINUE_PRECOPY;
 
 stop_copy:
+    if (dss->abort_if_busy)
+    {
+        dss->remaining_dirty_pages = stats.dirty_count;
+        return XGS_POLICY_ABORT;
+    }
     return XGS_POLICY_STOP_AND_COPY;
 }
 
