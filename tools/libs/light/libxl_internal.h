@@ -3649,6 +3649,7 @@ struct libxl__domain_save_state {
     int debug;
     int checkpointed_stream;
     uint32_t max_iters;
+    uint32_t min_remaining;
     const libxl_domain_remus_info *remus;
     /* private */
     int rc;

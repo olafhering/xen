@@ -381,7 +381,7 @@ static int libxl__domain_save_precopy_policy(struct precopy_stats stats, void *u
 
     LOGD(DEBUG, shs->domid, "iteration %u dirty_count %ld total_written %lu",
          stats.iteration, stats.dirty_count, stats.total_written);
-    if (stats.dirty_count >= 0 && stats.dirty_count < LIBXL_XGS_POLICY_TARGET_DIRTY_COUNT)
+    if (stats.dirty_count >= 0 && stats.dirty_count < dss->min_remaining)
         goto stop_copy;
     if (stats.iteration >= dss->max_iters)
         goto stop_copy;
