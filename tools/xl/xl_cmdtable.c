@@ -175,7 +175,8 @@ const struct cmd_spec cmd_table[] = {
       "                of the domain.\n"
       "--debug         Enable verification mode.\n"
       "-p              Do not unpause domain after migrating it.\n"
-      "-D              Preserve the domain id"
+      "-D              Preserve the domain id\n"
+      "--max_iters N   Number of copy iterations before final stop+move"
     },
     { "restore",
       &main_restore, 0, 1,
