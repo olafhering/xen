@@ -259,7 +259,10 @@ out:
  */
 int xc_domain_resume(xc_interface *xch, uint32_t domid, int fast)
 {
-    return (fast
+    int ret = (fast
             ? xc_domain_resume_cooperative(xch, domid)
             : xc_domain_resume_any(xch, domid));
+    if (getenv(XL_NO_SUSEINFO) == NULL)
+        SUSEINFO("domid %u: %s%s returned %d", domid, __func__, fast ? " fast" : "", ret);
+    return ret;
 }
