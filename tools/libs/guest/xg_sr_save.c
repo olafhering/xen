@@ -353,7 +353,7 @@ static void show_transfer_rate(struct xc_sr_context *ctx, struct timespec *start
     MiB_sec = (ctx->save.pages_sent * PAGE_SIZE * 1000U) / ms / (1024U*1024U);
 
     errno = 0;
-    IPRINTF("%s: %zu bytes + %zu pages in %ld.%09ld sec, %zu MiB/sec", __func__,
+    SUSEINFO("domid %u: %zu bytes + %zu pages in %ld.%09ld sec, %zu MiB/sec", ctx->domid,
             ctx->save.overhead_sent, ctx->save.pages_sent,
             diff.tv_sec, diff.tv_nsec, MiB_sec);
 }
@@ -876,12 +876,14 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     xc_interface *xch = ctx->xch;
     int rc, saved_rc = 0, saved_errno = 0;
 
+    SUSEINFO("domid %u: %s %s start, %lu pages allocated", ctx->domid, ctx->uuid, __func__, ctx->dominfo.tot_pages);
     IPRINTF("Saving domain %d, type %s",
             ctx->domid, dhdr_type_to_str(guest_type));
 
     rc = setup(ctx);
     if ( rc )
         goto err;
+    SUSEINFO("domid %u: p2m_size %lx", ctx->domid, ctx->save.p2m_size);
 
     xc_report_progress_single(xch, "Start of stream");
 
@@ -995,6 +997,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     PERROR("Save failed");
 
  done:
+    SUSEINFO("domid %u: %s done", ctx->domid, __func__);
     cleanup(ctx);
 
     if ( saved_rc )
@@ -1054,6 +1057,7 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
             io_fd, dom, flags, hvm);
 
     ctx.domid = dom;
+    sr_uuid_to_string(ctx.uuid, ctx.dominfo.handle);
 
     if ( hvm )
     {

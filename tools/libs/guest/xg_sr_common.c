@@ -163,6 +163,65 @@ static void __attribute__((unused)) build_assertions(void)
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_hvm_params)        != 8);
 }
 
+/* Write a two-character hex representation of 'byte' to digits[].
+   Pre-condition: sizeof(digits) >= 2 */
+static void byte_to_hex(char *digits, const uint8_t byte)
+{
+    uint8_t nybbel = byte >> 4;
+
+    if ( nybbel > 9 )
+        digits[0] = 'a' + nybbel-10;
+    else
+        digits[0] = '0' + nybbel;
+
+    nybbel = byte & 0x0f;
+    if ( nybbel > 9 )
+        digits[1] = 'a' + nybbel-10;
+    else
+        digits[1] = '0' + nybbel;
+}
+
+/* Convert an array of 16 unsigned bytes to a DCE/OSF formatted UUID
+   string.
+
+   Pre-condition: sizeof(dest) >= 37 */
+void sr_uuid_to_string(char *dest, const uint8_t *uuid)
+{
+    int i = 0;
+    char *p = dest;
+
+    for (; i < 4; i++ )
+    {
+        byte_to_hex(p, uuid[i]);
+        p += 2;
+    }
+    *p++ = '-';
+    for (; i < 6; i++ )
+    {
+        byte_to_hex(p, uuid[i]);
+        p += 2;
+    }
+    *p++ = '-';
+    for (; i < 8; i++ )
+    {
+        byte_to_hex(p, uuid[i]);
+        p += 2;
+    }
+    *p++ = '-';
+    for (; i < 10; i++ )
+    {
+        byte_to_hex(p, uuid[i]);
+        p += 2;
+    }
+    *p++ = '-';
+    for (; i < 16; i++ )
+    {
+        byte_to_hex(p, uuid[i]);
+        p += 2;
+    }
+    *p = '\0';
+}
+
 /*
  * Expand the tracking structures as needed.
  * To avoid realloc()ing too excessively, the size increased to the nearest

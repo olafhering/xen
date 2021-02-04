@@ -42,6 +42,15 @@
 
 #include <xen-tools/common-macros.h>
 
+/*
+ * Using loglevel ERROR to make sure the intended informational messages appear
+ * in libvirts libxl-driver.log
+ */
+#define SUSEINFO(_m, _a...)  do { int ERROR_errno = errno; \
+        xc_report(xch, xch->error_handler, XTL_ERROR, XC_ERROR_NONE, "SUSEINFO: " _m , ## _a ); \
+        errno = ERROR_errno; \
+        } while (0)
+
 #if defined(HAVE_VALGRIND_MEMCHECK_H) && !defined(NDEBUG) && !defined(__MINIOS__)
 /* Compile in Valgrind client requests? */
 #include <valgrind/memcheck.h>

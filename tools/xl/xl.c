@@ -424,6 +424,8 @@ int main(int argc, char **argv)
     logger = xtl_createlogger_stdiostream(stderr, minmsglevel, xtl_flags);
     if (!logger) exit(EXIT_FAILURE);
 
+    /* Provide context to libxl and libxc: no SUSEINFO() from xl */
+    setenv(XL_NO_SUSEINFO, "1", 0);
     xl_ctx_alloc();
 
     atexit(xl_ctx_free);

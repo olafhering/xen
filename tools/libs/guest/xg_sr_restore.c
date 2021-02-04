@@ -871,6 +871,7 @@ static int restore(struct xc_sr_context *ctx)
     struct xc_sr_rhdr rhdr;
     int rc, saved_rc = 0, saved_errno = 0;
 
+    SUSEINFO("domid %u: %s %s start", ctx->domid, ctx->uuid, __func__);
     IPRINTF("Restoring domain");
 
     rc = setup(ctx);
@@ -946,6 +947,7 @@ static int restore(struct xc_sr_context *ctx)
     PERROR("Restore failed");
 
  done:
+    SUSEINFO("domid %u: %s done", ctx->domid, __func__);
     cleanup(ctx);
 
     if ( saved_rc )
@@ -1011,6 +1013,7 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
             io_fd, dom, hvm, stream_type);
 
     ctx.domid = dom;
+    sr_uuid_to_string(ctx.uuid, ctx.dominfo.handle);
 
     if ( read_headers(&ctx) )
         return -1;

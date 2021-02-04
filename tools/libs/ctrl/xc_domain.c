@@ -67,9 +67,13 @@ int xc_domain_pause(xc_interface *xch,
                     uint32_t domid)
 {
     struct xen_domctl domctl = {};
+    int ret;
     domctl.cmd = XEN_DOMCTL_pausedomain;
     domctl.domain = domid;
-    return do_domctl(xch, &domctl);
+    ret = do_domctl(xch, &domctl);
+    if (getenv(XL_NO_SUSEINFO) == NULL)
+        SUSEINFO("domid %u: %s returned %d", domid, __func__, ret);
+    return ret;
 }
 
 
@@ -77,9 +81,13 @@ int xc_domain_unpause(xc_interface *xch,
                       uint32_t domid)
 {
     struct xen_domctl domctl = {};
+    int ret;
     domctl.cmd = XEN_DOMCTL_unpausedomain;
     domctl.domain = domid;
-    return do_domctl(xch, &domctl);
+    ret = do_domctl(xch, &domctl);
+    if (getenv(XL_NO_SUSEINFO) == NULL)
+        SUSEINFO("domid %u: %s returned %d", domid, __func__, ret);
+    return ret;
 }
 
 

@@ -133,6 +133,7 @@ const char *xtl_level_to_string(xentoollog_level); /* never fails */
 });
 
 
+#define XL_NO_SUSEINFO "XL_NO_SUSEINFO"
 #endif /* XENTOOLLOG_H */
 
 /*

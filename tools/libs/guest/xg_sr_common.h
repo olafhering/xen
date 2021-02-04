@@ -294,6 +294,7 @@ struct xc_sr_context
     xc_stream_type_t stream_type;
 
     xc_domaininfo_t dominfo;
+    char uuid[16*2+4+1];
 
     union /* Common save or restore data. */
     {
@@ -504,6 +505,8 @@ extern struct xc_sr_save_ops save_ops_x86_hvm;
 
 extern struct xc_sr_restore_ops restore_ops_x86_pv;
 extern struct xc_sr_restore_ops restore_ops_x86_hvm;
+
+extern void sr_uuid_to_string(char *dest, const uint8_t *uuid);
 
 struct xc_sr_record
 {
