@@ -136,6 +136,7 @@ static int x86_hvm_localise_page(struct xc_sr_context *ctx,
 static int x86_hvm_setup(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
+    unsigned long max_pfn;
 
     if ( ctx->restore.guest_type != DHDR_TYPE_X86_HVM )
     {
@@ -160,6 +161,13 @@ static int x86_hvm_setup(struct xc_sr_context *ctx)
         return -1;
     }
 #endif
+
+    max_pfn = max(ctx->restore.p2m_size, ctx->dominfo.max_pages);
+    if ( !sr_bitmap_expand(&ctx->restore.populated_pfns, max_pfn) )
+    {
+        PERROR("Unable to allocate memory for populated_pfns bitmap");
+        return -1;
+    }
 
     return 0;
 }
@@ -241,6 +249,7 @@ static int x86_hvm_stream_complete(struct xc_sr_context *ctx)
 
 static int x86_hvm_cleanup(struct xc_sr_context *ctx)
 {
+    sr_bitmap_free(&ctx->restore.populated_pfns);
     free(ctx->x86.hvm.restore.context.ptr);
 
     free(ctx->x86.restore.cpuid.ptr);

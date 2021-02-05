@@ -72,64 +72,6 @@ static int read_headers(struct xc_sr_context *ctx)
 }
 
 /*
- * Is a pfn populated?
- */
-static bool pfn_is_populated(const struct xc_sr_context *ctx, xen_pfn_t pfn)
-{
-    if ( pfn > ctx->restore.max_populated_pfn )
-        return false;
-    return test_bit(pfn, ctx->restore.populated_pfns);
-}
-
-/*
- * Set a pfn as populated, expanding the tracking structures if needed. To
- * avoid realloc()ing too excessively, the size increased to the nearest power
- * of two large enough to contain the required pfn.
- */
-static int pfn_set_populated(struct xc_sr_context *ctx, xen_pfn_t pfn)
-{
-    xc_interface *xch = ctx->xch;
-
-    if ( pfn > ctx->restore.max_populated_pfn )
-    {
-        xen_pfn_t new_max;
-        size_t old_sz, new_sz;
-        unsigned long *p;
-
-        /* Round up to the nearest power of two larger than pfn, less 1. */
-        new_max = pfn;
-        new_max |= new_max >> 1;
-        new_max |= new_max >> 2;
-        new_max |= new_max >> 4;
-        new_max |= new_max >> 8;
-        new_max |= new_max >> 16;
-#ifdef __x86_64__
-        new_max |= new_max >> 32;
-#endif
-
-        old_sz = bitmap_size(ctx->restore.max_populated_pfn + 1);
-        new_sz = bitmap_size(new_max + 1);
-        p = realloc(ctx->restore.populated_pfns, new_sz);
-        if ( !p )
-        {
-            ERROR("Failed to realloc populated bitmap");
-            errno = ENOMEM;
-            return -1;
-        }
-
-        memset((uint8_t *)p + old_sz, 0x00, new_sz - old_sz);
-
-        ctx->restore.populated_pfns    = p;
-        ctx->restore.max_populated_pfn = new_max;
-    }
-
-    assert(!test_bit(pfn, ctx->restore.populated_pfns));
-    set_bit(pfn, ctx->restore.populated_pfns);
-
-    return 0;
-}
-
-/*
  * Given a set of pfns, obtain memory from Xen to fill the physmap for the
  * unpopulated subset.  If types is NULL, no page type checking is performed
  * and all unpopulated pfns are populated.
@@ -911,16 +853,6 @@ static int setup(struct xc_sr_context *ctx)
     if ( rc )
         goto err;
 
-    ctx->restore.max_populated_pfn = (32 * 1024 / 4) - 1;
-    ctx->restore.populated_pfns = bitmap_alloc(
-        ctx->restore.max_populated_pfn + 1);
-    if ( !ctx->restore.populated_pfns )
-    {
-        ERROR("Unable to allocate memory for populated_pfns bitmap");
-        rc = -1;
-        goto err;
-    }
-
     ctx->restore.pfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.pfns));
     ctx->restore.types = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.types));
     ctx->restore.mfns = malloc(MAX_BATCH_SIZE * sizeof(*ctx->restore.mfns));
@@ -969,7 +901,6 @@ static void cleanup(struct xc_sr_context *ctx)
             xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->restore.p2m_size)));
 
     free(ctx->restore.buffered_records);
-    free(ctx->restore.populated_pfns);
     free(ctx->restore.pages);
     free(ctx->restore.iov);
     free(ctx->restore.guest_data);
