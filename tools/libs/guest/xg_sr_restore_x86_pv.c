@@ -1060,6 +1060,12 @@ static int x86_pv_setup(struct xc_sr_context *ctx)
     if ( rc )
         return rc;
 
+    if ( !sr_bitmap_expand(&ctx->restore.populated_pfns, 32 * 1024 / 4) )
+    {
+        PERROR("Unable to allocate memory for populated_pfns bitmap");
+        return -1;
+    }
+
     ctx->x86.pv.restore.nr_vcpus = ctx->dominfo.max_vcpu_id + 1;
     ctx->x86.pv.restore.vcpus = calloc(sizeof(struct xc_sr_x86_pv_restore_vcpu),
                                        ctx->x86.pv.restore.nr_vcpus);
@@ -1153,6 +1159,7 @@ static int x86_pv_stream_complete(struct xc_sr_context *ctx)
  */
 static int x86_pv_cleanup(struct xc_sr_context *ctx)
 {
+    sr_bitmap_free(&ctx->restore.populated_pfns);
     free(ctx->x86.pv.p2m);
     free(ctx->x86.pv.p2m_pfns);
 
