@@ -164,6 +164,45 @@ static void __attribute__((unused)) build_assertions(void)
 }
 
 /*
+ * Expand the tracking structures as needed.
+ * To avoid realloc()ing too excessively, the size increased to the nearest
+ * power of two large enough to contain the required number of bits.
+ */
+bool _sr_bitmap_expand(struct sr_bitmap *bm, unsigned long bits)
+{
+    size_t new_max;
+    size_t old_sz, new_sz;
+    void *p;
+
+    if (bits <= bm->bits)
+        return true;
+
+    /* Round up to the nearest power of two larger than bit, less 1. */
+    new_max = bits;
+    new_max |= new_max >> 1;
+    new_max |= new_max >> 2;
+    new_max |= new_max >> 4;
+    new_max |= new_max >> 8;
+    new_max |= new_max >> 16;
+    new_max |= sizeof(unsigned long) > 4 ? new_max >> 32 : 0;
+
+    /* Allocate units of unsigned long */
+    new_max = (new_max + BITS_PER_LONG - 1) & ~(BITS_PER_LONG - 1);
+
+    old_sz = bitmap_size(bm->bits);
+    new_sz = bitmap_size(new_max);
+    p = realloc(bm->p, new_sz);
+    if (!p)
+        return false;
+
+    memset(p + old_sz, 0, new_sz - old_sz);
+    bm->p = p;
+    bm->bits = new_max;
+
+    return true;
+}
+
+/*
  * Local variables:
  * mode: C
  * c-file-style: "BSD"

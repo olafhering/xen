@@ -18,6 +18,73 @@ const char *rec_type_to_str(uint32_t type);
 struct xc_sr_context;
 struct xc_sr_record;
 
+struct sr_bitmap
+{
+    void *p;
+    unsigned long bits;
+};
+
+extern bool _sr_bitmap_expand(struct sr_bitmap *bm, unsigned long bits);
+
+static inline bool sr_bitmap_expand(struct sr_bitmap *bm, unsigned long bits)
+{
+    if (bits > bm->bits)
+        return _sr_bitmap_expand(bm, bits);
+    return true;
+}
+
+static inline void sr_bitmap_free(struct sr_bitmap *bm)
+{
+    free(bm->p);
+    bm->p = NULL;
+}
+
+static inline bool sr_set_bit(unsigned long bit, struct sr_bitmap *bm)
+{
+    if (sr_bitmap_expand(bm, bit + 1) == false)
+        return false;
+
+    set_bit(bit, bm->p);
+    return true;
+}
+
+static inline bool sr_test_bit(unsigned long bit, struct sr_bitmap *bm)
+{
+    if (bit + 1 > bm->bits)
+        return false;
+    return !!test_bit(bit, bm->p);
+}
+
+static inline void sr_clear_bit(unsigned long bit, struct sr_bitmap *bm)
+{
+    if (bit + 1 <= bm->bits)
+        clear_bit(bit, bm->p);
+}
+
+static inline bool sr_test_and_clear_bit(unsigned long bit, struct sr_bitmap *bm)
+{
+    if (bit + 1 > bm->bits)
+        return false;
+    return !!test_and_clear_bit(bit, bm->p);
+}
+
+/* No way to report potential allocation error, bitmap must be expanded prior usage */
+static inline bool sr_test_and_set_bit(unsigned long bit, struct sr_bitmap *bm)
+{
+    if (bit + 1 > bm->bits)
+        return false;
+    return !!test_and_set_bit(bit, bm->p);
+}
+
+static inline bool sr_set_long_bit(unsigned long base_bit, struct sr_bitmap *bm)
+{
+    if (sr_bitmap_expand(bm, base_bit + BITS_PER_LONG) == false)
+        return false;
+
+    set_bit_long(base_bit, bm->p);
+    return true;
+}
+
 /**
  * Save operations.  To be implemented for each type of guest, for use by the
  * common save algorithm.
