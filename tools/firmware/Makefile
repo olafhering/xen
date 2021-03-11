@@ -5,6 +5,7 @@ include $(XEN_ROOT)/tools/Rules.mk
 TARGET      := hvmloader/hvmloader
 INST_DIR := $(DESTDIR)$(XENFIRMWAREDIR)
 
+SEABIOS_CPP ?= cpp
 SUBDIRS-y :=
 ifeq ($(OVMF_PATH),)
 SUBDIRS-$(CONFIG_OVMF) += ovmf-dir
@@ -38,7 +39,7 @@ ifeq ($(CONFIG_ROMBIOS),y)
 	false ; \
 	fi
 endif
-	$(MAKE) $(LD32BIT-y) CC=$(CC) PYTHON=$(PYTHON) VERSION="$(SEABIOS_UPSTREAM_REVISION)" subdirs-$@
+	$(MAKE) $(LD32BIT-y) CC=$(CC) CPP=$(SEABIOS_CPP) PYTHON=$(PYTHON) VERSION="$(SEABIOS_UPSTREAM_REVISION)" subdirs-$@
 
 
 .PHONY: install
