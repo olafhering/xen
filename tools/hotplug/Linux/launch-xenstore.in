@@ -15,6 +15,17 @@
 # License along with this library; If not, see <http://www.gnu.org/licenses/>.
 #
 
+initd=$1
+
+case "$initd" in
+	sysv) nonl='-n' ;;
+	systemd) nonl= ;;
+	*)
+	echo "first argument must be 'sysv' or 'systemd'"
+	exit 1
+	;;
+esac
+
 XENSTORED=@XENSTORED@
 
 . @XEN_SCRIPT_DIR@/hotplugpath.sh
@@ -44,13 +55,15 @@ timeout_xenstore () {
 	return 0
 }
 
-test_xenstore && exit 0
+mkdir -p @XEN_RUN_DIR@
+
+if test "$initd" = 'sysv' ; then
+	test_xenstore && exit 0
+fi
 
 test -f @CONFIG_DIR@/@CONFIG_LEAF_DIR@/xencommons && . @CONFIG_DIR@/@CONFIG_LEAF_DIR@/xencommons
 
 [ "$XENSTORETYPE" = "" ] && XENSTORETYPE=daemon
-
-/bin/mkdir -p @XEN_RUN_DIR@
 
 [ "$XENSTORETYPE" = "daemon" ] && {
 	[ -z "$XENSTORED_TRACE" ] || XENSTORED_ARGS="$XENSTORED_ARGS -T @XEN_LOG_DIR@/xenstored-trace.log"
@@ -82,14 +95,18 @@ test -f @CONFIG_DIR@/@CONFIG_LEAF_DIR@/xencommons && . @CONFIG_DIR@/@CONFIG_LEAF
 
 	rm -f @XEN_RUN_DIR@/xenstored.pid
 
-	echo -n Starting $XENSTORED...
-	prlimit --nofile=$XENSTORED_MAX_OPEN_FDS $XENSTORED --pid-file @XEN_RUN_DIR@/xenstored.pid $XENSTORED_ARGS
+	[ "$initd" = 'sysv' ] && {
+		echo $nonl Starting $XENSTORED...
+		prlimit --nofile=$XENSTORED_MAX_OPEN_FDS $XENSTORED --pid-file @XEN_RUN_DIR@/xenstored.pid $XENSTORED_ARGS
+		timeout_xenstore $XENSTORED || exit 1
+		XS_PID=`cat @XEN_RUN_DIR@/xenstored.pid`
+		echo $XS_OOM_SCORE >/proc/$XS_PID/oom_score_adj
+		exit 0
+	}
 
-	systemd-notify --booted 2>/dev/null || timeout_xenstore $XENSTORED || exit 1
-	XS_PID=`cat @XEN_RUN_DIR@/xenstored.pid`
-	echo $XS_OOM_SCORE >/proc/$XS_PID/oom_score_adj
-
-	exit 0
+	echo $XS_OOM_SCORE >/proc/$$/oom_score_adj
+	exec prlimit --nofile=$XENSTORED_MAX_OPEN_FDS $XENSTORED -N $XENSTORED_ARGS
+	exit 1
 }
 
 [ "$XENSTORETYPE" = "domain" ] && {
@@ -99,9 +116,12 @@ test -f @CONFIG_DIR@/@CONFIG_LEAF_DIR@/xencommons && . @CONFIG_DIR@/@CONFIG_LEAF
 	XENSTORE_DOMAIN_ARGS="$XENSTORE_DOMAIN_ARGS --memory $XENSTORE_DOMAIN_SIZE"
 	[ -z "$XENSTORE_MAX_DOMAIN_SIZE" ] || XENSTORE_DOMAIN_ARGS="$XENSTORE_DOMAIN_ARGS --maxmem $XENSTORE_MAX_DOMAIN_SIZE"
 
-	echo -n Starting $XENSTORE_DOMAIN_KERNEL...
+	echo $nonl Starting $XENSTORE_DOMAIN_KERNEL...
 	${LIBEXEC_BIN}/init-xenstore-domain $XENSTORE_DOMAIN_ARGS || exit 1
-	systemd-notify --ready 2>/dev/null
+	[ "$initd" = 'systemd' ] && {
+		systemd-notify --ready
+		sleep 9
+	}
 
 	exit 0
 }
