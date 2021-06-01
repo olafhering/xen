@@ -28,7 +28,7 @@ int osdep_xenforeignmemory_close(xenforeignmemory_handle *fmem);
 void *osdep_xenforeignmemory_map(xenforeignmemory_handle *fmem,
                                  uint32_t dom, int prot,
                                  size_t num,
-                                 const xen_pfn_t arr[num], int err[num]);
+                                 const xen_pfn_t arr[/*num*/], int err[/*num*/]);
 int osdep_xenforeignmemory_unmap(xenforeignmemory_handle *fmem,
                                  void *addr, size_t num);
 
