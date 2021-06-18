@@ -97,6 +97,13 @@
     __asm__ ("" : "=r"(__ptr) : "0"(ptr));      \
     (typeof(ptr)) (__ptr + (off)); })
 
+#ifndef CONFIG_GCC_VERSION
+# ifdef __GNUC__
+#  define CONFIG_GCC_VERSION (__GNUC__ * 10000           \
+                              + __GNUC_MINOR__ * 100     \
+                              + __GNUC_PATCHLEVEL__)
+# endif
+#endif
 #if CONFIG_GCC_VERSION >= 110000 /* See gcc bug 100680. */
 # define gcc11_wrap(x) RELOC_HIDE(x, 0)
 #else
