@@ -21,6 +21,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <xenstore.h>
 #include <libxl.h>
 #include <libxl_utils.h>
 #include <libxlutil.h>
@@ -127,6 +128,8 @@ static int save_domain(uint32_t domid, int preserve_domid,
                        const char *filename, int checkpoint,
                        int leavepaused, const char *override_config_file)
 {
+    struct xs_handle *xsh = NULL;
+    char path[80];
     int fd;
     uint8_t *config_data;
     int config_len;
@@ -144,11 +147,23 @@ static int save_domain(uint32_t domid, int preserve_domid,
         fprintf(stderr, "Failed to open temp file %s for writing\n", filename);
         exit(EXIT_FAILURE);
     }
+    if (leavepaused || checkpoint)
+    {
+        snprintf(path, sizeof(path), "/libxl/%u/" XL_SAVE_PAUSE_CHECKPOINT, domid);
+        xsh = xs_open(0);
+        if (xsh)
+            xs_write(xsh, XBT_NULL, path, leavepaused ? "p" : "c", 1);
+    }
 
     save_domain_core_writeconfig(fd, filename, config_data, config_len);
 
     int rc = libxl_domain_suspend(ctx, domid, fd, &props, NULL);
     close(fd);
+
+    if (xsh) {
+        xs_rm(xsh, XBT_NULL, path);
+        xs_close(xsh);
+    }
 
     if (rc < 0) {
         fprintf(stderr, "Failed to save domain, resuming domain\n");

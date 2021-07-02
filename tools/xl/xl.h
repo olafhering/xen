@@ -303,6 +303,7 @@ typedef enum {
     DOMAIN_RESTART_SOFT_RESET,   /* Soft reset should be performed */
 } domain_restart_type;
 
+#define XL_SAVE_PAUSE_CHECKPOINT "xl-save-pc"
 extern void printf_info_sexp(int domid, libxl_domain_config *d_config, FILE *fh);
 extern void apply_global_affinity_masks(libxl_domain_type type,
                                         libxl_bitmap *vcpu_affinity_array,
