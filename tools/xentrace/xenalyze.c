@@ -5318,6 +5318,138 @@ void hvm_vmentry_process(struct record_info *ri, struct hvm_data *h) {
     h->entry_tsc = ri->tsc;
 }
 
+static void hvm_emul_process(struct record_info *ri)
+{
+    switch(ri->event) {
+    case TRC_HVM_EMUL_HPET_START_TIMER:
+        {
+        struct {
+            unsigned int tn, irq;
+            unsigned long long delta, period;
+        } *r = (typeof(r))ri->d;
+        printf(" %s hpet create [ tn = %u, irq = %u, delta = 0x%016llx, period = 0x%016llx ]\n",
+               ri->dump_header, r->tn, r->irq, r->delta, r->period);
+        break;
+        }
+    case TRC_HVM_EMUL_PIT_START_TIMER:
+        {
+        struct {
+            int delta, period;
+        } *r = (typeof(r))ri->d;
+        printf(" %s pit create [ delta = 0x%08x, period = 0x%08x ]\n",
+               ri->dump_header, r->delta, r->period);
+        break;
+        }
+    case TRC_HVM_EMUL_RTC_START_TIMER:
+        {
+        struct {
+            int delta, period;
+        } *r = (typeof(r))ri->d;
+        printf(" %s rtc create [ delta = 0x%08x, period = 0x%08x ]\n",
+               ri->dump_header, r->delta, r->period);
+        break;
+        }
+    case TRC_HVM_EMUL_LAPIC_START_TIMER:
+        {
+        struct {
+            unsigned long long delta, period;
+            unsigned int irq;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vlapic create [ delta = 0x%016llx , period = 0x%016llx, irq = %u ]\n",
+               ri->dump_header, r->delta, r->period, r->irq);
+        break;
+        }
+    case TRC_HVM_EMUL_HPET_STOP_TIMER:
+        {
+        struct {
+            unsigned int tn;
+        } *r = (typeof(r))ri->d;
+        printf(" %s hpet destroy [ tn = %u ]\n", ri->dump_header, r->tn);
+        break;
+        }
+    case TRC_HVM_EMUL_PIT_STOP_TIMER:
+        printf(" %s pit destroy\n", ri->dump_header);
+        break;
+    case TRC_HVM_EMUL_RTC_STOP_TIMER:
+        printf(" %s rtc destroy\n", ri->dump_header);
+        break;
+    case TRC_HVM_EMUL_LAPIC_STOP_TIMER:
+        printf(" %s vlapic destroy\n", ri->dump_header);
+        break;
+    case TRC_HVM_EMUL_PIT_TIMER_CB:
+        printf(" %s pit callback\n", ri->dump_header);
+        break;
+    case TRC_HVM_EMUL_LAPIC_TIMER_CB:
+        printf(" %s vlapic callback\n", ri->dump_header);
+        break;
+    case TRC_HVM_EMUL_PIC_INT_OUTPUT:
+        {
+        struct {
+            unsigned int int_output, is_master, irq;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vpic_update_int_output [ int_output = %u, is_master = %u, irq = %u ]\n",
+               ri->dump_header, r->int_output, r->is_master, r->irq);
+        break;
+        }
+    case TRC_HVM_EMUL_PIC_KICK:
+        {
+        struct {
+            unsigned int irq;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vpic vcpu_kick [ irq = %u ]\n",
+               ri->dump_header, r->irq);
+        break;
+        }
+    case TRC_HVM_EMUL_PIC_INTACK:
+        {
+        struct {
+            unsigned int is_master, irq;
+        } *r = (typeof(r))ri->d;
+        printf(" %s __vpic_intack [ is_master = %u, irq = %u ]\n",
+               ri->dump_header, r->is_master, r->irq);
+        break;
+        }
+    case TRC_HVM_EMUL_PIC_POSEDGE:
+        {
+        struct {
+            unsigned int irq;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vpic_irq_positive_edge [ irq = %u ]\n",
+               ri->dump_header, r->irq);
+        break;
+        }
+    case TRC_HVM_EMUL_PIC_NEGEDGE:
+        {
+        struct {
+            unsigned int irq;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vpic_irq_negative_edge [ irq = %u ]\n",
+               ri->dump_header, r->irq);
+        break;
+        }
+    case TRC_HVM_EMUL_PIC_PEND_IRQ_CALL:
+        {
+        struct {
+            unsigned int accept_pic_intr, int_output;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vpic_ack_pending_irq [ accept_pic_intr = %u, int_output = %u ]\n",
+               ri->dump_header, r->accept_pic_intr, r->int_output);
+        break;
+        }
+    case TRC_HVM_EMUL_LAPIC_PIC_INTR:
+        {
+        struct {
+            unsigned int i8259_target, accept_pic_int;
+        } *r = (typeof(r))ri->d;
+        printf(" %s vlapic_accept_pic_intr [ i8259_target = %u, accept_pic_int = %u ]\n",
+               ri->dump_header, r->i8259_target, r->accept_pic_int);
+        break;
+        }
+    default:
+        break;
+    }
+}
+
 void hvm_process(struct pcpu_info *p)
 {
     struct record_info *ri = &p->ri;
@@ -5354,6 +5486,26 @@ void hvm_process(struct pcpu_info *p)
         case TRC_HVM_VMENTRY:
             UPDATE_VOLUME(p, hvm[HVM_VOL_VMENTRY], ri->size);
             hvm_vmentry_process(ri, &p->current->hvm);
+            break;
+        case TRC_HVM_EMUL_HPET_START_TIMER:
+        case TRC_HVM_EMUL_PIT_START_TIMER:
+        case TRC_HVM_EMUL_RTC_START_TIMER:
+        case TRC_HVM_EMUL_LAPIC_START_TIMER:
+        case TRC_HVM_EMUL_HPET_STOP_TIMER:
+        case TRC_HVM_EMUL_PIT_STOP_TIMER:
+        case TRC_HVM_EMUL_RTC_STOP_TIMER:
+        case TRC_HVM_EMUL_LAPIC_STOP_TIMER:
+        case TRC_HVM_EMUL_PIT_TIMER_CB:
+        case TRC_HVM_EMUL_LAPIC_TIMER_CB:
+        case TRC_HVM_EMUL_PIC_INT_OUTPUT:
+        case TRC_HVM_EMUL_PIC_KICK:
+        case TRC_HVM_EMUL_PIC_INTACK:
+        case TRC_HVM_EMUL_PIC_POSEDGE:
+        case TRC_HVM_EMUL_PIC_NEGEDGE:
+        case TRC_HVM_EMUL_PIC_PEND_IRQ_CALL:
+        case TRC_HVM_EMUL_LAPIC_PIC_INTR:
+            if(opt.dump_all)
+                hvm_emul_process(ri);
             break;
         default:
             fprintf(warn, "Unknown hvm event: %x\n", ri->event);
