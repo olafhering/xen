@@ -53,6 +53,7 @@ integer_param("tevt_mask", opt_tevt_mask);
 static struct t_info *t_info;
 static unsigned int t_info_pages;
 
+static DEFINE_PER_CPU_READ_MOSTLY(uint16_t, t_info_mfn_offset);
 static DEFINE_PER_CPU_READ_MOSTLY(struct t_buf *, t_bufs);
 static DEFINE_PER_CPU_READ_MOSTLY(spinlock_t, t_lock);
 static u32 data_size __read_mostly;
@@ -110,7 +111,8 @@ static int calculate_tbuf_size(unsigned int pages, uint16_t t_info_first_offset)
     struct t_info dummy_pages;
     typeof(dummy_pages.tbuf_size) max_pages;
     typeof(dummy_pages.mfn_offset[0]) max_mfn_offset;
-    unsigned int max_cpus = num_online_cpus();
+    unsigned int nr_cpus = num_online_cpus();
+    unsigned int max_cpus = nr_cpus;
     unsigned int t_info_words;
 
     /* force maximum value for an unsigned type */
@@ -148,11 +150,11 @@ static int calculate_tbuf_size(unsigned int pages, uint16_t t_info_first_offset)
      * NB this calculation is correct, because t_info_first_offset is
      * in words, not bytes, not bytes
      */
-    t_info_words = num_online_cpus() * pages + t_info_first_offset;
+    t_info_words = nr_cpus * pages + t_info_first_offset;
     t_info_pages = PFN_UP(t_info_words * sizeof(uint32_t));
     printk(XENLOG_INFO "xentrace: requesting %u t_info pages "
            "for %u trace pages on %u cpus\n",
-           t_info_pages, pages, num_online_cpus());
+           t_info_pages, pages, nr_cpus);
     return pages;
 }
 
@@ -173,6 +175,7 @@ static int alloc_trace_bufs(unsigned int pages)
     uint32_t *t_info_mfn_list;
     uint16_t t_info_first_offset;
     uint16_t offset;
+    uint16_t index = 0;
 
     if ( t_info )
         return -EBUSY;
@@ -201,8 +204,9 @@ static int alloc_trace_bufs(unsigned int pages)
      */
     for_each_online_cpu(cpu)
     {
-        offset = t_info_first_offset + (cpu * pages);
-        t_info->mfn_offset[cpu] = offset;
+        per_cpu(t_info_mfn_offset, cpu) = index;
+        offset = t_info_first_offset + (index * pages);
+        t_info->mfn_offset[index] = offset;
 
         for ( i = 0; i < pages; i++ )
         {
@@ -216,6 +220,7 @@ static int alloc_trace_bufs(unsigned int pages)
             }
             t_info_mfn_list[offset + i] = virt_to_mfn(p);
         }
+        index++;
     }
 
     /*
@@ -227,7 +232,7 @@ static int alloc_trace_bufs(unsigned int pages)
 
         spin_lock_init(&per_cpu(t_lock, cpu));
 
-        offset = t_info->mfn_offset[cpu];
+        offset = t_info->mfn_offset[per_cpu(t_info_mfn_offset, cpu)];
 
         /* Initialize the buffer metadata */
         per_cpu(t_bufs, cpu) = buf = mfn_to_virt(t_info_mfn_list[offset]);
@@ -260,7 +265,7 @@ static int alloc_trace_bufs(unsigned int pages)
 out_dealloc:
     for_each_online_cpu(cpu)
     {
-        offset = t_info->mfn_offset[cpu];
+        offset = t_info->mfn_offset[per_cpu(t_info_mfn_offset, cpu)];
         if ( !offset )
             continue;
         for ( i = 0; i < pages; i++ )
@@ -527,7 +532,7 @@ static unsigned char *next_record(const struct t_buf *buf, uint32_t *next,
 
     /* offset into array of mfns */
     per_cpu_mfn_nr = x >> PAGE_SHIFT;
-    per_cpu_mfn_offset = t_info->mfn_offset[smp_processor_id()];
+    per_cpu_mfn_offset = t_info->mfn_offset[this_cpu(t_info_mfn_offset)];
     mfn_list = (uint32_t *)t_info;
     mfn = mfn_list[per_cpu_mfn_offset + per_cpu_mfn_nr];
     this_page = mfn_to_virt(mfn);
