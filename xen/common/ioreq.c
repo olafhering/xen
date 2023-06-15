@@ -342,6 +342,10 @@ static int ioreq_server_alloc_mfn(struct ioreq_server *s, bool buf)
 {
     struct ioreq_page *iorp = buf ? &s->bufioreq : &s->ioreq;
     struct page_info *page;
+    trc_ioreq_server_alloc_mfn_t trc = {
+        .buf = buf,
+        .s = TRC_ePTR(s),
+    };
 
     if ( iorp->page )
     {
@@ -377,6 +381,8 @@ static int ioreq_server_alloc_mfn(struct ioreq_server *s, bool buf)
 
     iorp->page = page;
     clear_page(iorp->va);
+    trc.mfn = mfn_x(page_to_mfn(page));
+    TRACE_trc(TRC_IOREQ_ioreq_server_alloc_mfn);
     return 0;
 
  fail:
