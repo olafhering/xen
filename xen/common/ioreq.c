@@ -625,6 +625,11 @@ static int ioreq_server_alloc_rangesets(struct ioreq_server *s,
 {
     unsigned int i;
     int rc;
+    trc_ioreq_server_alloc_rangesets_t trc = {
+        .s = TRC_ePTR(s),
+        .id = id,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_alloc_rangesets);
 
     for ( i = 0; i < NR_IO_RANGE_TYPES; i++ )
     {
