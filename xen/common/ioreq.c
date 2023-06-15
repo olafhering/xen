@@ -1295,6 +1295,10 @@ void ioreq_server_destroy_all(struct domain *d)
 {
     struct ioreq_server *s;
     unsigned int id;
+    trc_ioreq_server_destroy_all_t trc = {
+        .d = d->domain_id,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_destroy_all);
 
     if ( !arch_ioreq_server_destroy_all(d) )
         return;
