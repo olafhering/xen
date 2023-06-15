@@ -582,6 +582,10 @@ static void ioreq_server_remove_all_vcpus(struct ioreq_server *s)
 static int ioreq_server_alloc_pages(struct ioreq_server *s)
 {
     int rc;
+    trc_ioreq_server_alloc_pages_t trc = {
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_alloc_pages);
 
     rc = ioreq_server_alloc_mfn(s, false);
 
