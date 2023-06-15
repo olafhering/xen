@@ -611,6 +611,10 @@ static void ioreq_server_free_pages(struct ioreq_server *s)
 static void ioreq_server_free_rangesets(struct ioreq_server *s)
 {
     unsigned int i;
+    trc_ioreq_server_free_rangesets_t trc = {
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_free_rangesets);
 
     for ( i = 0; i < NR_IO_RANGE_TYPES; i++ )
         rangeset_destroy(s->range[i]);
