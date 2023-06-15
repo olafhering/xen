@@ -552,6 +552,10 @@ static void ioreq_server_remove_vcpu(struct ioreq_server *s,
 static void ioreq_server_remove_all_vcpus(struct ioreq_server *s)
 {
     struct ioreq_vcpu *sv, *next;
+    trc_ioreq_server_remove_all_vcpus_t trc = {
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_remove_all_vcpus);
 
     spin_lock(&s->lock);
 
