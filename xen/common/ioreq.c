@@ -671,6 +671,11 @@ static int ioreq_server_alloc_rangesets(struct ioreq_server *s,
 static void ioreq_server_enable(struct ioreq_server *s)
 {
     struct ioreq_vcpu *sv;
+    trc_ioreq_server_enable_t trc = {
+        .s = TRC_ePTR(s),
+        .enabled = s->enabled,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_enable);
 
     spin_lock(&s->lock);
 
