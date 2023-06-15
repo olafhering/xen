@@ -91,4 +91,5 @@ static inline void trace_time(
 /* Create a trace record with time included. */
 #define TRACE_TIME(_e, ...) TRACE((_e) | TRC_HD_CYCLE_FLAG, ## __VA_ARGS__)
 
+#define TRACE_trc(_e) do{if(unlikely(tb_init_done))trace_time(_e, sizeof(trc), &trc);}while(0)
 #endif /* __XEN_TRACE_H__ */
