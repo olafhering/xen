@@ -1156,6 +1156,13 @@ int ioreq_server_map_mem_type(struct domain *d, ioservid_t id,
 {
     struct ioreq_server *s;
     int rc;
+    trc_ioreq_server_map_mem_type_t trc = {
+        .d = d->domain_id,
+        .id = id,
+        .type = type,
+        .flags = flags,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_map_mem_type);
 
     if ( type != HVMMEM_ioreq_server )
         return -EINVAL;
