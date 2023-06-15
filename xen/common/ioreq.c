@@ -770,6 +770,11 @@ static int ioreq_server_init(struct ioreq_server *s,
 
 static void ioreq_server_deinit(struct ioreq_server *s)
 {
+    trc_ioreq_server_deinit_t trc = {
+        .s = TRC_ePTR(s),
+        .enabled = s->enabled,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_deinit);
     ASSERT(!s->enabled);
     ioreq_server_remove_all_vcpus(s);
 
