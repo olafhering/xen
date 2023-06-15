@@ -1026,6 +1026,13 @@ static int ioreq_server_map_io_range(struct domain *d, ioservid_t id,
     struct ioreq_server *s;
     struct rangeset *r;
     int rc;
+    trc_ioreq_server_map_io_range_t trc = {
+        .d = d->domain_id,
+        .id = id,
+        .type = type,
+        .start = start,
+        .end = end,
+    };
 
     if ( start > end )
         return -EINVAL;
@@ -1068,6 +1075,9 @@ static int ioreq_server_map_io_range(struct domain *d, ioservid_t id,
  out:
     rspin_unlock(&d->ioreq_server.lock);
 
+    if (rc)
+        trc.rc = -rc;
+    TRACE_trc(TRC_IOREQ_ioreq_server_map_io_range);
     return rc;
 }
 
