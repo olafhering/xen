@@ -697,6 +697,11 @@ static void ioreq_server_enable(struct ioreq_server *s)
 
 static void ioreq_server_disable(struct ioreq_server *s)
 {
+    trc_ioreq_server_disable_t trc = {
+        .s = TRC_ePTR(s),
+        .enabled = s->enabled,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_disable);
     spin_lock(&s->lock);
 
     if ( !s->enabled )
