@@ -139,11 +139,20 @@ bool domain_has_ioreq_server(const struct domain *d)
 {
     const struct ioreq_server *s;
     unsigned int id;
+    bool has_ioreq = false;
+    trc_domain_has_ioreq_server_t trc = {
+        .d = d->domain_id,
+    };
 
     FOR_EACH_IOREQ_SERVER(d, id, s)
-        return true;
+    {
+        has_ioreq = true;
+        break;
+    }
 
-    return false;
+    trc.has_ioreq = has_ioreq;
+    TRACE_trc(TRC_IOREQ_domain_has_ioreq_server);
+    return has_ioreq;
 }
 
 static struct ioreq_vcpu *get_pending_vcpu(const struct vcpu *v,
