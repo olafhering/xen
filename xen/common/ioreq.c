@@ -1331,9 +1331,16 @@ struct ioreq_server *ioreq_server_select(struct domain *d,
     uint8_t type;
     uint64_t addr;
     unsigned int id;
+    trc_ioreq_server_select_t trc = {
+        .d = d->domain_id,
+        .type = p->type,
+    };
 
     if ( !arch_ioreq_server_get_type_addr(d, p, &type, &addr) )
-        return NULL;
+    {
+        s = NULL;
+        goto out;
+    }
 
     FOR_EACH_IOREQ_SERVER(d, id, s)
     {
@@ -1352,7 +1359,7 @@ struct ioreq_server *ioreq_server_select(struct domain *d,
             start = addr;
             end = start + p->size - 1;
             if ( rangeset_contains_range(r, start, end) )
-                return s;
+                goto out;
 
             break;
 
@@ -1361,7 +1368,7 @@ struct ioreq_server *ioreq_server_select(struct domain *d,
             end = ioreq_mmio_last_byte(p);
 
             if ( rangeset_contains_range(r, start, end) )
-                return s;
+                goto out;
 
             break;
 
@@ -1370,14 +1377,17 @@ struct ioreq_server *ioreq_server_select(struct domain *d,
             {
                 p->type = IOREQ_TYPE_PCI_CONFIG;
                 p->addr = addr;
-                return s;
+                goto out;
             }
 
             break;
         }
     }
 
-    return NULL;
+out:
+    trc.s = TRC_ePTR(s);
+    TRACE_trc(TRC_IOREQ_ioreq_server_select);
+    return s;
 }
 
 static int ioreq_send_buffered(struct ioreq_server *s, ioreq_t *p)
