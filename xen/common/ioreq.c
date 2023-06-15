@@ -420,6 +420,10 @@ bool is_ioreq_server_page(struct domain *d, const struct page_info *page)
     const struct ioreq_server *s;
     unsigned int id;
     bool found = false;
+    trc_is_ioreq_server_page_t trc = {
+        .d = d->domain_id,
+        .mfn = page ? mfn_x(page_to_mfn(page)) : 0,
+    };
 
     rspin_lock(&d->ioreq_server.lock);
 
@@ -434,6 +438,8 @@ bool is_ioreq_server_page(struct domain *d, const struct page_info *page)
 
     rspin_unlock(&d->ioreq_server.lock);
 
+    trc.found = found;
+    TRACE_trc(TRC_IOREQ_is_ioreq_server_page);
     return found;
 }
 
