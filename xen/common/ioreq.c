@@ -519,6 +519,12 @@ static void ioreq_server_remove_vcpu(struct ioreq_server *s,
                                      struct vcpu *v)
 {
     struct ioreq_vcpu *sv;
+    trc_ioreq_server_remove_vcpu_t trc = {
+        .d = v->domain->domain_id,
+        .v = v->vcpu_id,
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_remove_vcpu);
 
     spin_lock(&s->lock);
 
