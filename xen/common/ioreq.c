@@ -864,6 +864,11 @@ static int ioreq_server_destroy(struct domain *d, ioservid_t id)
 {
     struct ioreq_server *s;
     int rc;
+    trc_ioreq_server_destroy_t trc = {
+        .d = d->domain_id,
+        .id = id,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_destroy);
 
     rspin_lock(&d->ioreq_server.lock);
 
