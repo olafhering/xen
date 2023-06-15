@@ -36,6 +36,13 @@
 void ioreq_request_mapcache_invalidate(const struct domain *d)
 {
     struct vcpu *v = current;
+    trc_request_mapcache_invalidate_t trc = {
+        .d = v->domain->domain_id,
+        .v = v->vcpu_id,
+        .target = d->domain_id,
+        .finished = d->creation_finished,
+    };
+    TRACE_trc(TRC_IOREQ_request_mapcache_invalidate);
 
     if ( d == v->domain )
         v->mapcache_invalidate = true;
