@@ -206,6 +206,15 @@ static bool wait_for_io(struct ioreq_vcpu *sv, ioreq_t *p)
     unsigned int prev_state = STATE_IOREQ_NONE;
     unsigned int state = p->state;
     uint64_t data = ~0;
+    trc_wait_for_io_t trc = {
+        .sv = TRC_ePTR(sv),
+        .d = sv->vcpu->domain->domain_id,
+        .v = sv->vcpu->vcpu_id,
+        .prev_state = prev_state,
+        .state = state,
+        .counter = 1,
+    };
+    TRACE_trc(TRC_IOREQ_wait_for_io);
 
     smp_rmb();
 
@@ -224,6 +233,10 @@ static bool wait_for_io(struct ioreq_vcpu *sv, ioreq_t *p)
             return false; /* bail */
         }
 
+        trc.counter++;
+        trc.state = state;
+        trc.prev_state = prev_state;
+        TRACE_trc(TRC_IOREQ_wait_for_io);
         switch ( prev_state = state )
         {
         case STATE_IORESP_READY: /* IORESP_READY -> NONE */
@@ -249,6 +262,8 @@ static bool wait_for_io(struct ioreq_vcpu *sv, ioreq_t *p)
         break;
     }
 
+    trc.counter = 0;
+    TRACE_trc(TRC_IOREQ_wait_for_io);
     p = &sv->vcpu->io.req;
     if ( ioreq_needs_completion(p) )
         p->data = data;
