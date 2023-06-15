@@ -1277,6 +1277,11 @@ void ioreq_server_remove_vcpu_all(struct domain *d, struct vcpu *v)
 {
     struct ioreq_server *s;
     unsigned int id;
+    trc_ioreq_server_remove_vcpu_all_t trc = {
+        .d = d->domain_id,
+        .v = v->vcpu_id,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_remove_vcpu_all);
 
     rspin_lock(&d->ioreq_server.lock);
 
