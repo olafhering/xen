@@ -722,6 +722,14 @@ static int ioreq_server_init(struct ioreq_server *s,
     struct domain *currd = current->domain;
     struct vcpu *v;
     int rc;
+    trc_ioreq_server_init_t trc = {
+        .s = TRC_ePTR(s),
+        .d = d->domain_id,
+        .emulator = currd->domain_id,
+        .id = id,
+        .bufreq = bufioreq_handling,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_init);
 
     s->target = d;
 
