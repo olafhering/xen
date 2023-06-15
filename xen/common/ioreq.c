@@ -191,7 +191,14 @@ static struct ioreq_vcpu *get_pending_vcpu(const struct vcpu *v,
 
 bool vcpu_ioreq_pending(struct vcpu *v)
 {
-    return get_pending_vcpu(v, NULL);
+    bool b = !!get_pending_vcpu(v, NULL);
+    trc_vcpu_ioreq_pending_t trc = {
+        .d = v->domain->domain_id,
+        .v = v->vcpu_id,
+        .b = b,
+    };
+    TRACE_trc(TRC_IOREQ_vcpu_ioreq_pending);
+    return b;
 }
 
 static bool wait_for_io(struct ioreq_vcpu *sv, ioreq_t *p)
