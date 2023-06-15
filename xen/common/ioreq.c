@@ -1198,6 +1198,12 @@ static int ioreq_server_set_state(struct domain *d, ioservid_t id,
 {
     struct ioreq_server *s;
     int rc;
+    trc_ioreq_server_set_state_t trc = {
+        .d = d->domain_id,
+        .id = id,
+        .enabled = enabled,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_set_state);
 
     rspin_lock(&d->ioreq_server.lock);
 
