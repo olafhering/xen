@@ -1576,6 +1576,15 @@ unsigned int ioreq_broadcast(ioreq_t *p, bool buffered)
     struct domain *d = current->domain;
     struct ioreq_server *s;
     unsigned int id, failed = 0;
+    trc_ioreq_broadcast_t trc = {
+        .d = d->domain_id,
+        .addr = p->addr,
+        .data = p->data,
+        .type = p->type,
+        .size = p->size,
+        .dir  = p->dir,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_broadcast);
 
     FOR_EACH_IOREQ_SERVER(d, id, s)
     {
