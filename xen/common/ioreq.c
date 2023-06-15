@@ -161,6 +161,9 @@ static struct ioreq_vcpu *get_pending_vcpu(const struct vcpu *v,
     struct domain *d = v->domain;
     struct ioreq_server *s;
     unsigned int id;
+    trc_get_pending_vcpu_t trc = {
+        .v = v->vcpu_id,
+    };
 
     FOR_EACH_IOREQ_SERVER(d, id, s)
     {
@@ -174,11 +177,15 @@ static struct ioreq_vcpu *get_pending_vcpu(const struct vcpu *v,
             {
                 if ( srvp )
                     *srvp = s;
+                trc.s = TRC_ePTR(s);
+                trc.sv = TRC_ePTR(sv);
+                TRACE_trc(TRC_IOREQ_get_pending_vcpu);
                 return sv;
             }
         }
     }
 
+    TRACE_trc(TRC_IOREQ_get_pending_vcpu);
     return NULL;
 }
 
