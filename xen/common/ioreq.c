@@ -1499,6 +1499,21 @@ int ioreq_send(struct ioreq_server *s, ioreq_t *proto_p,
     struct domain *d = curr->domain;
     struct ioreq_vcpu *sv;
     struct vcpu_io *vio = &curr->io;
+    trc_ioreq_send_t trc = {
+        .s = TRC_ePTR(s),
+        .d = d->domain_id,
+        .addr = proto_p->addr,
+        .count = proto_p->count,
+        .data = proto_p->data,
+        .data_is_ptr = proto_p->data_is_ptr,
+        .df = proto_p->df,
+        .dir  = proto_p->dir,
+        .size = proto_p->size,
+        .state = proto_p->state,
+        .type = proto_p->type,
+        .vp_eport = proto_p->vp_eport,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_send);
 
     ASSERT(s);
 
