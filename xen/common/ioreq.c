@@ -1601,6 +1601,10 @@ unsigned int ioreq_broadcast(ioreq_t *p, bool buffered)
 
 void ioreq_domain_init(struct domain *d)
 {
+    trc_ioreq_domain_init_t trc = {
+        .d = d->domain_id,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_domain_init);
     rspin_lock_init(&d->ioreq_server.lock);
 
     arch_ioreq_domain_init(d);
