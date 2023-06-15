@@ -39,6 +39,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     if ( copy_from_guest(op, u_sysctl, 1) )
         return -EFAULT;
 
+    TRACE_TIME(TRC_PV_ENTRY + 0x22U, op->cmd);
     if ( op->interface_version != XEN_SYSCTL_INTERFACE_VERSION )
         return -EACCES;
 
