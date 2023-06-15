@@ -9206,6 +9206,303 @@ void process_lost_records_end(struct pcpu_info *p)
     }
 }
 
+static void ioreq_process(struct record_info *ri)
+{
+    switch(ri->event)
+    {
+    case TRC_IOREQ_request_mapcache_invalidate:
+    {
+    trc_request_mapcache_invalidate_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq request_mapcache_invalidate d%uv%u %u %x\n",
+            ri->dump_header, r->d, r->v, r->target, r->finished);
+    break;
+    }
+    case TRC_IOREQ_signal_mapcache_invalidate:
+    {
+    printf(" %s ioreq signal_mapcache_invalidate\n", ri->dump_header);
+    break;
+    }
+    case TRC_IOREQ_set_ioreq_server:
+    {
+    trc_set_ioreq_server_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq set_ioreq_server t %u i %u %llx\n",
+            ri->dump_header,  r->target, r->id, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_get_ioreq_server:
+    {
+    trc_get_ioreq_server_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq get_ioreq_server t %u i %u %llx\n",
+            ri->dump_header,  r->target, r->id, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_get_ioreq:
+    {
+    trc_get_ioreq_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq get_ioreq d%uv%u %llx\n",
+            ri->dump_header, r->d, r->v, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_domain_has_ioreq_server:
+    {
+    trc_domain_has_ioreq_server_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq domain_has_ioreq_server d%u %x\n",
+            ri->dump_header, r->d, r->has_ioreq);
+    break;
+    }
+    case TRC_IOREQ_get_pending_vcpu:
+    {
+    trc_get_pending_vcpu_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq get_pending_vcpu v%u %llx %llx\n",
+            ri->dump_header, r->v, TRC_dPTR(r->s), TRC_dPTR(r->sv));
+    break;
+    }
+    case TRC_IOREQ_vcpu_ioreq_pending:
+    {
+    trc_vcpu_ioreq_pending_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq vcpu_ioreq_pending d%uv%u %x\n",
+            ri->dump_header, r->d, r->v, r->b);
+    break;
+    }
+    case TRC_IOREQ_wait_for_io:
+    {
+    trc_wait_for_io_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq wait_for_io d%uv%u %llx %u %u %u\n",
+            ri->dump_header, r->d, r->v, TRC_dPTR(r->sv), r->counter, r->prev_state, r->state);
+    break;
+    }
+    case TRC_IOREQ_vcpu_ioreq_handle_completion:
+    {
+    trc_vcpu_ioreq_handle_completion_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq vcpu_ioreq_handle_completion d%uv%u %x %u %x %x\n",
+            ri->dump_header, r->d, r->v, r->completion, r->state, r->res, r->out);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_alloc_mfn:
+    {
+    trc_ioreq_server_alloc_mfn_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_alloc_mfn %llx %x %x\n",
+            ri->dump_header, TRC_dPTR(r->s), r->mfn, r->buf);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_free_mfn:
+    {
+    trc_ioreq_server_free_mfn_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_free_mfn %llx %x %x\n",
+            ri->dump_header, TRC_dPTR(r->s), r->mfn, r->buf);
+    break;
+    }
+    case TRC_IOREQ_is_ioreq_server_page:
+    {
+    trc_is_ioreq_server_page_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq is_ioreq_server_page d%u %x %x\n",
+            ri->dump_header, r->d, r->mfn, r->found);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_add_vcpu:
+    {
+    trc_ioreq_server_add_vcpu_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_add_vcpu d%uv%u %llx %llx\n",
+            ri->dump_header, r->d, r->v, TRC_dPTR(r->s), TRC_dPTR(r->sv));
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_remove_vcpu:
+    {
+    trc_ioreq_server_remove_vcpu_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_remove_vcpu d%uv%u %llx\n",
+            ri->dump_header, r->d, r->v, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_remove_all_vcpus:
+    {
+    trc_ioreq_server_remove_all_vcpus_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_remove_all_vcpus %llx\n",
+            ri->dump_header, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_alloc_pages:
+    {
+    trc_ioreq_server_alloc_pages_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_alloc_pages %llx\n",
+            ri->dump_header, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_free_pages:
+    {
+    trc_ioreq_server_free_pages_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_free_pages %llx\n",
+            ri->dump_header, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_free_rangesets:
+    {
+    trc_ioreq_server_free_rangesets_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_free_rangesets %llx\n",
+            ri->dump_header, TRC_dPTR(r->s));
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_alloc_rangesets:
+    {
+    trc_ioreq_server_alloc_rangesets_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_alloc_rangesets %llx %x\n",
+            ri->dump_header, TRC_dPTR(r->s), r->id);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_enable:
+    {
+    trc_ioreq_server_enable_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_enable %llx %x\n",
+            ri->dump_header, TRC_dPTR(r->s), r->enabled);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_disable:
+    {
+    trc_ioreq_server_disable_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_disable %llx %x\n",
+            ri->dump_header, TRC_dPTR(r->s), r->enabled);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_init:
+    {
+    trc_ioreq_server_init_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_init d%u e%u %llx %x %x\n",
+            ri->dump_header, r->d, r->emulator, TRC_dPTR(r->s), r->id, r->bufreq);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_deinit:
+    {
+    trc_ioreq_server_deinit_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_deinit %llx %x\n",
+            ri->dump_header, TRC_dPTR(r->s), r->enabled);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_create:
+    {
+    trc_ioreq_server_create_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_create d%u %x\n",
+            ri->dump_header, r->d, r->id);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_destroy:
+    {
+    trc_ioreq_server_destroy_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_destroy d%u %x\n",
+            ri->dump_header, r->d, r->id);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_get_info:
+    {
+    trc_ioreq_server_get_info_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_get_info d%u %x %llx %llx\n",
+            ri->dump_header, r->d, r->id, TRC_dPTR(r->s), (long long)r->gfn);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_get_frame:
+    {
+    trc_ioreq_server_get_frame_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_get_frame d%d %x %llx %llx\n",
+            ri->dump_header, r->d, r->id, TRC_dPTR(r->s), (long long)r->gfn);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_map_io_range:
+    {
+    trc_ioreq_server_map_io_range_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_map_io_range d%u %x %llx %llx %x %x\n",
+            ri->dump_header, r->d, r->id, r->start, r->end, r->type, r->rc);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_unmap_io_range:
+    {
+    trc_ioreq_server_unmap_io_range_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_unmap_io_range d%u %x %llx %llx %x %x\n",
+            ri->dump_header, r->d, r->id, r->start, r->end, r->type, r->rc);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_map_mem_type:
+    {
+    trc_ioreq_server_map_mem_type_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_map_mem_type d%u %x %x %x\n",
+            ri->dump_header, r->d, r->id, r->type, r->flags);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_set_state:
+    {
+    trc_ioreq_server_set_state_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_set_state d%u %x %x\n",
+            ri->dump_header, r->d, r->id, r->enabled);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_add_vcpu_all:
+    {
+    trc_ioreq_server_add_vcpu_all_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_add_vcpu_all d%uv%u\n",
+            ri->dump_header, r->d, r->v);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_remove_vcpu_all:
+    {
+    trc_ioreq_server_remove_vcpu_all_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_remove_vcpu_all d%uv%u\n",
+            ri->dump_header, r->d, r->v);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_destroy_all:
+    {
+    trc_ioreq_server_destroy_all_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_destroy_all d%u\n",
+            ri->dump_header, r->d);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_select:
+    {
+    trc_ioreq_server_select_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_select d%u %llx %x\n",
+            ri->dump_header, r->d, TRC_dPTR(r->s), r->type);
+    break;
+    }
+    case TRC_IOREQ_ioreq_send_buffered:
+    {
+    trc_ioreq_send_buffered_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_send_buffered d%u %llx %llx %x %c %x\n",
+            ri->dump_header, r->d, r->addr, r->data, r->type, r->dir?'r':'w', r->size);
+    break;
+    }
+    case TRC_IOREQ_ioreq_send:
+    {
+    trc_ioreq_send_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_send d%u %llx A%llx/D%llx/C%u S%u T%x %c %x %x %x %u\n",
+            ri->dump_header, r->d, TRC_dPTR(r->s), r->addr, r->data, r->count,
+            r->size, r->type, r->dir?'r':'w',
+            r->data_is_ptr, r->df, r->state, r->vp_eport);
+    break;
+    }
+    case TRC_IOREQ_ioreq_broadcast:
+    {
+    trc_ioreq_broadcast_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_broadcast d%u %llx %llx %x %c %x\n",
+            ri->dump_header, r->d, r->addr, r->data, r->type, r->dir?'r':'w', r->size);
+    break;
+    }
+    case TRC_IOREQ_ioreq_domain_init:
+    {
+    trc_ioreq_domain_init_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_domain_init d%u\n",
+            ri->dump_header, r->d);
+    break;
+    }
+    case TRC_IOREQ_ioreq_server_dm_op:
+    {
+    trc_ioreq_server_dm_op_t *r = (typeof(r))ri->d;
+    printf(" %s ioreq ioreq_server_dm_op d%u %u\n",
+            ri->dump_header, r->d, r->op);
+    break;
+    }
+    default:
+    printf(" %s ioreq unhandled %x\n",
+            ri->dump_header, ri->event);
+    break;
+    }
+}
 void base_process(struct pcpu_info *p) {
     struct record_info *ri = &p->ri;
     switch(ri->event)
@@ -9217,6 +9514,50 @@ void base_process(struct pcpu_info *p) {
         break;
     case TRC_LOST_RECORDS_END:
         process_lost_records_end(p);
+        break;
+    case TRC_IOREQ_request_mapcache_invalidate:
+    case TRC_IOREQ_signal_mapcache_invalidate:
+    case TRC_IOREQ_set_ioreq_server:
+    case TRC_IOREQ_get_ioreq_server:
+    case TRC_IOREQ_get_ioreq:
+    case TRC_IOREQ_domain_has_ioreq_server:
+    case TRC_IOREQ_get_pending_vcpu:
+    case TRC_IOREQ_vcpu_ioreq_pending:
+    case TRC_IOREQ_wait_for_io:
+    case TRC_IOREQ_vcpu_ioreq_handle_completion:
+    case TRC_IOREQ_ioreq_server_alloc_mfn:
+    case TRC_IOREQ_ioreq_server_free_mfn:
+    case TRC_IOREQ_is_ioreq_server_page:
+    case TRC_IOREQ_ioreq_server_add_vcpu:
+    case TRC_IOREQ_ioreq_server_remove_vcpu:
+    case TRC_IOREQ_ioreq_server_remove_all_vcpus:
+    case TRC_IOREQ_ioreq_server_alloc_pages:
+    case TRC_IOREQ_ioreq_server_free_pages:
+    case TRC_IOREQ_ioreq_server_free_rangesets:
+    case TRC_IOREQ_ioreq_server_alloc_rangesets:
+    case TRC_IOREQ_ioreq_server_enable:
+    case TRC_IOREQ_ioreq_server_disable:
+    case TRC_IOREQ_ioreq_server_init:
+    case TRC_IOREQ_ioreq_server_deinit:
+    case TRC_IOREQ_ioreq_server_create:
+    case TRC_IOREQ_ioreq_server_destroy:
+    case TRC_IOREQ_ioreq_server_get_info:
+    case TRC_IOREQ_ioreq_server_get_frame:
+    case TRC_IOREQ_ioreq_server_map_io_range:
+    case TRC_IOREQ_ioreq_server_unmap_io_range:
+    case TRC_IOREQ_ioreq_server_map_mem_type:
+    case TRC_IOREQ_ioreq_server_set_state:
+    case TRC_IOREQ_ioreq_server_add_vcpu_all:
+    case TRC_IOREQ_ioreq_server_remove_vcpu_all:
+    case TRC_IOREQ_ioreq_server_destroy_all:
+    case TRC_IOREQ_ioreq_server_select:
+    case TRC_IOREQ_ioreq_send_buffered:
+    case TRC_IOREQ_ioreq_send:
+    case TRC_IOREQ_ioreq_broadcast:
+    case TRC_IOREQ_ioreq_domain_init:
+    case TRC_IOREQ_ioreq_server_dm_op:
+        if(opt.dump_all)
+            ioreq_process(ri);
         break;
     default:
         process_generic(ri);
