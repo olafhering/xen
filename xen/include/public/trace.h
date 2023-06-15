@@ -76,6 +76,223 @@
 #define TRC_HW_PM           0x00801000   /* Power management traces */
 #define TRC_HW_IRQ          0x00802000   /* Traces relating to the handling of IRQs */
 
+/* remove and add redundant info from pointers to direct map */
+/* the upper 17 bits are set, the lower 4 bits are clear */
+/* this leaves 47 bits of relevant information */
+#define TRC_DIRECTMAP_MASK ((1ULL << (64U-17U)) - 1ULL)
+#define TRC_ePTR(_p) (((unsigned long long)(void *)(_p)) >> 4ULL)
+#define TRC_dPTR(_v) ((_v)?(((_v) << 4ULL) | ~TRC_DIRECTMAP_MASK):0)
+#define TRC_IOREQ_request_mapcache_invalidate (TRC_GEN + 64)
+typedef struct trc_request_mapcache_invalidate {
+    unsigned int d:16, v:16;
+    unsigned int target:16, finished:1;
+} trc_request_mapcache_invalidate_t;
+#define TRC_IOREQ_signal_mapcache_invalidate (TRC_GEN + 65)
+#define TRC_IOREQ_set_ioreq_server (TRC_GEN + 66)
+typedef struct __attribute__((__packed__)) trc_set_ioreq_server {
+    unsigned long long s:47, target:16;
+    unsigned int pad:16, id:16;
+} trc_set_ioreq_server_t;
+#define TRC_IOREQ_get_ioreq_server (TRC_GEN + 67)
+typedef struct __attribute__((__packed__)) trc_get_ioreq_server {
+    unsigned long long s;
+    unsigned int target:16, id:16;
+} trc_get_ioreq_server_t;
+#define TRC_IOREQ_get_ioreq (TRC_GEN + 68)
+typedef struct __attribute__((__packed__)) trc_get_ioreq {
+    unsigned long long s;
+    unsigned int d:16, v:16;
+} trc_get_ioreq_t;
+#define TRC_IOREQ_domain_has_ioreq_server (TRC_GEN + 69)
+typedef struct trc_domain_has_ioreq_server {
+    unsigned int d:16, has_ioreq:16;
+} trc_domain_has_ioreq_server_t;
+#define TRC_IOREQ_get_pending_vcpu (TRC_GEN + 70)
+typedef struct __attribute__((__packed__)) trc_get_pending_vcpu {
+    unsigned long long s:47, v:16;
+    unsigned long long sv;
+} trc_get_pending_vcpu_t;
+#define TRC_IOREQ_vcpu_ioreq_pending (TRC_GEN + 71)
+typedef struct __attribute__((__packed__)) trc_vcpu_ioreq_pending {
+    unsigned int d:16, v:15, b:1;
+} trc_vcpu_ioreq_pending_t;
+#define TRC_IOREQ_wait_for_io (TRC_GEN + 72)
+typedef struct __attribute__((__packed__)) trc_wait_for_io {
+    unsigned long long sv;
+    unsigned int d:16, v:16;
+    unsigned int prev_state:4;
+    unsigned int state:4;
+    unsigned int counter:24;
+} trc_wait_for_io_t;
+#define TRC_IOREQ_vcpu_ioreq_handle_completion (TRC_GEN + 73)
+typedef struct trc_vcpu_ioreq_handle_completion {
+    union { struct __attribute__((__packed__)) {
+    unsigned int d:16, v:16;
+    unsigned int completion:3, state:3, res:1, out:1;
+    }; uint32_t _x[2]; };
+} trc_vcpu_ioreq_handle_completion_t;
+#define TRC_IOREQ_ioreq_server_alloc_mfn (TRC_GEN + 74)
+typedef struct trc_ioreq_server_alloc_mfn {
+    union { struct __attribute__((__packed__)) {
+        unsigned long long s:47, buf:1;
+        unsigned int mfn;
+    }; uint32_t _x[3]; };
+} trc_ioreq_server_alloc_mfn_t;
+#define TRC_IOREQ_ioreq_server_free_mfn (TRC_GEN + 75)
+typedef struct trc_ioreq_server_free_mfn {
+    union { struct __attribute__((__packed__)) {
+        unsigned long long s:47, buf:1;
+        unsigned int mfn;
+    }; uint32_t _x[3]; };
+} trc_ioreq_server_free_mfn_t;
+#define TRC_IOREQ_is_ioreq_server_page (TRC_GEN + 76)
+typedef struct __attribute__((__packed__)) trc_is_ioreq_server_page {
+    unsigned int mfn;
+    unsigned int d:16, found:1;
+} trc_is_ioreq_server_page_t;
+#define TRC_IOREQ_ioreq_server_add_vcpu (TRC_GEN + 77)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_add_vcpu {
+    unsigned long long s:47, d:16;
+    unsigned long long sv:47, v:16;
+} trc_ioreq_server_add_vcpu_t;
+#define TRC_IOREQ_ioreq_server_remove_vcpu (TRC_GEN + 78)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_remove_vcpu {
+    unsigned long long s;
+    unsigned int d:16, v:16;
+} trc_ioreq_server_remove_vcpu_t;
+#define TRC_IOREQ_ioreq_server_remove_all_vcpus (TRC_GEN + 79)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_remove_all_vcpus {
+    unsigned long long s;
+} trc_ioreq_server_remove_all_vcpus_t;
+#define TRC_IOREQ_ioreq_server_alloc_pages (TRC_GEN + 80)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_alloc_pages {
+    unsigned long long s;
+} trc_ioreq_server_alloc_pages_t;
+#define TRC_IOREQ_ioreq_server_free_pages (TRC_GEN + 81)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_free_pages {
+    unsigned long long s;
+} trc_ioreq_server_free_pages_t;
+#define TRC_IOREQ_ioreq_server_free_rangesets (TRC_GEN + 82)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_free_rangesets {
+    unsigned long long s;
+} trc_ioreq_server_free_rangesets_t;
+#define TRC_IOREQ_ioreq_server_alloc_rangesets (TRC_GEN + 83)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_alloc_rangesets {
+    unsigned long long s:47, id:16;
+} trc_ioreq_server_alloc_rangesets_t;
+#define TRC_IOREQ_ioreq_server_enable (TRC_GEN + 84)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_enable {
+    unsigned long long s:47, enabled:1, pad:16;
+} trc_ioreq_server_enable_t;
+#define TRC_IOREQ_ioreq_server_disable (TRC_GEN + 85)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_disable {
+    unsigned long long s:47, enabled:1, pad:16;
+} trc_ioreq_server_disable_t;
+#define TRC_IOREQ_ioreq_server_init (TRC_GEN + 86)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_init {
+    unsigned long long s:47, id:15, bufreq:2;
+    unsigned int d:16, emulator:16;
+} trc_ioreq_server_init_t;
+#define TRC_IOREQ_ioreq_server_deinit (TRC_GEN + 87)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_deinit {
+    unsigned long long s:47, enabled:1, pad:16;
+} trc_ioreq_server_deinit_t;
+#define TRC_IOREQ_ioreq_server_create (TRC_GEN + 88)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_create {
+    unsigned int d:16, id:16;
+} trc_ioreq_server_create_t;
+#define TRC_IOREQ_ioreq_server_destroy (TRC_GEN + 89)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_destroy {
+    unsigned int d:16, id:16;
+} trc_ioreq_server_destroy_t;
+#define TRC_IOREQ_ioreq_server_get_info (TRC_GEN + 90)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_get_info {
+    unsigned long long s:47, d:16;
+    unsigned long long gfn:47, id:16;
+} trc_ioreq_server_get_info_t;
+#define TRC_IOREQ_ioreq_server_get_frame (TRC_GEN + 91)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_get_frame {
+    unsigned long long s:47, d:16;
+    unsigned long long gfn:47, id:16;
+} trc_ioreq_server_get_frame_t;
+#define TRC_IOREQ_ioreq_server_map_io_range (TRC_GEN + 92)
+typedef struct trc_ioreq_server_map_io_range {
+    union { struct __attribute__((__packed__)) {
+    unsigned long long start;
+    unsigned long long end;
+    unsigned long d:16, id:16, type:4, rc:16;
+    }; uint32_t _x[6]; };
+} trc_ioreq_server_map_io_range_t;
+#define TRC_IOREQ_ioreq_server_unmap_io_range (TRC_GEN + 93)
+typedef struct trc_ioreq_server_unmap_io_range {
+    union { struct __attribute__((__packed__)) {
+    unsigned long long start;
+    unsigned long long end;
+    unsigned long d:16, id:16, type:4, rc:16;
+    }; uint32_t _x[6]; };
+} trc_ioreq_server_unmap_io_range_t;
+#define TRC_IOREQ_ioreq_server_map_mem_type (TRC_GEN + 94)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_map_mem_type {
+    unsigned int d:16, id:16;
+    unsigned int type:4, flags:4;
+} trc_ioreq_server_map_mem_type_t;
+#define TRC_IOREQ_ioreq_server_set_state (TRC_GEN + 95)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_set_state {
+    unsigned int d:16, id:15, enabled:1;
+} trc_ioreq_server_set_state_t;
+#define TRC_IOREQ_ioreq_server_add_vcpu_all (TRC_GEN + 96)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_add_vcpu_all {
+    unsigned int d:16, v:16;
+} trc_ioreq_server_add_vcpu_all_t;
+#define TRC_IOREQ_ioreq_server_remove_vcpu_all (TRC_GEN + 97)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_remove_vcpu_all {
+    unsigned int d:16, v:16;
+} trc_ioreq_server_remove_vcpu_all_t;
+#define TRC_IOREQ_ioreq_server_destroy_all (TRC_GEN + 98)
+typedef struct __attribute__((__packed__)) trc_ioreq_server_destroy_all {
+    unsigned int d;
+} trc_ioreq_server_destroy_all_t;
+#define TRC_IOREQ_ioreq_server_select (TRC_GEN + 99)
+typedef struct trc_ioreq_server_select {
+    union { struct __attribute__((__packed__)) {
+    unsigned long long s;
+    unsigned int d:16, type:4;
+    }; uint32_t _x[3]; };
+} trc_ioreq_server_select_t;
+#define TRC_IOREQ_ioreq_send_buffered (TRC_GEN + 100)
+typedef struct trc_ioreq_send_buffered {
+    union { struct __attribute__((__packed__)) {
+    unsigned long long addr;
+    unsigned long long data;
+    unsigned int d:16, type:3, dir:1, size:4;
+    }; uint32_t _x[5]; };
+} trc_ioreq_send_buffered_t;
+#define TRC_IOREQ_ioreq_send (TRC_GEN + 101)
+typedef struct trc_ioreq_send {
+    union { struct __attribute__((__packed__)) {
+    unsigned long long s:47, d:16, dir:1;
+    unsigned long long addr;
+    unsigned long long data;
+    unsigned int count:9, vp_eport:9, type:3, size:4, state:4, data_is_ptr:1, df:1;
+    }; uint32_t _x[7]; };
+} trc_ioreq_send_t;
+#define TRC_IOREQ_ioreq_broadcast (TRC_GEN + 102)
+typedef struct trc_ioreq_broadcast {
+    union { struct __attribute__((__packed__)) {
+    unsigned long long addr;
+    unsigned long long data;
+    unsigned int d:16, type:3, dir:1, size:4;
+    }; uint32_t _x[5]; };
+} trc_ioreq_broadcast_t;
+#define TRC_IOREQ_ioreq_domain_init (TRC_GEN + 103)
+typedef struct trc_ioreq_domain_init {
+    unsigned int d:16;
+} trc_ioreq_domain_init_t;
+#define TRC_IOREQ_ioreq_server_dm_op (TRC_GEN + 104)
+typedef struct trc_ioreq_server_dm_op {
+    unsigned int d:16, op:16;
+} trc_ioreq_server_dm_op_t;
+
 /* Trace events per class */
 #define TRC_LOST_RECORDS        (TRC_GEN + 1)
 #define TRC_TRACE_WRAP_BUFFER  (TRC_GEN + 2)
