@@ -69,6 +69,12 @@ void ioreq_signal_mapcache_invalidate(void)
 static void set_ioreq_server(struct domain *d, unsigned int id,
                              struct ioreq_server *s)
 {
+    trc_set_ioreq_server_t trc = {
+        .target = d->domain_id,
+        .id = id,
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_set_ioreq_server);
     ASSERT(id < MAX_NR_IOREQ_SERVERS);
     ASSERT(!s || !d->ioreq_server.server[id]);
 
