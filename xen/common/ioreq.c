@@ -914,6 +914,10 @@ static int ioreq_server_get_info(struct domain *d, ioservid_t id,
 {
     struct ioreq_server *s;
     int rc;
+    trc_ioreq_server_get_info_t trc = {
+        .d = d->domain_id,
+        .id = id,
+    };
 
     rspin_lock(&d->ioreq_server.lock);
 
@@ -935,6 +939,7 @@ static int ioreq_server_get_info(struct domain *d, ioservid_t id,
     }
 
     if ( ioreq_gfn )
+        trc.gfn =
         *ioreq_gfn = gfn_x(s->ioreq.gfn);
 
     if ( HANDLE_BUFIOREQ(s) )
@@ -951,6 +956,8 @@ static int ioreq_server_get_info(struct domain *d, ioservid_t id,
  out:
     rspin_unlock(&d->ioreq_server.lock);
 
+    trc.s = TRC_ePTR(s);
+    TRACE_trc(TRC_IOREQ_ioreq_server_get_info);
     return rc;
 }
 
