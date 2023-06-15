@@ -87,10 +87,17 @@ static void set_ioreq_server(struct domain *d, unsigned int id,
 static struct ioreq_server *get_ioreq_server(const struct domain *d,
                                              unsigned int id)
 {
-    if ( id >= MAX_NR_IOREQ_SERVERS )
-        return NULL;
+    struct ioreq_server *s = NULL;
+    trc_get_ioreq_server_t trc = {
+        .target = d->domain_id,
+        .id = id,
+    };
+    if ( id < MAX_NR_IOREQ_SERVERS )
+        s = GET_IOREQ_SERVER(d, id);
 
-    return GET_IOREQ_SERVER(d, id);
+    trc.s = TRC_ePTR(s);
+    TRACE_trc(TRC_IOREQ_get_ioreq_server);
+    return s;
 }
 
 /*
