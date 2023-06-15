@@ -1613,6 +1613,11 @@ void ioreq_domain_init(struct domain *d)
 int ioreq_server_dm_op(struct xen_dm_op *op, struct domain *d, bool *const_op)
 {
     long rc;
+    trc_ioreq_server_dm_op_t trc = {
+        .d = d->domain_id,
+        .op = op->op,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_dm_op);
 
     switch ( op->op )
     {
