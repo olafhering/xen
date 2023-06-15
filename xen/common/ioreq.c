@@ -966,6 +966,10 @@ int ioreq_server_get_frame(struct domain *d, ioservid_t id,
 {
     struct ioreq_server *s;
     int rc;
+    trc_ioreq_server_get_frame_t trc = {
+        .d = d->domain_id,
+        .id = id,
+    };
 
     ASSERT(is_hvm_domain(d));
 
@@ -993,11 +997,13 @@ int ioreq_server_get_frame(struct domain *d, ioservid_t id,
             goto out;
 
         *mfn = page_to_mfn(s->bufioreq.page);
+        trc.gfn = mfn_x(*mfn);
         rc = 0;
         break;
 
     case XENMEM_resource_ioreq_server_frame_ioreq(0):
         *mfn = page_to_mfn(s->ioreq.page);
+        trc.gfn = mfn_x(*mfn);
         rc = 0;
         break;
 
@@ -1009,6 +1015,7 @@ int ioreq_server_get_frame(struct domain *d, ioservid_t id,
  out:
     rspin_unlock(&d->ioreq_server.lock);
 
+    TRACE_trc(TRC_IOREQ_ioreq_server_get_frame);
     return rc;
 }
 
