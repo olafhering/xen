@@ -600,6 +600,10 @@ static int ioreq_server_alloc_pages(struct ioreq_server *s)
 
 static void ioreq_server_free_pages(struct ioreq_server *s)
 {
+    trc_ioreq_server_free_pages_t trc = {
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_free_pages);
     ioreq_server_free_mfn(s, true);
     ioreq_server_free_mfn(s, false);
 }
