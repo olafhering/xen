@@ -396,6 +396,12 @@ static void ioreq_server_free_mfn(struct ioreq_server *s, bool buf)
 {
     struct ioreq_page *iorp = buf ? &s->bufioreq : &s->ioreq;
     struct page_info *page = iorp->page;
+    trc_ioreq_server_free_mfn_t trc = {
+        .buf = buf,
+        .s = TRC_ePTR(s),
+        .mfn = page ? mfn_x(page_to_mfn(page)) : 0,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_server_free_mfn);
 
     if ( !page )
         return;
