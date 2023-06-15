@@ -280,10 +280,20 @@ bool vcpu_ioreq_handle_completion(struct vcpu *v)
     struct ioreq_vcpu *sv;
     enum vio_completion completion;
     bool res = true;
+    trc_vcpu_ioreq_handle_completion_t trc = {
+        .d = v->domain->domain_id,
+        .v = v->vcpu_id,
+        .completion = vio->completion,
+        .state = vio->req.state,
+    };
+    TRACE_trc(TRC_IOREQ_vcpu_ioreq_handle_completion);
 
     while ( (sv = get_pending_vcpu(v, &s)) != NULL )
         if ( !wait_for_io(sv, get_ioreq(s, v)) )
-            return false;
+        {
+            res = false;
+            goto out;
+        }
 
     vio->req.state = ioreq_needs_completion(&vio->req) ?
         STATE_IORESP_READY : STATE_IOREQ_NONE;
@@ -320,6 +330,11 @@ bool vcpu_ioreq_handle_completion(struct vcpu *v)
         res = false;
     }
 
+out:
+    trc.out = true;
+    trc.res = res;
+    trc.state = vio->req.state;
+    TRACE_trc(TRC_IOREQ_vcpu_ioreq_handle_completion);
     return res;
 }
 
