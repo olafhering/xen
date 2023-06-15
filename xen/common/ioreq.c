@@ -801,6 +801,10 @@ static int ioreq_server_create(struct domain *d, int bufioreq_handling,
     struct ioreq_server *s;
     unsigned int i;
     int rc;
+    trc_ioreq_server_create_t trc = {
+        .d = d->domain_id,
+        .id = ~0,
+    };
 
     if ( !IS_ENABLED(CONFIG_X86) && bufioreq_handling )
         return -EINVAL;
@@ -842,15 +846,17 @@ static int ioreq_server_create(struct domain *d, int bufioreq_handling,
         *id = i;
 
     rspin_unlock(&d->ioreq_server.lock);
-    domain_unpause(d);
-
-    return 0;
+    trc.id = i;
+    goto out;
 
  fail:
     rspin_unlock(&d->ioreq_server.lock);
-    domain_unpause(d);
 
     xfree(s);
+out:
+    TRACE_trc(TRC_IOREQ_ioreq_server_create);
+    domain_unpause(d);
+
     return rc;
 }
 
