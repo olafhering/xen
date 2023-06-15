@@ -60,6 +60,7 @@ void ioreq_signal_mapcache_invalidate(void)
         .dir = IOREQ_WRITE,
         .data = ~0UL, /* flush all */
     };
+    TRACE_TIME(TRC_IOREQ_signal_mapcache_invalidate);
 
     if ( ioreq_broadcast(&p, false) != 0 )
         gprintk(XENLOG_ERR, "Unsuccessful map-cache invalidate\n");
