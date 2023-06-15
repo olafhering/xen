@@ -117,6 +117,12 @@ static struct ioreq_server *get_ioreq_server(const struct domain *d,
 static ioreq_t *get_ioreq(struct ioreq_server *s, struct vcpu *v)
 {
     shared_iopage_t *p = s->ioreq.va;
+    trc_get_ioreq_t trc = {
+        .d = v->domain->domain_id,
+        .v = v->vcpu_id,
+        .s = TRC_ePTR(s),
+    };
+    TRACE_trc(TRC_IOREQ_get_ioreq);
 
     ASSERT((v == current) || !vcpu_runnable(v));
     ASSERT(p != NULL);
