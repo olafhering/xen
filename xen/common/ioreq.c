@@ -1401,6 +1401,15 @@ static int ioreq_send_buffered(struct ioreq_server *s, ioreq_t *p)
                        .dir = p->dir };
     /* Timeoffset sends 64b data, but no address. Use two consecutive slots. */
     int qw = 0;
+    trc_ioreq_send_buffered_t trc = {
+        .d = d->domain_id,
+        .data = p->data,
+        .addr = p->addr,
+        .type = p->type,
+        .size = p->size,
+        .dir = p->dir,
+    };
+    TRACE_trc(TRC_IOREQ_ioreq_send_buffered);
 
     /* Ensure buffered_iopage fits in a page */
     BUILD_BUG_ON(sizeof(buffered_iopage_t) > PAGE_SIZE);
