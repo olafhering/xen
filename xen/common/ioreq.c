@@ -461,8 +461,15 @@ static int ioreq_server_add_vcpu(struct ioreq_server *s,
 {
     struct ioreq_vcpu *sv;
     int rc;
+    trc_ioreq_server_add_vcpu_t trc = {
+        .d = v->domain->domain_id,
+        .v = v->vcpu_id,
+        .s = TRC_ePTR(s),
+    };
 
     sv = xzalloc(struct ioreq_vcpu);
+    trc.sv = TRC_ePTR(sv);
+    TRACE_trc(TRC_IOREQ_ioreq_server_add_vcpu);
 
     rc = -ENOMEM;
     if ( !sv )
