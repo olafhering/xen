@@ -34,15 +34,6 @@
 #include <asm/atomic.h>
 #include <public/sysctl.h>
 
-#ifdef CONFIG_COMPAT
-#include <compat/trace.h>
-#define xen_t_buf t_buf
-CHECK_t_buf;
-#undef xen_t_buf
-#else
-#define compat_t_rec t_rec
-#endif
-
 /* opt_tbuf_size: trace buffer size (in pages) for each cpu */
 static unsigned int opt_tbuf_size;
 static unsigned int opt_tevt_mask;
