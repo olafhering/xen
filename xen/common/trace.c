@@ -513,7 +513,7 @@ static unsigned char *next_record(const struct t_buf *buf, uint32_t *next,
 
     barrier(); /* must read buf->prod and buf->cons only once */
     *next = x;
-    if ( !tb_init_done || bogus(x, cons) )
+    if ( bogus(x, cons) )
         return NULL;
 
     if ( x >= data_size )
