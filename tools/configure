@@ -743,6 +743,7 @@ XEN_PAGING_DIR
 XEN_LOCK_DIR
 INITD_DIR
 SHAREDIR
+XENTRACE_OUTPUT
 XEN_LIB_DIR
 XEN_RUN_STORED
 XEN_LOG_DIR
@@ -794,7 +795,6 @@ infodir
 docdir
 oldincludedir
 includedir
-runstatedir
 localstatedir
 sharedstatedir
 sysconfdir
@@ -922,7 +922,6 @@ datadir='${datarootdir}'
 sysconfdir='${prefix}/etc'
 sharedstatedir='${prefix}/com'
 localstatedir='${prefix}/var'
-runstatedir='${localstatedir}/run'
 includedir='${prefix}/include'
 oldincludedir='/usr/include'
 docdir='${datarootdir}/doc/${PACKAGE_TARNAME}'
@@ -1173,15 +1172,6 @@ do
   | -silent | --silent | --silen | --sile | --sil)
     silent=yes ;;
 
-  -runstatedir | --runstatedir | --runstatedi | --runstated \
-  | --runstate | --runstat | --runsta | --runst | --runs \
-  | --run | --ru | --r)
-    ac_prev=runstatedir ;;
-  -runstatedir=* | --runstatedir=* | --runstatedi=* | --runstated=* \
-  | --runstate=* | --runstat=* | --runsta=* | --runst=* | --runs=* \
-  | --run=* | --ru=* | --r=*)
-    runstatedir=$ac_optarg ;;
-
   -sbindir | --sbindir | --sbindi | --sbind | --sbin | --sbi | --sb)
     ac_prev=sbindir ;;
   -sbindir=* | --sbindir=* | --sbindi=* | --sbind=* | --sbin=* \
@@ -1319,7 +1309,7 @@ fi
 for ac_var in	exec_prefix prefix bindir sbindir libexecdir datarootdir \
 		datadir sysconfdir sharedstatedir localstatedir includedir \
 		oldincludedir docdir infodir htmldir dvidir pdfdir psdir \
-		libdir localedir mandir runstatedir
+		libdir localedir mandir
 do
   eval ac_val=\$$ac_var
   # Remove trailing slashes.
@@ -1472,7 +1462,6 @@ Fine tuning of the installation directories:
   --sysconfdir=DIR        read-only single-machine data [PREFIX/etc]
   --sharedstatedir=DIR    modifiable architecture-independent data [PREFIX/com]
   --localstatedir=DIR     modifiable single-machine data [PREFIX/var]
-  --runstatedir=DIR       modifiable per-process data [LOCALSTATEDIR/run]
   --libdir=DIR            object code libraries [EPREFIX/lib]
   --includedir=DIR        C header files [PREFIX/include]
   --oldincludedir=DIR     C header files for non-gcc [/usr/include]
@@ -4528,6 +4517,14 @@ XEN_LIB_DIR=$localstatedir/lib/xen
 
 
 printf "%s\n" "#define XEN_LIB_DIR \"$XEN_LIB_DIR\"" >>confdefs.h
+
+
+XENTRACE_OUTPUT=$XEN_LIB_DIR/xentrace.bin
+
+
+cat >>confdefs.h <<_ACEOF
+#define XENTRACE_OUTPUT "$XENTRACE_OUTPUT"
+_ACEOF
 
 
 SHAREDIR=$prefix/share
@@ -10233,7 +10230,7 @@ fi
 if test "x$systemd" = "xy"
 then :
 
-    ac_config_files="$ac_config_files hotplug/Linux/systemd/proc-xen.mount hotplug/Linux/systemd/xen-init-dom0.service hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service hotplug/Linux/systemd/xen-watchdog.service hotplug/Linux/systemd/xenconsoled.service hotplug/Linux/systemd/xendomains.service hotplug/Linux/systemd/xendriverdomain.service hotplug/Linux/systemd/xenstored.service"
+    ac_config_files="$ac_config_files hotplug/Linux/systemd/proc-xen.mount hotplug/Linux/systemd/xen-init-dom0.service hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service hotplug/Linux/systemd/xen-watchdog.service hotplug/Linux/systemd/xenconsoled.service hotplug/Linux/systemd/xendomains.service hotplug/Linux/systemd/xendriverdomain.service hotplug/Linux/systemd/xenstored.service hotplug/Linux/systemd/xentrace.service"
 
 
 fi
@@ -11143,6 +11140,7 @@ do
     "hotplug/Linux/systemd/xendomains.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xendomains.service" ;;
     "hotplug/Linux/systemd/xendriverdomain.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xendriverdomain.service" ;;
     "hotplug/Linux/systemd/xenstored.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xenstored.service" ;;
+    "hotplug/Linux/systemd/xentrace.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xentrace.service" ;;
 
   *) as_fn_error $? "invalid argument: \`$ac_config_target'" "$LINENO" 5;;
   esac

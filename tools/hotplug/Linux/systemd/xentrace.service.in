@@ -1,0 +1,15 @@
+[Unit]
+Description=to collect content from Xen tracebuffers to @XENTRACE_OUTPUT@
+Requires=proc-xen.mount
+After=proc-xen.mount
+Before=xenstored.service
+ConditionPathExists=/proc/xen/capabilities
+
+[Service]
+Type=simple
+ExecStartPre=/bin/grep -q control_d /proc/xen/capabilities
+ExecStart=@sbindir@/xentrace @XENTRACE_OUTPUT@
+
+[Install]
+WantedBy=multi-user.target
+Also=proc-xen.mount

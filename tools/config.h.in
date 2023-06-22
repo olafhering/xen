@@ -140,6 +140,9 @@
 /* Xen's firmware dir */
 #undef XENFIRMWAREDIR
 
+/* xentrace file */
+#undef XENTRACE_OUTPUT
+
 /* Xen's config dir */
 #undef XEN_CONFIG_DIR
 

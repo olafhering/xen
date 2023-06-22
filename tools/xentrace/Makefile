@@ -24,6 +24,7 @@ install: all
 	$(INSTALL_PROG) $(BIN) $(DESTDIR)$(bindir)
 	$(INSTALL_PROG) $(SBIN) $(DESTDIR)$(sbindir)
 	$(INSTALL_PROG) $(LIBBIN) $(DESTDIR)$(LIBEXEC_BIN)
+	touch $(DESTDIR)$(XENTRACE_OUTPUT)
 
 .PHONY: uninstall
 uninstall:

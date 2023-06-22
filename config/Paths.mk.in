@@ -56,4 +56,5 @@ XENFIRMWAREDIR           := @XENFIRMWAREDIR@
 XEN_CONFIG_DIR           := @XEN_CONFIG_DIR@
 XEN_SCRIPT_DIR           := @XEN_SCRIPT_DIR@
 
+XENTRACE_OUTPUT          := @XENTRACE_OUTPUT@
 PKG_INSTALLDIR           := ${libdir}/pkgconfig
