@@ -67,6 +67,14 @@ static cpumask_t tb_cpu_mask;
 /* which tracing events are enabled */
 static u32 tb_event_mask = TRC_ALL;
 
+static unsigned long __read_mostly *event_bitmap;
+static void *event_bitmap_alloc(unsigned long nr_bits)
+{
+    unsigned long longs;
+    longs = (nr_bits + BITS_PER_LONG - 1) / BITS_PER_LONG;
+    return xzalloc_bytes(longs*(BITS_PER_LONG/8));
+}
+
 static int cf_check cpu_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
@@ -336,6 +344,7 @@ void __init init_trace_bufs(void)
 {
     cpumask_setall(&tb_cpu_mask);
     register_cpu_notifier(&cpu_nfb);
+    event_bitmap = event_bitmap_alloc(1<<TRC_SUBCLS_SHIFT);
 
     if ( opt_tbuf_size )
     {
@@ -689,9 +698,16 @@ void trace(uint32_t event, unsigned int extra, const void *extra_data)
      */
     if ( extra % sizeof(uint32_t) ||
          extra / sizeof(uint32_t) > TRACE_EXTRA_MAX )
-        return printk_once(XENLOG_WARNING
-                           "Trace event %#x bad size %u, discarding\n",
-                           event, extra);
+    {
+        if (!test_and_set_bit(event&((1<<TRC_SUBCLS_SHIFT)-1), event_bitmap))
+            return printk(XENLOG_INFO
+                           "Trace event %#x/%u bad size %u, discarding\n",
+                           event, event&((1<<TRC_SUBCLS_SHIFT)-1), extra);
+        if (extra)
+            extra = ((extra / sizeof(uint32_t)) + 1) * sizeof(uint32_t);
+         if (extra / sizeof(uint32_t) > TRACE_EXTRA_MAX)
+            extra = TRACE_EXTRA_MAX * sizeof(uint32_t);
+    }
 
     if ( (tb_event_mask & event) == 0 )
         return;
