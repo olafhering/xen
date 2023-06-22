@@ -62,6 +62,8 @@ install:
 	$(INSTALL_DIR) $(DESTDIR)$(XEN_LOG_DIR)
 	$(INSTALL_DIR) $(DESTDIR)$(XEN_LIB_DIR)
 	$(INSTALL_DIR) $(DESTDIR)$(PKG_INSTALLDIR)
+	$(INSTALL_DIR) $(DESTDIR)/etc/profile.d
+	echo 'export PATH=$(sbindir):$(bindir):$$PATH' > $(DESTDIR)/etc/profile.d/xen.sh
 	$(MAKE) subdirs-install
 
 .PHONY: uninstall
