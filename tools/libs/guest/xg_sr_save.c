@@ -124,6 +124,44 @@ static int write_batch(struct xc_sr_context *ctx)
 
     for ( i = 0; i < nr_pfns; ++i )
     {
+        switch (ctx->save.types[i]) {
+        case XEN_DOMCTL_PFINFO_NOTAB:
+            ctx->save.pfinfo_notab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L1TAB:
+            ctx->save.pfinfo_l1tab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L1TAB | XEN_DOMCTL_PFINFO_LPINTAB:
+            ctx->save.pfinfo_l1pintab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L2TAB:
+            ctx->save.pfinfo_l2tab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L2TAB | XEN_DOMCTL_PFINFO_LPINTAB:
+            ctx->save.pfinfo_l2pintab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L3TAB:
+            ctx->save.pfinfo_l3tab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L3TAB | XEN_DOMCTL_PFINFO_LPINTAB:
+            ctx->save.pfinfo_l3pintab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L4TAB:
+            ctx->save.pfinfo_l4tab++;
+            break;
+        case XEN_DOMCTL_PFINFO_L4TAB | XEN_DOMCTL_PFINFO_LPINTAB:
+            ctx->save.pfinfo_l4pintab++;
+            break;
+        case XEN_DOMCTL_PFINFO_XTAB:
+            ctx->save.pfinfo_xtab++;
+            break;
+        case XEN_DOMCTL_PFINFO_XALLOC:
+            ctx->save.pfinfo_xalloc++;
+            break;
+        case XEN_DOMCTL_PFINFO_BROKEN:
+            ctx->save.pfinfo_broken++;
+            break;
+        }
         if ( !is_known_page_type(ctx->save.types[i]) )
         {
             ERROR("Unknown type %#"PRIpfn" for pfn %#"PRIpfn,
@@ -868,6 +906,31 @@ static void cleanup(struct xc_sr_context *ctx)
     free(ctx->save.batch_pfns);
 }
 
+static void save_show_stats(struct xc_sr_context *ctx)
+{
+#define do_stat(_str,_mbr) if(ctx->save._mbr){c+=ctx->save._mbr;l+=snprintf(s+l,sizeof(s)-l-1,"%s %u ",_str,ctx->save._mbr);}
+    xc_interface *xch = ctx->xch;
+    char s[321];
+    unsigned int c = 0;
+    int l = 0;
+    s[0] = '\0';
+
+    do_stat("notab",    pfinfo_notab);
+    do_stat("broken",   pfinfo_broken);
+    do_stat("l1pintab", pfinfo_l1pintab);
+    do_stat("l1tab",    pfinfo_l1tab);
+    do_stat("l2pintab", pfinfo_l2pintab);
+    do_stat("l2tab",    pfinfo_l2tab);
+    do_stat("l3pintab", pfinfo_l3pintab);
+    do_stat("l3tab",    pfinfo_l3tab);
+    do_stat("l4pintab", pfinfo_l4pintab);
+    do_stat("l4tab",    pfinfo_l4tab);
+    do_stat("xalloc",   pfinfo_xalloc);
+    do_stat("xtab",     pfinfo_xtab);
+    SUSEINFO("domid %u: %s, total %u", ctx->domid, s, c);
+#undef do_stat
+}
+
 /*
  * Save a domain.
  */
@@ -877,13 +940,14 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     int rc, saved_rc = 0, saved_errno = 0;
 
     SUSEINFO("domid %u: %s %s start, %lu pages allocated", ctx->domid, ctx->uuid, __func__, ctx->dominfo.tot_pages);
+    SUSEINFO("domid %u: %lu tot_pages %lu max_pages %lu outstanding_pages %lu extra_pages %lu shr_pages", ctx->domid, ctx->dominfo.tot_pages, ctx->dominfo.max_pages, ctx->dominfo.outstanding_pages, ctx->dominfo.extra_pages, ctx->dominfo.shr_pages);
     IPRINTF("Saving domain %d, type %s",
             ctx->domid, dhdr_type_to_str(guest_type));
 
     rc = setup(ctx);
     if ( rc )
         goto err;
-    SUSEINFO("domid %u: p2m_size %lx", ctx->domid, ctx->save.p2m_size);
+    SUSEINFO("domid %u: p2m_size %lu", ctx->domid, ctx->save.p2m_size);
 
     xc_report_progress_single(xch, "Start of stream");
 
@@ -997,6 +1061,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     PERROR("Save failed");
 
  done:
+    save_show_stats(ctx);
     SUSEINFO("domid %u: %s done", ctx->domid, __func__);
     cleanup(ctx);
 

@@ -328,6 +328,18 @@ struct xc_sr_context
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
             xc_hypercall_buffer_t dirty_bitmap_hbuf;
+            unsigned int pfinfo_broken;
+            unsigned int pfinfo_l1pintab;
+            unsigned int pfinfo_l1tab;
+            unsigned int pfinfo_l2pintab;
+            unsigned int pfinfo_l2tab;
+            unsigned int pfinfo_l3pintab;
+            unsigned int pfinfo_l3tab;
+            unsigned int pfinfo_l4pintab;
+            unsigned int pfinfo_l4tab;
+            unsigned int pfinfo_notab;
+            unsigned int pfinfo_xalloc;
+            unsigned int pfinfo_xtab;
         } save;
 
         struct /* Restore data. */

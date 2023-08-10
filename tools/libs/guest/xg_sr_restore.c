@@ -872,6 +872,7 @@ static int restore(struct xc_sr_context *ctx)
     int rc, saved_rc = 0, saved_errno = 0;
 
     SUSEINFO("domid %u: %s %s start", ctx->domid, ctx->uuid, __func__);
+    SUSEINFO("domid %u: %lu tot_pages %lu max_pages %lu outstanding_pages %lu extra_pages %lu shr_pages %lu p2m_size", ctx->domid, ctx->dominfo.tot_pages, ctx->dominfo.max_pages, ctx->dominfo.outstanding_pages, ctx->dominfo.extra_pages, ctx->dominfo.shr_pages, ctx->restore.p2m_size);
     IPRINTF("Restoring domain");
 
     rc = setup(ctx);

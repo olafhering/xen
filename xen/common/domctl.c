@@ -107,6 +107,7 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
     xsm_security_domaininfo(d, info);
 
     info->tot_pages         = domain_tot_pages(d);
+    info->extra_pages       = d->extra_pages;
     info->max_pages         = d->max_pages;
     info->outstanding_pages = d->outstanding_pages;
 #ifdef CONFIG_MEM_SHARING
